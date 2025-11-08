@@ -1,0 +1,59 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+terraform.tfvars
+*.auto.tfvars
+.terraform.lock.hcl
+
+# Ansible
+*.retry
+inventory.ini
+group_vars/*.yml
+host_vars/*.yml
+# but keep example files
+!group_vars/*.example.yml
+!host_vars/*.example.yml
+!inventory.example.ini
+
+# Python (if any helper scripts)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+venv/
+
+# Logs
+*.log
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Build/output
+dist/
+build/
+EOF
+
+# --- ensure docs directory with a README if not present ---
+mkdir -p docs
+
+# --- create docs/README and main README if not present ---
+[ -f README.md ] || cat > README.md 
+
+# Local tokens / keys
+gittokan
+*.pem
+id_*

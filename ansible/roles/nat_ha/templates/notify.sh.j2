@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Usage patterns this script supports:
+# - keepalived.conf with:
+#     notify_master "/usr/local/sbin/keepalived-notify.sh master"
+#     notify_backup "/usr/local/sbin/keepalived-notify.sh backup"
+#     notify_fault  "/usr/local/sbin/keepalived-notify.sh fault"
+#     notify_stop   "/usr/local/sbin/keepalived-notify.sh stop"
+#
+# - OR single "notify" (keepalived passes: TYPE NAME STATE)
+#     notify "/usr/local/sbin/keepalived-notify.sh"
+#
+# This script normalizes both patterns.
+
+PUB_IF="eth0"
+FIP="172.236.95.221/32"
+
+log() { echo "[keepalived-notify] $(date -Is) $*"; }
+
+# Normalize action/state from keepalived
+ACTION="${1:-}"
+if [[ -z "$ACTION" && $# -ge 3 ]]; then
+  # Called via global 'notify' with args: TYPE NAME STATE
+  ACTION="${3,,}"   # STATE in lowercase
+else
+  ACTION="${ACTION,,}"  # lowercase master/backup/fault/stop
+fi
+
+ensure_fip() {
+  if ! ip -4 addr show dev "$PUB_IF" | grep -q " ${FIP}\b"; then
+    ip addr add "$FIP" dev "$PUB_IF" label "${PUB_IF}:fip"
+    # Send a few GARPs so upstream ARP tables flip quickly
+    if command -v arping >/dev/null 2>&1; then
+      arping -U -I "$PUB_IF" "${FIP%/*}" -c 3 || true
+    fi
+  fi
+}
+
+remove_fip() {
+  ip addr del "$FIP" dev "$PUB_IF" 2>/dev/null || true
+}
+
+case "$ACTION" in
+  master)
+    log "MASTER: adding ${FIP} on ${PUB_IF}"
+    ensure_fip
+    systemctl try-restart lelastic || true
+    ;;
+  backup|fault|stop)
+    log "BACKUP/FAULT/STOP: removing ${FIP} from ${PUB_IF}"
+    remove_fip
+    systemctl try-restart lelastic || true
+    ;;
+  *)
+    log "Unknown/ignored action '$ACTION' (expected master|backup|fault|stop)"
+    ;;
+esac
