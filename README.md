@@ -1,7 +1,7 @@
 # 🧭 Linode NAT Gateway (High Availability)
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/sandipgangdhar/linode-nat-gateway/feature/nat-gateway/docs/images/linode-nat-banner.png" alt="Linode NAT Gateway (HA)" width="720">
+  <img src="https://raw.githubusercontent.com/sandipgangdhar/linode-nat-gateway/feature/nat-gateway/docs/images/linode-nat-banner.png" alt="Linode NAT Gateway Banner" width="100%">
 </p>
 
 ![Terraform](https://img.shields.io/badge/Terraform-v1.5%2B-purple?logo=terraform)
