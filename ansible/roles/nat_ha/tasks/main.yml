@@ -1,17 +1,27 @@
 ---
-- name: Ensure base packages
-  apt:
-    name:
-      - ca-certificates
-      - curl
-      - jq
-      - vim
-      - nftables
-      - keepalived
-    update_cache: yes
-  become: yes
+# roles/nat_ha/tasks/main.yml
 
-# Making sure ip forwading is enabled
+- name: Ensure base packages
+  ansible.builtin.apt:
+    name:
+      - "keepalived=1:2.2.8-1build2"
+      - nftables
+      - conntrack
+      - jq
+      - curl
+      - ca-certificates
+      - vim
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+    lock_timeout: "{{ apt_lock_timeout | default(600) }}"
+    install_recommends: no
+  register: _apt_result
+  retries: 5
+  delay: 10
+  until: _apt_result is succeeded
+
+# Enable forwarding & relax rp_filter for asymmetric paths
 - name: Ensure kernel forwarding and rp_filter are set for NAT
   ansible.posix.sysctl:
     name: "{{ item.name }}"
@@ -25,8 +35,27 @@
     - { name: 'net.ipv4.conf.eth0.rp_filter', value: '0' }
     - { name: 'net.ipv4.conf.eth1.rp_filter', value: '0' }
 
+# Canonical public IP used for SNAT (prefer shared FIP)
+- name: Resolve public IP to use for SNAT (prefer shared IPv4)
+  ansible.builtin.set_fact:
+    nat_ha_public_ip: >-
+      {{ nat_ha_shared_ipv4
+         | default(shared_ipv4, true)
+         | default(nat_ha_fip, true)
+         | default(fip, true) }}
+
+- name: Validate that a public IP is provided
+  ansible.builtin.assert:
+    that:
+      - nat_ha_public_ip is defined
+      - (nat_ha_public_ip | string) | length > 0
+    fail_msg: >
+      Please set one of: nat_ha_shared_ipv4 (preferred), shared_ipv4,
+      nat_ha_fip, or fip in inventory/group_vars (Terraform writes shared_ipv4).
+
+# Make sure services are enabled (state will be handled via notify below)
 - name: Enable nftables/keepalived
-  systemd:
+  ansible.builtin.systemd:
     name: "{{ item }}"
     enabled: true
   loop:
@@ -34,20 +63,21 @@
     - keepalived
   become: yes
 
+# ---------- lelastic (Linode ECMP/BGP helper) ----------
 - name: Check if lelastic already installed
-  stat:
+  ansible.builtin.stat:
     path: /usr/local/bin/lelastic
   register: lelastic_bin
 
 - name: Download lelastic (compressed)
-  get_url:
+  ansible.builtin.get_url:
     url: "https://github.com/linode/lelastic/releases/download/{{ lelastic_version | default('v0.0.6') }}/lelastic.gz"
     dest: /tmp/lelastic.gz
     mode: "0644"
   when: not lelastic_bin.stat.exists
 
 - name: Install lelastic
-  shell: |
+  ansible.builtin.shell: |
     set -euo pipefail
     gunzip -c /tmp/lelastic.gz > /usr/local/bin/lelastic
     chmod 0755 /usr/local/bin/lelastic
@@ -57,7 +87,7 @@
   when: not lelastic_bin.stat.exists
 
 - name: Remove lelastic.gz after install
-  file:
+  ansible.builtin.file:
     path: /tmp/lelastic.gz
     state: absent
   when: not lelastic_bin.stat.exists
@@ -71,8 +101,9 @@
     - Reload systemd
     - Restart lelastic
 
+# ---------- nftables ----------
 - name: Ensure /etc/nftables.d exists
-  file:
+  ansible.builtin.file:
     path: /etc/nftables.d
     state: directory
     owner: root
@@ -80,7 +111,7 @@
     mode: "0755"
 
 - name: Ensure /etc/nftables.conf includes /etc/nftables.d/*.nft
-  blockinfile:
+  ansible.builtin.blockinfile:
     path: /etc/nftables.conf
     create: true
     mode: "0644"
@@ -93,7 +124,6 @@
   notify: Restart nftables
 
 - name: Install nftables NAT table (NAT Gateway)
-  become: yes
   ansible.builtin.template:
     src: nat.nft.j2
     dest: /etc/nftables.d/nat-natgw.nft
@@ -101,6 +131,7 @@
     group: root
     mode: "0644"
   notify: Restart nftables
+  become: yes
 
 - name: Remove legacy /etc/nftables.d/nat.nft to avoid duplicate rules
   ansible.builtin.file:
@@ -112,8 +143,9 @@
   ansible.builtin.command: nft -f /etc/nftables.conf
   changed_when: false
 
+# ---------- keepalived ----------
 - name: Install keepalived notify script
-  template:
+  ansible.builtin.template:
     src: notify.sh.j2
     dest: /usr/local/sbin/keepalived-notify.sh
     mode: '0755'
@@ -125,10 +157,11 @@
     src: keepalived.conf.j2
     dest: /etc/keepalived/keepalived.conf
     mode: "0644"
-  notify: restart keepalived
+  notify: Restart keepalived
 
+# Keep lelastic running (role ensures the unit exists)
 - name: Start lelastic as secondary by default
-  systemd:
+  ansible.builtin.systemd:
     name: lelastic
     state: started
     enabled: true
