@@ -1,0 +1,135 @@
+---
+- name: Ensure base packages
+  apt:
+    name:
+      - ca-certificates
+      - curl
+      - jq
+      - vim
+      - nftables
+      - keepalived
+    update_cache: yes
+  become: yes
+
+# Making sure ip forwading is enabled
+- name: Ensure kernel forwarding and rp_filter are set for NAT
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop:
+    - { name: 'net.ipv4.ip_forward', value: '1' }
+    - { name: 'net.ipv4.conf.all.rp_filter', value: '0' }
+    - { name: 'net.ipv4.conf.eth0.rp_filter', value: '0' }
+    - { name: 'net.ipv4.conf.eth1.rp_filter', value: '0' }
+
+- name: Enable nftables/keepalived
+  systemd:
+    name: "{{ item }}"
+    enabled: true
+  loop:
+    - nftables
+    - keepalived
+  become: yes
+
+- name: Check if lelastic already installed
+  stat:
+    path: /usr/local/bin/lelastic
+  register: lelastic_bin
+
+- name: Download lelastic (compressed)
+  get_url:
+    url: "https://github.com/linode/lelastic/releases/download/{{ lelastic_version | default('v0.0.6') }}/lelastic.gz"
+    dest: /tmp/lelastic.gz
+    mode: "0644"
+  when: not lelastic_bin.stat.exists
+
+- name: Install lelastic
+  shell: |
+    set -euo pipefail
+    gunzip -c /tmp/lelastic.gz > /usr/local/bin/lelastic
+    chmod 0755 /usr/local/bin/lelastic
+  args:
+    executable: /bin/bash
+    creates: /usr/local/bin/lelastic
+  when: not lelastic_bin.stat.exists
+
+- name: Remove lelastic.gz after install
+  file:
+    path: /tmp/lelastic.gz
+    state: absent
+  when: not lelastic_bin.stat.exists
+
+- name: Install lelastic systemd unit (default = secondary)
+  ansible.builtin.template:
+    src: lelastic.service.j2
+    dest: /etc/systemd/system/lelastic.service
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart lelastic
+
+- name: Ensure /etc/nftables.d exists
+  file:
+    path: /etc/nftables.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure /etc/nftables.conf includes /etc/nftables.d/*.nft
+  blockinfile:
+    path: /etc/nftables.conf
+    create: true
+    mode: "0644"
+    owner: root
+    group: root
+    marker: "# {mark} ANSIBLE nat_ha include"
+    block: |
+      # Keep your base rules here if any (do not flush ruleset unless you own the whole file)
+      include "/etc/nftables.d/*.nft"
+  notify: Restart nftables
+
+- name: Install nftables NAT table (NAT Gateway)
+  become: yes
+  ansible.builtin.template:
+    src: nat.nft.j2
+    dest: /etc/nftables.d/nat-natgw.nft
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart nftables
+
+- name: Remove legacy /etc/nftables.d/nat.nft to avoid duplicate rules
+  ansible.builtin.file:
+    path: /etc/nftables.d/nat.nft
+    state: absent
+  notify: Restart nftables
+
+- name: Force reload nftables ruleset from /etc/nftables.conf
+  ansible.builtin.command: nft -f /etc/nftables.conf
+  changed_when: false
+
+- name: Install keepalived notify script
+  template:
+    src: notify.sh.j2
+    dest: /usr/local/sbin/keepalived-notify.sh
+    mode: '0755'
+  become: yes
+  notify: Restart keepalived
+
+- name: Install keepalived.conf
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    mode: "0644"
+  notify: restart keepalived
+
+- name: Start lelastic as secondary by default
+  systemd:
+    name: lelastic
+    state: started
+    enabled: true
+  become: yes
