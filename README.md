@@ -8,6 +8,7 @@
 ![Ansible](https://img.shields.io/badge/Ansible-2.14%2B-red?logo=ansible)
 ![Linux](https://img.shields.io/badge/Linux-Ubuntu%2024.04-informational?logo=linux)
 ![Status](https://img.shields.io/badge/Status-Active%20Development-yellow)
+![CI](https://github.com/sandipgangdhar/linode-nat-gateway/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
 A fully automated, production-grade **High-Availability NAT Gateway** for **Akamai Connected Cloud (Linode)** — built using **Terraform**, **Ansible**, **Keepalived (VRRP)**, **lelastic (BGP route propagation)**, and **nftables**.  

@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, feature/** ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-validate:
+    name: Terraform + Ansible + Docs checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------- Terraform ----------
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform fmt (check)
+        working-directory: terraform
+        run: terraform fmt -recursive -check
+
+      - name: Terraform init (no backend)
+        working-directory: terraform
+        run: terraform init -backend=false
+
+      - name: Terraform validate
+        working-directory: terraform
+        run: terraform validate -no-color
+
+      # ---------- Ansible / YAML ----------
+      - name: Install Ansible toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ansible ansible-lint yamllint python3-jinja2
+          ansible --version
+          ansible-lint --version
+          yamllint --version
+
+      - name: Ansible Lint
+        run: |
+          # Lint site and role (ignore downloads, images, etc.)
+          ansible-lint -v \
+            ansible/site.yml \
+            ansible/roles/nat_ha
+
+      - name: YAML lint (repo)
+        run: |
+          yamllint -f colored .
+
+      # ---------- Markdown / links ----------
+      - name: Install lychee (link checker)
+        uses: lycheeverse/lychee-action@v1
+        with:
+          args: >-
+            --verbose
+            --no-progress
+            --exclude-mail
+            --accept 200,204,206,429
+            --retry-wait-time 2
+            --timeout 20
+            --max-concurrency 5
+            README.md docs/*.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

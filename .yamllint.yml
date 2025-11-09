@@ -1,0 +1,9 @@
+extends: default
+rules:
+  line-length:
+    max: 140
+    allow-non-breakable-words: true
+  truthy:
+    enabled: false
+ignore: |
+  docs/

@@ -1,0 +1,10 @@
+skip_list:
+  - yaml  # handled by yamllint job
+warn_list:
+  - fqcn
+  - risky-file-permissions
+parseable: true
+exclude_paths:
+  - "docs/"
+  - "terraform/"
+  - "**/templates/"
