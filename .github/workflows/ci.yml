@@ -49,10 +49,10 @@ jobs:
           pip install "ansible==9.6.1" "ansible-lint==24.2.0" "yamllint==1.35.1"
           ansible --version
           python - <<'PY'
-import ansible, sys
-print("ansible package:", ansible.__version__)
-print("python:", sys.version)
-PY
+          import ansible, sys
+          print("ansible package:", ansible.__version__)
+          print("python:", sys.version)
+          PY
 
       # ---------- Ansible / YAML lint ----------
       - name: Ansible Lint (targeted)
