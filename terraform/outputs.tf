@@ -37,11 +37,3 @@ output "shared_ipv4" {
   description = "Additional public IPv4 used for egress"
   value       = var.shared_ipv4
 }
-
-output "nat_a_vlan_ip" {
-  value = trimsuffix(var.nat_a_vlan_ip, "/24")
-}
-
-output "nat_b_vlan_ip" {
-  value = trimsuffix(var.nat_b_vlan_ip, "/24")
-}

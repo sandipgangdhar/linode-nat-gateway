@@ -1,8 +1,0 @@
-# roles/nat_conntrack/templates/20-conntrack-sync.nft.j2
-# allow FTFW sync (UDP/3780) from the peer on the VLAN interface
-table inet filter {
-  chain input {
-    type filter hook input priority 0; policy accept;
-    iifname "{{ vlan_if }}" ip saddr {{ ct_peer_ip }} udp dport 3780 accept
-  }
-}

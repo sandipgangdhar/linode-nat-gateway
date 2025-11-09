@@ -1,9 +1,3 @@
 # Prefer shared_ipv4, fall back to fip if only that is set
-#fip: "{{ shared_ipv4 | default(omit) }}"
-#shared_ipv4: "{{ fip | default(omit) }}"
-# Lowest-precedence defaults.
-nat_ha_shared_ipv4: null   # preferred if provided via inventory/group_vars
-nat_ha_fip: null           # optional fallback
-pub_if: "eth0"
-vlan_if: "eth1"
-apt_lock_timeout: 300   # seconds
+fip: "{{ shared_ipv4 | default(omit) }}"
+shared_ipv4: "{{ fip | default(omit) }}"
