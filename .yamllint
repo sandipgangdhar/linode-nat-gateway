@@ -1,8 +1,0 @@
-extends: default
-
-rules:
-  truthy: disable          # <— replaced the old "enabled: false"
-  document-start: disable  # allow missing '---' at top
-  line-length:
-    max: 120
-    allow-non-breakable-words: true
