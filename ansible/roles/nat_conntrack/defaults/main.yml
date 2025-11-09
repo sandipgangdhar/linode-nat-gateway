@@ -1,0 +1,22 @@
+# Core settings
+conntrackd_enable: true
+
+# Interface & addressing
+conntrackd_vlan_if: "eth1"
+conntrackd_local_ip: "192.168.1.3"
+conntrackd_peer_ip: "192.168.1.4"
+conntrackd_port: 3780
+
+# Feature toggles
+conntrackd_disable_external_cache: true
+conntrackd_tcp_window_tracking: true
+
+# Paths
+conntrackd_conf_path: "/etc/conntrackd/conntrackd.conf"
+conntrackd_lockfile: "/var/lib/conntrackd/lock"
+conntrackd_runtime_dirs:
+  - "/var/lib/conntrackd"
+  - "/var/lib/conntrackd/dumps"
+  - "/var/lib/conntrackd/filters"
+  - "/var/lib/conntrackd/sync"
+  - "/var/run/conntrackd"

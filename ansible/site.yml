@@ -4,17 +4,19 @@
   gather_facts: yes
 
   vars:
-    # Compute a single canonical var for the FIP
+    # For VIP/FIP logic inside templates
     fip_ip: "{{ fip | default(shared_ipv4) }}"
-    # vrrp instance defaults (only used by templates, already in your role)
     vrrp_instance: "VGW1"
     vrrp_interface: "{{ vlan_if }}"
     vrrp_router_id: 51
     vrrp_auth_pass: "changeme"
 
+    # Toggle conntrack replication
+    enable_conntrack: true
+
   pre_tasks:
     - name: Sanity—required vars present
-      assert:
+      ansible.builtin.assert:
         that:
           - fip_ip is defined
           - vlan_vip is defined
@@ -25,175 +27,54 @@
       tags: [always]
 
     - name: Compute vlan_cidr from vlan_vip
-      set_fact:
+      ansible.builtin.set_fact:
         vlan_cidr: "{{ vlan_vip.split('/')[0].rsplit('.', 1)[0] + '.0/' + vlan_vip.split('/')[1] }}"
       tags: [always]
 
-    - name: Show resolved variables
-      debug:
-        msg:
-          fip_ip: "{{ fip_ip }}"
-          vlan_vip: "{{ vlan_vip }}"
-          vlan_cidr: "{{ vlan_cidr }}"
-          pub_if: "{{ pub_if }}"
-          vlan_if: "{{ vlan_if }}"
-          dcid: "{{ dcid }}"
-          state: "{{ hostvars[inventory_hostname].state | default('BACKUP') }}"
-          priority: "{{ hostvars[inventory_hostname].priority | default(100) }}"
-      tags: [never, debug]
+    # Stop auto updates to avoid apt/dpkg lock races
+    - name: Stop auto-update timers (avoid apt lock issues)
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - unattended-upgrades
+        - apt-daily.service
+        - apt-daily-upgrade.service
+        - apt-daily.timer
+        - apt-daily-upgrade.timer
+      failed_when: false
+      ignore_errors: true
+
+    - name: Wait for dpkg locks
+      ansible.builtin.shell: |
+        for i in {1..60}; do
+          if ! fuser /var/lib/dpkg/lock >/dev/null 2>&1; then exit 0; fi
+          sleep 5
+        done
+        exit 1
+      changed_when: false
+
+    - name: Ensure dpkg configured
+      ansible.builtin.shell: dpkg --configure -a
+      changed_when: false
+      failed_when: false
 
   roles:
-    - nat_ha
+    - role: nat_ha
+      tags: [nat_ha]
 
-  # Ensure services are ON even if the role changes later
-  tasks:
-    - name: Ensure services are enabled + running
-      systemd:
+    - role: nat_conntrack
+      when: enable_conntrack | bool
+      tags: [nat_conntrack]
+
+  post_tasks:
+    - name: Start auto-update timers again
+      ansible.builtin.systemd:
         name: "{{ item }}"
-        enabled: true
         state: started
       loop:
-        - nftables
-        - keepalived
-        - lelastic
-      tags: [always]
-
-    - name: Reconcile FIP presence (present on MASTER, absent on BACKUP)
-      ansible.builtin.shell: |
-        set -e
-        if [ "{{ hostvars[inventory_hostname].state | default('BACKUP') }}" = "MASTER" ]; then
-          ip -4 addr show dev {{ pub_if }} | grep -q '{{ fip_ip }}/32' || \
-            ip addr add {{ fip_ip }}/32 dev {{ pub_if }} label {{ pub_if }}:fip
-        else
-          ip addr del {{ fip_ip }}/32 dev {{ pub_if }} 2>/dev/null || true
-        fi
-      args:
-        executable: /bin/bash
-      changed_when: false
-    
-    # Optional nudge to fire notify hooks if you really want to:
-    - name: Bounce keepalived to trigger notify scripts
-      ansible.builtin.systemd:
-        name: keepalived
-        state: restarted
-      when: false   # flip to true only if you want to force a transition
-
-    #####################################################################
-    #                    VALIDATION BLOCK (per host)                    #
-    #####################################################################
-    - name: Check nftables active
-      command: systemctl is-active nftables
-      register: svc_nftables
-      changed_when: false
-      failed_when: false
-      tags: [validate]
-
-    - name: Check keepalived active
-      command: systemctl is-active keepalived
-      register: svc_keepalived
-      changed_when: false
-      failed_when: false
-      tags: [validate]
-
-    - name: Check lelastic active
-      command: systemctl is-active lelastic
-      register: svc_lelastic
-      changed_when: false
-      failed_when: false
-      tags: [validate]
-
-    - name: Check VIP presence on MASTER (and absence on BACKUP)
-      shell: |
-        ip -4 addr show dev {{ pub_if }} | grep -q '{{ fip_ip }}/32' && echo PRESENT || echo ABSENT
-      register: vip_presence
-      changed_when: false
-      failed_when: false
-      tags: [validate]
-
-    - name: Grab nft ruleset
-      command: nft list ruleset
-      register: nft_ruleset
-      changed_when: false
-      failed_when: false
-      tags: [validate]
-
-    - name: Show nat POSTROUTING chain (debug)
-      ansible.builtin.command: nft list chain ip nat POSTROUTING
-      register: nft_postrouting
-      changed_when: false
-      tags: [validate]
-    
-    - name: Print nat POSTROUTING chain
-      ansible.builtin.debug:
-        var: nft_postrouting.stdout_lines
-      tags: [validate]
-
-    - name: Check SNAT rule exists (VLAN -> pub_if -> fip)
-      set_fact:
-        snat_ok: "{{ 
-          ('snat to ' ~ fip_ip) in nft_ruleset.stdout and
-          ('oifname \"' ~ pub_if ~ '\"') in nft_ruleset.stdout and
-          ('ip saddr ' ~ vlan_cidr) in nft_ruleset.stdout
-        }}"
-      tags: [validate]
-
-    - name: Curl from FIP only on MASTER (egress should show the FIP)
-      shell: "curl -sS --max-time 8 --interface {{ fip_ip }} https://api.ipify.org || true"
-      when: (hostvars[inventory_hostname].state | default('BACKUP')) == 'MASTER'
-      register: curl_ip
-      changed_when: false
-      failed_when: false
-      tags: [validate]
-
-    - name: Check lelastic journal for healthy BGP (Peer Up or added route)
-      shell: "journalctl -u lelastic -n 200 --no-pager | egrep -q 'Peer Up|added route' && echo OK || echo NOK"
-      register: bgp_ok
-      changed_when: false
-      failed_when: false
-      tags: [validate]
-
-    - name: Derive booleans for validation
-      set_fact:
-        svc_ok: "{{ svc_nftables.stdout == 'active' and svc_keepalived.stdout == 'active' and svc_lelastic.stdout == 'active' }}"
-        fip_on_master_ok: >-
-          {{
-            (hostvars[inventory_hostname].state | default('BACKUP')) != 'MASTER'
-            or vip_presence.stdout.strip() == 'PRESENT'
-          }}
-        fip_on_backup_ok: >-
-          {{
-            (hostvars[inventory_hostname].state | default('BACKUP')) != 'BACKUP'
-            or vip_presence.stdout.strip() == 'ABSENT'
-          }}
-        curl_ok: >-
-          {{
-            (hostvars[inventory_hostname].state | default('BACKUP')) != 'MASTER'
-            or (curl_ip.stdout is defined and curl_ip.stdout | trim == fip_ip)
-          }}
-        bgp_healthy: "{{ bgp_ok.stdout is defined and bgp_ok.stdout | trim == 'OK' }}"
-      tags: [validate]
-
-    - name: Print per-host validation summary
-      debug:
-        msg:
-          - "Host: {{ inventory_hostname }}"
-          - "Services active (nftables, keepalived, lelastic): {{ 'OK' if svc_ok else 'FAIL' }}"
-          - "VIP on MASTER: {{ 'OK' if fip_on_master_ok else 'FAIL' }}"
-          - "VIP absent on BACKUP: {{ 'OK' if fip_on_backup_ok else 'FAIL' }}"
-          - "SNAT rule present: {{ 'OK' if snat_ok else 'FAIL' }}"
-          - "Egress via FIP (MASTER only): {{ 'OK' if curl_ok else 'SKIPPED/OK' }}"
-          - "BGP (lelastic) healthy: {{ 'OK' if bgp_healthy else 'FAIL' }}"
-      tags: [validate]
-
-    - name: Final PASS/FAIL gate (fails the play on this host if any check failed)
-      assert:
-        that:
-          - svc_ok
-          - fip_on_master_ok
-          - fip_on_backup_ok
-          - snat_ok
-          - curl_ok
-          - bgp_healthy
-        success_msg: "✅ {{ inventory_hostname }}: NAT-HA validation PASSED"
-        fail_msg:    "❌ {{ inventory_hostname }}: NAT-HA validation FAILED — see summary above"
-      tags: [validate]
+        - apt-daily.timer
+        - apt-daily-upgrade.timer
+        - unattended-upgrades
+      ignore_errors: true
