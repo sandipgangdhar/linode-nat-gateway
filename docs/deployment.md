@@ -30,8 +30,7 @@ cd linode-nat-gateway/terraform
 
 <h2>🧱 Variables &amp; Logic Flow</h2>
 <p>
-The deployment no longer uses “single-pair” or “multi-pair” modes.  
-Instead, it’s <strong>fully dynamic</strong> — Terraform automatically provisions as many NAT Gateway HA pairs as you define in <code>var.nat_pairs</code>.
+The deployment is <strong>fully dynamic</strong> — Terraform automatically creates the required number of NAT Gateway HA pairs depending on how many configurations you include in <code>var.nat_pairs</code>. Each list entry represents one redundant pair ( e.g., <code>nat1-a/b</code>, <code>nat2-a/b</code> ).
 </p>
 
 <ul>
