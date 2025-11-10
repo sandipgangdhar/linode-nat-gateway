@@ -1,225 +1,296 @@
-# ⚙️ Deployment Guide / Setup Instructions
+<h1>⚙️ Deployment Guide — Linode NAT Gateway (HA)</h1>
+<p>This guide explains how to deploy the <strong>Linode NAT Gateway</strong> in two modes:</p>
+<ul>
+  <li><strong>Single Pair (1 HA pair)</strong> — one VRRP pair (<code>nat-a</code>, <code>nat-b</code>)</li>
+  <li><strong>Multi Pair (N HA pairs)</strong> — multiple VRRP pairs (<code>nat1-a/b</code>, <code>nat2-a/b</code>, …)</li>
+</ul>
+<p class="note">✅ <strong>Terraform auto-generates</strong> the Ansible inventory and pair-specific <code>group_vars</code> files. <strong>Do not edit</strong> those by hand.</p>
 
-This document explains the **end-to-end deployment process** for the Linode NAT Gateway (High Availability) solution — from Terraform provisioning to Ansible configuration and validation.  
-It’s fully reproducible and designed to be executed in any environment where the Linode API token is available.
+<hr />
 
----
+<h2>🧭 Prerequisites</h2>
+<table>
+  <thead><tr><th>Tool</th><th style="text-align:right">Version</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td>Terraform</td><td style="text-align:right">≥ 1.6.x</td><td>Provision Linodes, VLANs, IP sharing, etc.</td></tr>
+    <tr><td>Ansible</td><td style="text-align:right">≥ 2.15.x</td><td>Configure nftables, Keepalived, Lelastic</td></tr>
+    <tr><td>linode-cli (optional)</td><td style="text-align:right">Latest</td><td>Manual checks</td></tr>
+    <tr><td>SSH keypair</td><td style="text-align:right">RSA / ED25519</td><td>Node auth</td></tr>
+    <tr><td>Git</td><td style="text-align:right">Latest</td><td>Source control</td></tr>
+  </tbody>
+</table>
 
-## 🧭 Prerequisites
+<h3>Environment</h3>
+<pre><code>export LINODE_TOKEN="your-linode-api-token"
+git clone https://github.com/sandipgangdhar/linode-nat-gateway.git
+cd linode-nat-gateway/terraform
+</code></pre>
 
-Before deploying, ensure you have the following tools and access configured:
+<hr />
 
-| Tool | Version | Purpose |
-|-------|----------|----------|
-| **Terraform** | ≥ 1.6.x | Infrastructure provisioning |
-| **Ansible** | ≥ 2.15.x | Configuration management |
-| **linode-cli** | Latest | Optional manual checks |
-| **SSH keypair** | RSA / ED25519 | Used for node authentication |
-| **Git** | Latest | For cloning and version control |
+<h2>🧱 Variables &amp; Modes</h2>
+<p>The module can run in one of <strong>two modes</strong> based on <code>var.nat_pairs</code>:</p>
+<ul>
+  <li>If <code>nat_pairs</code> <strong>is empty</strong> ⇒ <strong>Single Pair Mode</strong></li>
+  <li>If <code>nat_pairs</code> <strong>has items</strong> ⇒ <strong>Multi Pair Mode</strong> (single-pair inputs are ignored)</li>
+</ul>
 
----
+<h3>Common Variables</h3>
+<p>Defined in <code>terraform/variables.tf</code> (used in both modes unless noted):</p>
+<ul>
+  <li><code>region</code> (string, required) — Linode region (e.g. <code>"in-maa"</code>)</li>
+  <li><code>image</code> (string, default <code>"linode/ubuntu24.04"</code>)</li>
+  <li><code>type</code> (string, default <code>"g6-standard-2"</code>)</li>
+  <li><code>root_pass</code> (sensitive) — required by provider (or use cloud-init SSH only)</li>
+  <li><code>inject_ssh_via_cloud_init</code> (bool, default <code>false</code>)</li>
+  <li><code>ssh_authorized_keys</code> (list(string)) — pushed via cloud-init if enabled</li>
+  <li><code>use_ip_share</code> (bool, default <code>true</code>)</li>
+  <li><code>dcid</code> (number, required when <code>use_ip_share=true</code>) — Linode DC numeric id</li>
+  <li><code>linode_token</code> (sensitive) — provider token</li>
+  <li><code>prefix</code> (string, default <code>"nat"</code>)</li>
+  <li>Placement group knobs (optional): <code>placement_group_label</code>, <code>placement_group_type</code></li>
+</ul>
 
-### 🔑 Environment Setup
+<hr />
 
-1. Export your Linode API token:
-   ```bash
-   export LINODE_TOKEN="your-token-here"
-   ```
+<h2>🎯 Mode A — Single Pair (1 HA pair)</h2>
+<p>When <code>nat_pairs = []</code>, the following <strong>single-pair</strong> inputs are used:</p>
+<ul>
+  <li><code>vlan_label</code> (string) — existing VLAN label to attach</li>
+  <li><code>nat_a_vlan_ip</code> (string CIDR) — VLAN IP for <code>nat-a</code> (e.g. <code>192.168.1.3/24</code>)</li>
+  <li><code>nat_b_vlan_ip</code> (string CIDR) — VLAN IP for <code>nat-b</code> (e.g. <code>192.168.1.4/24</code>)</li>
+  <li><code>vlan_vip</code> (string CIDR) — VRRP VIP on VLAN (e.g. <code>192.168.1.1/24</code>)</li>
+  <li><code>shared_ipv4</code> (string) — <strong>shared public IP</strong> used as SNAT/FIP (if <code>use_ip_share=true</code>)</li>
+  <li><code>anchor_linode_id</code> (number) — Linode that owns the shared IP (IP sharing anchor)</li>
+</ul>
 
-2. (Optional) Verify access:
-   ```bash
-   linode-cli account view
-   ```
+<h3>Example: <code>terraform/single-pair.tfvars</code></h3>
+<pre><code># --- common ---
+region              = "in-maa"
+root_pass           = "StrongPassword!"
+inject_ssh_via_cloud_init = true
+ssh_authorized_keys = ["ssh-ed25519 AAAA... user@host"]
+use_ip_share        = true
+dcid                = 25
 
-3. Clone the repo and switch to the feature branch:
-   ```bash
-   git clone https://github.com/sandipgangdhar/linode-nat-gateway.git
-   cd linode-nat-gateway
-   git checkout feature/nat-gateway
-   ```
+# --- single pair only ---
+vlan_label   = "vlan-nat"
+nat_a_vlan_ip = "192.168.1.3/24"
+nat_b_vlan_ip = "192.168.1.4/24"
+vlan_vip      = "192.168.1.1/24"
 
----
+# Public shared IP + anchor for IP sharing
+shared_ipv4      = "172.236.95.221"
+anchor_linode_id = 0   # set the owner Linode ID if the FIP belongs to a specific instance
+</code></pre>
 
-## 🧱 Step 1: Terraform Infrastructure Deployment
-
-Terraform provisions the base infrastructure:
-- 2 × Linode VMs (`nat-a`, `nat-b`)
-- Shared Public IP (FIP) for IP Sharing
-- VLAN interface for private subnet
-- Required security groups and SSH access
-
-### ⚙️ Configure Variables
-
-Edit `terraform/terraform.tfvars` and set values:
-```hcl
-region            = "ap-west"
-root_pass         = "StrongPassword!"
-ssh_authorized_keys = ["ssh-ed25519 AAAA..."]
-vlan_label        = "vlan-nat"
-vlan_subnet       = "192.168.1.0/24"
-public_fip        = "172.236.95.221"
-```
-
-> ⚠️ Do **not** commit `terraform.tfvars` with your actual SSH keys or tokens — instead use `terraform.tfvars.example` as a template.
-
----
-
-### 🚀 Deploy the Infrastructure
-
-```bash
-cd terraform
+<h3>Deploy (Single Pair)</h3>
+<pre><code>cd terraform
 terraform init
-terraform plan
-terraform apply -auto-approve
-```
+terraform apply -var-file=single-pair.tfvars -auto-approve
+</code></pre>
+<p><strong>Outputs:</strong> Terraform prints <code>pair_summary</code> with public &amp; VLAN IPs and the VIP.</p>
+<p>✅ Ansible inventory + group_vars are generated in <code>../ansible</code> (don’t edit).</p>
 
-Terraform output will provide:
-- Node IPs (public and private)
-- VLAN subnet
-- FIP details
+<hr />
 
-> Copy these IPs into the **Ansible inventory file** for the next step.
+<h2>🎯 Mode B — Multi Pair (Multiple HA pairs)</h2>
+<p>Set <code>nat_pairs</code> to a <strong>list of pairs</strong>. Each pair defines its own VLAN VIP, shared IP, etc.</p>
 
----
+<h3>Schema (per pair)</h3>
+<ul>
+  <li><code>name</code> (string) — Pair name (e.g., <code>"nat1"</code>)</li>
+  <li><code>vlan_label</code> (string) — VLAN label to attach</li>
+  <li><code>vlan_vip</code> (string CIDR) — VRRP VIP (unique per pair subnet/VIP)</li>
+  <li><code>shared_ipv4</code> (string, optional) — public IP used for SNAT/FIP for that pair</li>
+  <li><code>anchor_linode_id</code> (number, optional) — owner Linode for IP sharing</li>
+  <li><code>placement_group_label</code> (string, optional)</li>
+  <li><code>placement_group_type</code> (string, optional, default <code>"anti_affinity:local"</code>)</li>
+  <li><code>vrrp_id</code> (number) — <strong>must be unique per pair</strong> (e.g., 51, 52, 53…)</li>
+  <li><code>members</code> (list) — 2 members with:
+    <ul>
+      <li><code>label</code> (string) — instance label (e.g., <code>"nat1-a"</code>, <code>"nat1-b"</code>)</li>
+      <li><code>vlan_ip</code> (string CIDR) — node VLAN IP (e.g., <code>192.168.1.3/24</code>)</li>
+      <li><code>state</code> (string) — <code>"MASTER"</code> or <code>"BACKUP"</code></li>
+      <li><code>priority</code> (number) — Keepalived priority (higher = master)</li>
+    </ul>
+  </li>
+</ul>
 
-## 🧩 Step 2: Ansible Configuration
+<h3>Example: <code>terraform/multi-pair.tfvars</code></h3>
+<pre><code># --- common ---
+region              = "in-maa"
+root_pass           = "StrongPassword!"
+inject_ssh_via_cloud_init = true
+ssh_authorized_keys = ["ssh-ed25519 AAAA... user@host"]
+use_ip_share        = true
+dcid                = 25
 
-Once the Linodes are provisioned, configure HA NAT stack using:
+# --- multi-pair ---
+nat_pairs = [
+  {
+    name       = "nat1"
+    vlan_label = "vlan-nat"
+    vlan_vip   = "192.168.1.1/24"
+    shared_ipv4 = "172.236.95.221"
+    vrrp_id    = 51
+    members = [
+      { label = "nat1-a", vlan_ip = "192.168.1.3/24", state = "MASTER", priority = 150 },
+      { label = "nat1-b", vlan_ip = "192.168.1.4/24", state = "BACKUP", priority = 100 }
+    ]
+  },
+  {
+    name       = "nat2"
+    vlan_label = "vlan-nat"
+    vlan_vip   = "192.168.1.10/24"
+    shared_ipv4 = "172.236.95.99"
+    vrrp_id    = 52
+    members = [
+      { label = "nat2-a", vlan_ip = "192.168.1.6/24", state = "MASTER", priority = 150 },
+      { label = "nat2-b", vlan_ip = "192.168.1.7/24", state = "BACKUP", priority = 100 }
+    ]
+  }
+]
+</code></pre>
 
-```bash
-cd ../ansible
-ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i inventory.ini site.yml
-```
+<h3>Deploy (Multi Pair)</h3>
+<pre><code>cd terraform
+terraform init
+terraform apply -var-file=multi-pair.tfvars -auto-approve
+</code></pre>
+<p><strong>Outputs:</strong> <code>pair_summary</code> shows each pair’s public/VLAN IPs and VIPs.</p>
+<p>✅ Ansible <code>inventory.ini</code> groups will include <code>nat_nat1</code>, <code>nat_nat2</code>, and a parent <code>nat</code>.</p>
 
-### 📋 Inventory Example (`inventory.ini`)
+<hr />
 
-```ini
-[nat]
-nat-a ansible_host=172.235.5.178 pub_if=eth0 vlan_if=eth1 vlan_vip=192.168.1.1 fip_ip=172.236.95.221 priority=150
-nat-b ansible_host=172.232.104.118 pub_if=eth0 vlan_if=eth1 vlan_vip=192.168.1.1 fip_ip=172.236.95.221 priority=100
-```
+<h2>🔧 Configure with Ansible</h2>
+<p>Terraform writes files to <code>../ansible</code>:</p>
+<ul>
+  <li><code>inventory.ini</code> — with groups/hosts and hostvars (public IPs, priorities, etc.)</li>
+  <li><code>group_vars/nat.yml</code> — common vars (e.g., <code>dcid</code>)</li>
+  <li><code>group_vars/nat_&lt;pair&gt;.yml</code> — per-pair vars (<code>fip</code>, <code>vlan_vip</code>, <code>vrrp_id</code>, etc.)</li>
+</ul>
+<p>✅ If you set <code>vrrp_id</code> in <code>nat_pairs</code>, it’s <strong>propagated</strong> to group_vars (e.g., <code>vrrp_id: 51/52</code>).</p>
 
-### 🧰 What Ansible Does
+<h3>Run Ansible</h3>
+<pre><code>cd ../ansible
+ANSIBLE_HOST_KEY_CHECKING=false ansible-playbook -i inventory.ini site.yml
+</code></pre>
+<p>The playbook:</p>
+<ul>
+  <li>Waits for cloud-init</li>
+  <li>Pauses/clears apt/dpkg locks</li>
+  <li>Installs/configures <code>nftables</code>, <code>keepalived</code>, <code>lelastic</code></li>
+  <li>Drops templates:
+    <ul>
+      <li><code>/etc/keepalived/keepalived.conf</code></li>
+      <li><code>/etc/nftables.d/nat.nft</code> (SNAT → FIP)</li>
+      <li><code>/usr/local/sbin/keepalived-notify.sh</code> (bind/unbind FIP, etc.)</li>
+    </ul>
+  </li>
+  <li>Enables &amp; starts services</li>
+  <li>Validates VIP/FIP &amp; SNAT</li>
+</ul>
+<p class="note">If you see apt lock retries, just re-run the play—our playbook already includes robust lock handling.</p>
 
-1. Installs base packages (`nftables`, `keepalived`, `lelastic`).  
-2. Configures `/etc/nftables.d/nat-natgw.nft` for SNAT.  
-3. Deploys `/usr/local/sbin/keepalived-notify.sh` for IP handover.  
-4. Applies `/etc/keepalived/keepalived.conf` for VRRP.  
-5. Starts and enables services.  
-6. Runs **validation tasks** automatically.
+<hr />
 
----
+<h2>✅ Post-Deploy Checks</h2>
+<pre><code># Keepalived status
+systemctl status keepalived
 
-## ✅ Step 3: Validation and Health Check
+# VIP present only on MASTER
+ip addr show &lt;vlan_if&gt; | grep -E '192\.168\.'
 
-After deployment, validation runs automatically and prints a summary like this:
+# FIP (shared public IP) only on MASTER (bound/unbound via notify script)
+ip addr show &lt;pub_if&gt; | grep -E '172\.'
 
-```
-Host: nat-a
-Services active (nftables, keepalived, lelastic): OK
-VIP on MASTER: OK
-VIP absent on BACKUP: OK
-SNAT rule present: OK
-Egress via FIP (MASTER only): OK
-BGP (lelastic) healthy: OK
-✅ nat-a: NAT-HA validation PASSED
-```
+# SNAT rule present
+nft list chain ip nat POSTROUTING | grep snat
 
-If any item fails, Ansible will indicate `❌ validation FAILED` for that node.
+# Outbound identity (MASTER will show its pair's FIP)
+curl -s ifconfig.me
+</code></pre>
+<p><strong>Expected:</strong></p>
+<ul>
+  <li>In each pair, one node is <strong>MASTER</strong> (owns VIP+FIP), the other is <strong>BACKUP</strong>.</li>
+  <li><code>curl -s ifconfig.me</code> from a <strong>private host</strong> behind the VIP will show the <strong>pair’s shared public IP</strong>.</li>
+</ul>
 
-### Manual Health Verification
+<hr />
 
-| Check | Command | Expected Output |
-|--------|----------|----------------|
-| VRRP state | `systemctl status keepalived` | MASTER on one node, BACKUP on other |
-| FIP presence | `ip addr show eth0 | grep 172.` | Present only on MASTER |
-| SNAT rule | `nft list chain ip nat POSTROUTING` | Rule with `snat to FIP` |
-| Connectivity | `curl -4 ifconfig.me` | Returns shared FIP |
-| BGP | `systemctl status lelastic` | Running, peers established |
+<h2>🧪 Failover Tests (Optional)</h2>
+<pre><code># On the current MASTER:
+systemctl stop keepalived
+# or
+ip link set &lt;pub_if&gt; down
+# or
+reboot
 
----
+# Restore:
+systemctl start keepalived
+</code></pre>
 
-## 🔁 Step 4: Failover Testing (Optional)
+<hr />
 
-You can simulate failure scenarios:
+<h2>👩‍💼 Private Hosts — ECMP to Two Gateways</h2>
+<p>To use <strong>both NAT pairs</strong> for outbound (ECMP), see <code>docs/client-configuration.md</code>. Quick gist (example VLAN VIPs <code>192.168.1.1</code> and <code>192.168.1.10</code> on <code>eth1</code>):</p>
+<pre><code># 1) Replace default route with two equal-cost nexthops (do NOT delete default first)
+sudo ip route replace default scope global \
+  nexthop via 192.168.1.1  dev eth1 weight 1 \
+  nexthop via 192.168.1.10 dev eth1 weight 1
 
-| Action | Command | Expected Behavior |
-|--------|----------|------------------|
-| Stop Keepalived on MASTER | `systemctl stop keepalived` | BACKUP becomes MASTER |
-| Bring public IF down | `ip link set eth0 down` | FIP moves to BACKUP |
-| Reboot MASTER | `reboot` | BACKUP continues serving NAT |
-| Resume MASTER | `systemctl start keepalived` | Returns to BACKUP |
+# 2) Improve per-flow hashing and accept asymmetric return paths
+echo 1 | sudo tee /proc/sys/net/ipv4/fib_multipath_hash_policy
+sudo sysctl -w net.ipv4.conf.all.rp_filter=2
+sudo sysctl -w net.ipv4.conf.eth1.rp_filter=2
 
-After each test, re-run:
-```bash
-ansible-playbook -i inventory.ini site.yml -t validate
-```
+# Persist via /etc/sysctl.d/nat-ecmp.conf
+sudo tee /etc/sysctl.d/nat-ecmp.conf >/dev/null &lt;&lt;'CONF'
+net.ipv4.fib_multipath_hash_policy=1
+net.ipv4.conf.all.rp_filter=2
+net.ipv4.conf.eth1.rp_filter=2
+CONF
+sudo sysctl --system
+</code></pre>
+<ul>
+  <li><code>ip route replace</code> updates the default route atomically (safer over SSH).</li>
+  <li><code>fib_multipath_hash_policy=1</code> hashes on src/dst IP+port (better flow spread).</li>
+  <li><code>rp_filter=2</code> (loose) allows asymmetric replies typical with ECMP/NAT.</li>
+</ul>
 
----
+<hr />
 
-## 🧹 Step 5: Teardown
+<h2>🧯 Troubleshooting</h2>
+<ul>
+  <li><strong>“ip address associated with VRID … not present in MASTER advert”</strong><br>
+    Ensure <code>vrrp_id</code> is <strong>unique per pair</strong> and <code>vlan_vip</code> is correct in the per-pair <code>group_vars</code> file.</li>
+  <li><strong>Both pairs NAT via the same public IP</strong><br>
+    Verify each pair’s <code>shared_ipv4</code> differs and appears in its <code>group_vars/nat_&lt;pair&gt;.yml</code> as <code>fip</code>.</li>
+  <li><strong>Apt/dpkg lock loops</strong><br>
+    Re-run the play; pre_tasks already try to kill auto updates, clear locks, and <code>dpkg --configure -a</code>.</li>
+  <li><strong>Inventory looks wrong</strong><br>
+    Re-run <code>terraform apply</code>; it regenerates <code>../ansible/inventory.ini</code> and <code>group_vars</code>.</li>
+</ul>
 
-To remove everything cleanly:
+<hr />
 
-```bash
-cd terraform
+<h2>🗑️ Teardown</h2>
+<pre><code>cd terraform
 terraform destroy -auto-approve
-```
+</code></pre>
 
-This will delete both Linodes, VLAN, and IP assignments.
+<hr />
 
----
+<h2>📦 Files Touched by Terraform</h2>
+<ul>
+  <li><code>terraform/*.tf</code> — core infra + logic</li>
+  <li><code>../ansible/inventory.ini</code> — generated</li>
+  <li><code>../ansible/group_vars/nat.yml</code> — generated</li>
+  <li><code>../ansible/group_vars/nat_&lt;pair&gt;.yml</code> — generated</li>
+</ul>
 
-## 🧠 Automation via Makefile (Optional)
+<p class="ok"><strong>End state:</strong> HA NAT (single or multiple pairs) with validated VIP/FIP failover, SNAT via shared IP, and optional ECMP from private hosts.</p>
 
-You can simplify operations using a top-level `Makefile`:
-
-```makefile
-apply:
-	cd terraform && terraform apply -auto-approve
-	ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ansible/inventory.ini ansible/site.yml
-
-validate:
-	ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ansible/inventory.ini ansible/site.yml -t validate
-
-destroy:
-	cd terraform && terraform destroy -auto-approve
-
-failover-test:
-	ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i ansible/inventory.ini ansible/site.yml -t failover
-```
-
-Usage:
-```bash
-make apply
-make validate
-make destroy
-```
-
----
-
-## 📁 Deployment Files Summary
-
-| File | Purpose |
-|------|----------|
-| `terraform/main.tf` | Core infrastructure resources |
-| `terraform/variables.tf` | Parameter definitions |
-| `terraform/outputs.tf` | Public/private IPs and VLAN IDs |
-| `ansible/site.yml` | Main automation playbook |
-| `ansible/inventory.ini` | Node definitions |
-| `ansible/roles/nat_ha` | Tasks, templates, handlers for NAT setup |
-| `scripts/` | Utility shell scripts (optional future automation) |
-
----
-
-## ✅ End State
-
-After successful deployment:
-- `nat-a` → MASTER, owns VIP `192.168.1.1` and FIP `172.236.95.221`
-- `nat-b` → BACKUP, monitors VRRP
-- Private instances use `192.168.1.1` as default gateway
-- Internet access and failover are fully functional
-
----
-
-Next doc 👉 [Performance Benchmark & Test Results](https://github.com/sandipgangdhar/linode-nat-gateway/blob/feature/nat-gateway/docs/performance.md)
+</body>
+</html>
