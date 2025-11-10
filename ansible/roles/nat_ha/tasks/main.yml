@@ -1,4 +1,17 @@
 ---
+- name: Assert required VRRP/NAT vars exist
+  ansible.builtin.assert:
+    that:
+      - vrrp_id is defined
+      - vrrp_instance is defined
+      - vrrp_interface is defined
+      - vrrp_auth_pass is defined
+      - vlan_vip is defined
+      - pub_if is defined
+      - vlan_if is defined
+      - fip is defined
+    fail_msg: "Missing required vars for {{ inventory_hostname }}. Check group_vars/host_vars."
+
 # roles/nat_ha/tasks/main.yml
 
 - name: Ensure base packages
@@ -151,6 +164,20 @@
     mode: '0755'
   become: yes
   notify: Restart keepalived
+
+- name: Assert VRRP/NAT inputs are present
+  ansible.builtin.assert:
+    that:
+      - vrrp_id is defined
+      - vlan_vip is defined
+      - fip is defined
+      - pub_if is defined
+      - vlan_if is defined
+    fail_msg: >
+      Missing vars (vrrp_id={{ vrrp_id | default('unset') }},
+      vlan_vip={{ vlan_vip | default('unset') }},
+      fip={{ fip | default('unset') }}, pub_if={{ pub_if | default('unset') }},
+      vlan_if={{ vlan_if | default('unset') }}) for {{ inventory_hostname }}
 
 - name: Install keepalived.conf
   ansible.builtin.template:

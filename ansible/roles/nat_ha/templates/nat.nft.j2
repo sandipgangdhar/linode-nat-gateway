@@ -2,7 +2,8 @@ table ip nat {
   chain POSTROUTING {
     type nat hook postrouting priority srcnat; policy accept;
     # SNAT only traffic from VLAN subnet going out the public interface, to the FIP
-    ip saddr {{ vlan_cidr }} oifname "{{ pub_if }}" snat to {{ nat_ha_public_ip }}
+    #ip saddr {{ vlan_cidr }} oifname "{{ pub_if }}" snat to {{ nat_ha_public_ip }}
+    ip saddr {{ vlan_cidr }} oifname "{{ pub_if }}" snat to {{ fip_ip }}
     # If you want to be extra strict about source interface:
     # iifname "{{ vlan_if }}" ip saddr {{ vlan_cidr }} oifname "{{ pub_if }}" snat to {{ fip_ip }}
   }

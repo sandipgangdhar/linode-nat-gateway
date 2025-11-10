@@ -14,7 +14,7 @@ set -euo pipefail
 # This script normalizes both patterns.
 
 PUB_IF="eth0"
-FIP="172.236.95.221/32"
+FIP="{{ fip }}/32"
 
 log() { echo "[keepalived-notify] $(date -Is) $*"; }
 

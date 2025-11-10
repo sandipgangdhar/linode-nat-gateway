@@ -4,61 +4,104 @@
   gather_facts: yes
 
   vars:
-    # For VIP/FIP logic inside templates
-    fip_ip: "{{ fip | default(shared_ipv4) }}"
-    vrrp_instance: "VGW1"
-    vrrp_interface: "{{ vlan_if }}"
-    vrrp_router_id: 51
-    vrrp_auth_pass: "changeme"
-
-    # Toggle conntrack replication
+    # Use either `fip` (if set) or fallback to `shared_ipv4` from group_vars
+    fip_ip: "{{ (fip | default(shared_ipv4, true)) | default('') }}"
+    # Toggle conntrack replication role
     enable_conntrack: true
 
   pre_tasks:
+    - name: Wait for cloud-init to finish (if present)
+      ansible.builtin.shell: |
+        if command -v cloud-init >/dev/null 2>&1; then
+          cloud-init status --wait || true
+        fi
+      changed_when: false
+
+    - name: Stop apt auto services/timers during this run
+      ansible.builtin.shell: |
+        systemctl stop apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer || true
+      changed_when: false
+
+    - name: Disable apt timers (prevent restart mid-run)
+      ansible.builtin.shell: |
+        systemctl disable apt-daily.timer apt-daily-upgrade.timer || true
+      changed_when: false
+
+    # --- replaced pkill with safe PID-based termination ---
+    - name: Detect lingering apt/dpkg/unattended processes
+      ansible.builtin.command: pgrep -fa 'apt.systemd.daily|unattended|apt-get|dpkg'
+      register: apt_procs
+      failed_when: false
+      changed_when: false
+
+    - name: Terminate lingering apt/dpkg/unattended processes (TERM then KILL)
+      ansible.builtin.shell: |
+        for pid in $(pgrep -f 'apt.systemd.daily|unattended|apt-get|dpkg' || true); do
+          kill -TERM "$pid" || true
+        done
+        sleep 2
+        for pid in $(pgrep -f 'apt.systemd.daily|unattended|apt-get|dpkg' || true); do
+          kill -KILL "$pid" || true
+        done
+      when: apt_procs.rc == 0
+      changed_when: false
+      failed_when: false
+    # ------------------------------------------------------
+
+    - name: Wait for dpkg/apt locks to clear (retry/backoff)
+      ansible.builtin.shell: |
+        for i in $(seq 1 60); do
+          if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+             && ! fuser /var/lib/dpkg/lock >/dev/null 2>&1 \
+             && ! fuser /var/cache/apt/archives/lock >/dev/null 2>&1; then
+            exit 0
+          fi
+          sleep 5
+        done
+        exit 1
+      register: lock_wait
+      changed_when: false
+      failed_when: lock_wait.rc != 0
+
+    - name: Force-unlock apt/dpkg if still locked (last resort)
+      when: lock_wait.rc != 0
+      block:
+        - name: Remove lock files (only after killing procs)
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /var/lib/dpkg/lock-frontend
+            - /var/lib/dpkg/lock
+            - /var/cache/apt/archives/lock
+
+        - name: Ensure dpkg is configured
+          ansible.builtin.shell: dpkg --configure -a || true
+          changed_when: false
+
+    - name: Update apt cache with lock timeout
+      ansible.builtin.apt:
+        update_cache: yes
+        lock_timeout: 120
+
     - name: Sanity—required vars present
       ansible.builtin.assert:
         that:
-          - fip_ip is defined
           - vlan_vip is defined
           - pub_if is defined
           - vlan_if is defined
           - dcid is defined
-        fail_msg: "Missing one of: fip/shared_ipv4, vlan_vip, pub_if, vlan_if, dcid"
+          - vrrp_id is defined
+          - vrrp_instance is defined
+          - vrrp_interface is defined
+          - vrrp_auth_pass is defined
+        fail_msg: "Missing one of: vlan_vip, pub_if, vlan_if, dcid, vrrp_id, vrrp_instance, vrrp_interface, vrrp_auth_pass"
       tags: [always]
 
-    - name: Compute vlan_cidr from vlan_vip
+    - name: Compute vlan_cidr from vlan_vip (e.g., 192.168.1.1/24 -> 192.168.1.0/24)
       ansible.builtin.set_fact:
         vlan_cidr: "{{ vlan_vip.split('/')[0].rsplit('.', 1)[0] + '.0/' + vlan_vip.split('/')[1] }}"
       tags: [always]
-
-    # Stop auto updates to avoid apt/dpkg lock races
-    - name: Stop auto-update timers (avoid apt lock issues)
-      ansible.builtin.systemd:
-        name: "{{ item }}"
-        state: stopped
-        enabled: false
-      loop:
-        - unattended-upgrades
-        - apt-daily.service
-        - apt-daily-upgrade.service
-        - apt-daily.timer
-        - apt-daily-upgrade.timer
-      failed_when: false
-      ignore_errors: true
-
-    - name: Wait for dpkg locks
-      ansible.builtin.shell: |
-        for i in {1..60}; do
-          if ! fuser /var/lib/dpkg/lock >/dev/null 2>&1; then exit 0; fi
-          sleep 5
-        done
-        exit 1
-      changed_when: false
-
-    - name: Ensure dpkg configured
-      ansible.builtin.shell: dpkg --configure -a
-      changed_when: false
-      failed_when: false
 
   roles:
     - role: nat_ha
@@ -69,7 +112,7 @@
       tags: [nat_conntrack]
 
   post_tasks:
-    - name: Start auto-update timers again
+    - name: Re-enable/start auto-update timers
       ansible.builtin.systemd:
         name: "{{ item }}"
         state: started

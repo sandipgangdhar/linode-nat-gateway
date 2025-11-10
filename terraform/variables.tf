@@ -1,75 +1,149 @@
-variable "linode_token" {
-  type = string
+# -----------------------------------------------------------------------------
+# MULTI-PAIR MODE VARIABLES
+# -----------------------------------------------------------------------------
+variable "nat_pairs" {
+  description = <<-EOT
+  Multi-pair mode configuration.
+  If this list is non-empty, Terraform ignores single-pair variables.
+  Each entry represents a high-availability NAT pair.
+  EOT
+
+  type = list(object({
+    name                  = string
+    vlan_vip              = string
+    shared_ipv4           = optional(string, "")
+    anchor_linode_id      = optional(number, 0)
+    vlan_label            = string
+    placement_group_label = optional(string, "")
+    placement_group_type  = optional(string, "anti_affinity:local")
+    vrrp_id               = number
+    members = list(object({
+      label    = string
+      vlan_ip  = string
+      state    = string
+      priority = number
+    }))
+  }))
+
+  default = []
 }
 
-variable "region" {
-  type    = string
-  default = "in-maa"
-}
-
-variable "image" {
-  type    = string
-  default = "linode/ubuntu24.04"
-}
-
-variable "type" {
-  type    = string
-  default = "g6-standard-2"
-}
-
-# VLAN attachment (must already exist in the same region)
+# -----------------------------------------------------------------------------
+# SINGLE-PAIR MODE VARIABLES
+# (Used only when nat_pairs = [])
+# -----------------------------------------------------------------------------
 variable "vlan_label" {
-  type = string
+  description = "VLAN label for the single-pair NAT."
+  type        = string
+  default     = ""
 }
 
 variable "nat_a_vlan_ip" {
-  type = string
+  description = "VLAN IP for NAT-A instance in single-pair mode."
+  type        = string
+  default     = ""
 }
 
 variable "nat_b_vlan_ip" {
-  type = string
+  description = "VLAN IP for NAT-B instance in single-pair mode."
+  type        = string
+  default     = ""
 }
 
-# SSH access
-variable "ssh_authorized_keys" {
-  type = list(string)
-}
-
-variable "root_pass" {
-  type    = string
-  default = null
-}
-
-# Naming
-variable "prefix" {
-  type    = string
-  default = "nat"
+variable "vlan_vip" {
+  description = "Floating VLAN VIP (used as default gateway in single-pair mode)."
+  type        = string
+  default     = ""
 }
 
 variable "shared_ipv4" {
-  description = "Additional public IPv4 allocated by Support (owned by customer's anchor). Example: 203.0.113.45"
+  description = "Shared public IPv4 for single-pair mode (used if IP sharing is enabled)."
   type        = string
   default     = ""
 }
 
 variable "anchor_linode_id" {
-  description = "Optional: Linode ID of the customer's anchor node that owns shared_ipv4"
+  description = "Linode ID that owns the shared IP (set to 0 if not used)."
   type        = number
   default     = 0
 }
 
+# -----------------------------------------------------------------------------
+# COMMON SETTINGS
+# -----------------------------------------------------------------------------
+variable "region" {
+  description = "Region where all Linodes will be created."
+  type        = string
+}
+
+variable "image" {
+  description = "Base image to use for NAT instances."
+  type        = string
+  default     = "linode/ubuntu24.04"
+}
+
+variable "type" {
+  description = "Linode instance type for NAT nodes."
+  type        = string
+  default     = "g6-standard-2"
+}
+
+variable "root_pass" {
+  description = "Root password for the instances (required by Linode provider)."
+  type        = string
+  default     = "" # keep empty by default
+  sensitive   = true
+}
+
+# If true, put keys into cloud-init instead of provider (default: false)
+variable "inject_ssh_via_cloud_init" {
+  type    = bool
+  default = false
+}
+
+variable "placement_group_label" {
+  description = "Optional label of existing placement group (single-pair mode only)."
+  type        = string
+  default     = ""
+}
+
+variable "placement_group_type" {
+  description = "Placement group type (anti_affinity, affinity, etc.)."
+  type        = string
+  default     = "anti_affinity:local"
+}
+
 variable "use_ip_share" {
-  description = "If true, call Linode /share API to allow nat-a/b to use shared_ipv4"
+  description = "Enable Linode IP sharing API call."
   type        = bool
   default     = true
 }
 
-variable "vlan_vip" {
-  description = "Floating VLAN IP (VIP) used as the default gateway for NAT traffic, e.g., 172.16.0.1/24"
-  type        = string
+variable "ssh_authorized_keys" {
+  description = "List of SSH public keys injected into each NAT node via cloud-init."
+  type        = list(string)
+  default     = []
 }
 
 variable "dcid" {
-  description = "Linode DCID for lelastic (in-maa = 25)"
+  description = "Linode datacenter ID for IP sharing (refer Linode docs)."
   type        = number
+}
+
+variable "linode_token" {
+  description = "API token for Linode provider."
+  type        = string
+  sensitive   = true
+}
+
+variable "prefix" {
+  description = "Prefix for naming NAT resources."
+  type        = string
+  default     = "nat"
+}
+
+variable "vrrp_id" {
+  description = "VRRP Router ID for single-pair mode (1-255)."
+  type        = number
+  default     = 51
 }

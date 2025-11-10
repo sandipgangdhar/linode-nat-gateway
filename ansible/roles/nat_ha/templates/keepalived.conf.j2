@@ -1,7 +1,7 @@
 vrrp_instance {{ vrrp_instance }} {
   state {{ hostvars[inventory_hostname].state | default('BACKUP') }}
   interface {{ vrrp_interface }}
-  virtual_router_id {{ vrrp_router_id }}
+  virtual_router_id {{ vrrp_id }}
   priority {{ hostvars[inventory_hostname].priority | default(100) }}
   advert_int 1
   nopreempt
