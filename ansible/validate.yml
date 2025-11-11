@@ -1,0 +1,149 @@
+---
+# Final Validation Playbook for HA NAT Gateway
+
+- hosts: nat
+  gather_facts: no
+  vars:
+    # resolve from host/group vars if present, else default
+    _pub_if: "{{ hostvars[inventory_hostname].pub_if | default('eth0') }}"
+    _vlan_if: "{{ hostvars[inventory_hostname].vlan_if | default('eth1') }}"
+    _fip_addr: "{{ (hostvars[inventory_hostname].fip | default('')) ~ '/32' }}"
+    ping_target: "1.1.1.1"
+    metrics_file: "/var/lib/node_exporter/textfile_collector/nat_ha.prom"
+
+  tasks:
+    - name: keepalived active?
+      command: systemctl is-active keepalived
+      register: keepalived_active
+      changed_when: false
+      failed_when: keepalived_active.rc not in [0,3]
+
+    - name: conntrackd running?
+      command: systemctl is-active conntrackd
+      register: conntrackd_active
+      changed_when: false
+
+    - name: conntrackd -s (summary)
+      command: conntrackd -s
+      register: conntrackd_summary
+      changed_when: false
+      failed_when: conntrackd_summary.rc != 0
+
+    - name: nftables postrouting rule present (SNAT)
+      shell: |
+        set -o pipefail
+        nft list ruleset | awk '/table ip nat/,/}/' | grep -E 'chain postrouting|snat to'
+      args: { executable: /bin/bash }
+      register: nft_nat
+      changed_when: false
+      failed_when: nft_nat.rc != 0
+
+    - name: Textfile metrics exist
+      stat:
+        path: "{{ metrics_file }}"
+      register: metrics_stat
+
+    - name: Node exporter answers locally
+      shell: curl -s http://127.0.0.1:9100/metrics | head -n 1
+      register: ne_probe
+      changed_when: false
+      failed_when: ne_probe.rc != 0
+
+    - name: Is this host master? (FIP present on _pub_if)
+      shell: ip -4 addr show dev {{ _pub_if }} | grep -w "{{ _fip_addr }}"
+      register: fip_here
+      changed_when: false
+      failed_when: false
+
+    - name: Set is_master fact
+      set_fact:
+        is_master: "{{ fip_here.rc == 0 }}"
+
+- hosts: nat
+  gather_facts: no
+  any_errors_fatal: true
+  vars:
+    _pub_if: "{{ hostvars[inventory_hostname].pub_if | default('eth0') }}"
+    _fip_addr: "{{ (hostvars[inventory_hostname].fip | default('')) ~ '/32' }}"
+    failover_wait: 20
+    takeover_poll_interval: 2
+
+  tasks:
+    - name: Show master flag per host
+      debug:
+        msg: "is_master={{ hostvars[inventory_hostname].is_master | default(false) }}"
+
+    - name: Pick current master (run once)
+      run_once: true
+      set_fact:
+        current_master: ""
+    - name: Pick current master (loop)
+      run_once: true
+      set_fact:
+        current_master: "{{ item }}"
+      loop: "{{ groups['nat'] }}"
+      when: hostvars[item].is_master | default(false)
+
+    - name: Fail if no master found
+      run_once: true
+      assert:
+        that:
+          - current_master | length > 0
+        fail_msg: "No MASTER detected (no host has the FIP)."
+
+    - name: Stop keepalived on current master (trigger failover)
+      when: inventory_hostname == current_master
+      become: true
+      systemd:
+        name: keepalived
+        state: stopped
+
+    - name: Wait for FIP to appear on a backup node
+      when: inventory_hostname != current_master
+      vars:
+        retries_calc: "{{ (failover_wait // takeover_poll_interval) | int }}"
+      shell: ip -4 addr show dev {{ _pub_if }} | grep -w "{{ _fip_addr }}"
+      register: fip_on_backup
+      retries: "{{ retries_calc }}"
+      delay: "{{ takeover_poll_interval }}"
+      until: fip_on_backup.rc == 0
+      changed_when: false
+
+    - name: Start keepalived back on original master
+      when: inventory_hostname == current_master
+      become: true
+      systemd:
+        name: keepalived
+        state: started
+        enabled: true
+
+    # Probe each node for FIP presence (delegate the command to that node)
+    - name: Probe FIP presence per host (delegated)
+      run_once: true
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['nat'] }}"
+      vars:
+        _if: "{{ hostvars[item].pub_if | default('eth0') }}"
+        _fip: "{{ (hostvars[item].fip | default('')) }}/32"
+      shell: ip -4 addr show dev {{ _if }} | grep -w "{{ _fip }}"
+      register: fip_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Assert at least one host has the FIP
+      run_once: true
+      assert:
+        that:
+          - "(fip_probe.results | selectattr('rc','equalto',0) | list | length) > 0"
+        fail_msg: "No host currently holds the FIP on any node's pub_if."
+
+    - name: Print hosts that currently hold the FIP
+      run_once: true
+      debug:
+        msg: >-
+          FIP present on: {{
+            fip_probe.results
+            | selectattr('rc','equalto',0)
+            | map(attribute='item')
+            | list
+          }}

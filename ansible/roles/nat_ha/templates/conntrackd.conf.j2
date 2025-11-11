@@ -1,0 +1,22 @@
+General {
+  HashSize 65536
+  HashLimit 131072
+  LogFile on
+  NetlinkBufferSize 2097152
+  NetlinkBufferSizeMaxGrowth 8388608
+}
+
+Sync {
+  Mode FTFW {
+    DisableExternalCache Off
+    ResendQueueSize 131072
+    PurgeTimeout 60
+  }
+  UDP {
+    IPv4_address {{ nat_ha_sync_ip_self }}
+    Interface {{ nat_ha_sync_iface | default('eth2') }}
+    IPv4_Destination_Address {{ nat_ha_sync_ip_peer }}
+    Port 3780
+    Checksum On
+  }
+}

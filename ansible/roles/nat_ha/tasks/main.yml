@@ -1,4 +1,9 @@
 ---
+# roles/nat_ha/tasks/main.yml
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 0) Sanity checks
+# ────────────────────────────────────────────────────────────────────────────────
 - name: Assert required VRRP/NAT vars exist
   ansible.builtin.assert:
     that:
@@ -12,18 +17,22 @@
       - fip is defined
     fail_msg: "Missing required vars for {{ inventory_hostname }}. Check group_vars/host_vars."
 
-# roles/nat_ha/tasks/main.yml
-
+# ────────────────────────────────────────────────────────────────────────────────
+# 1) Base packages
+# ────────────────────────────────────────────────────────────────────────────────
 - name: Ensure base packages
   ansible.builtin.apt:
     name:
       - "keepalived=1:2.2.8-1build2"
       - nftables
       - conntrack
+      - conntrackd
       - jq
       - curl
       - ca-certificates
       - vim
+      - arping
+      - tar
     state: present
     update_cache: yes
     cache_valid_time: 3600
@@ -34,8 +43,10 @@
   delay: 10
   until: _apt_result is succeeded
 
-# Enable forwarding & relax rp_filter for asymmetric paths
-- name: Ensure kernel forwarding and rp_filter are set for NAT
+# ────────────────────────────────────────────────────────────────────────────────
+# 2) Kernel hardening (runtime + persistent)
+# ────────────────────────────────────────────────────────────────────────────────
+- name: Ensure kernel forwarding and rp_filter are set for NAT (runtime)
   ansible.posix.sysctl:
     name: "{{ item.name }}"
     value: "{{ item.value }}"
@@ -44,39 +55,21 @@
     reload: true
   loop:
     - { name: 'net.ipv4.ip_forward', value: '1' }
-    - { name: 'net.ipv4.conf.all.rp_filter', value: '0' }
-    - { name: 'net.ipv4.conf.eth0.rp_filter', value: '0' }
-    - { name: 'net.ipv4.conf.eth1.rp_filter', value: '0' }
+    - { name: 'net.ipv4.conf.all.rp_filter', value: '2' }
+    - { name: 'net.ipv4.conf.default.rp_filter', value: '2' }
 
-# Canonical public IP used for SNAT (prefer shared FIP)
-- name: Resolve public IP to use for SNAT (prefer shared IPv4)
-  ansible.builtin.set_fact:
-    nat_ha_public_ip: >-
-      {{ nat_ha_shared_ipv4
-         | default(shared_ipv4, true)
-         | default(nat_ha_fip, true)
-         | default(fip, true) }}
+- name: Drop sysctl hardening (persistent /etc/sysctl.d/99-nat-ha.conf)
+  ansible.builtin.template:
+    src: 99-nat-ha.conf.j2
+    dest: /etc/sysctl.d/99-nat-ha.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Apply sysctl
 
-- name: Validate that a public IP is provided
-  ansible.builtin.assert:
-    that:
-      - nat_ha_public_ip is defined
-      - (nat_ha_public_ip | string) | length > 0
-    fail_msg: >
-      Please set one of: nat_ha_shared_ipv4 (preferred), shared_ipv4,
-      nat_ha_fip, or fip in inventory/group_vars (Terraform writes shared_ipv4).
-
-# Make sure services are enabled (state will be handled via notify below)
-- name: Enable nftables/keepalived
-  ansible.builtin.systemd:
-    name: "{{ item }}"
-    enabled: true
-  loop:
-    - nftables
-    - keepalived
-  become: yes
-
-# ---------- lelastic (Linode ECMP/BGP helper) ----------
+# ────────────────────────────────────────────────────────────────────────────────
+# 3) lelastic (Linode ECMP/BGP helper)
+# ────────────────────────────────────────────────────────────────────────────────
 - name: Check if lelastic already installed
   ansible.builtin.stat:
     path: /usr/local/bin/lelastic
@@ -114,7 +107,9 @@
     - Reload systemd
     - Restart lelastic
 
-# ---------- nftables ----------
+# ────────────────────────────────────────────────────────────────────────────────
+# 4) nftables — include layout + auto-detect LAN CIDR
+# ────────────────────────────────────────────────────────────────────────────────
 - name: Ensure /etc/nftables.d exists
   ansible.builtin.file:
     path: /etc/nftables.d
@@ -136,9 +131,65 @@
       include "/etc/nftables.d/*.nft"
   notify: Restart nftables
 
+# Auto-detect LAN CIDR from interface
+- name: Determine LAN interface name for NAT-HA
+  ansible.builtin.set_fact:
+    _lan_if: "{{ nat_ha_lan_iface | default(vlan_if | default('eth1')) }}"
+
+- name: Detect LAN CIDR from interface (e.g., 192.168.1.0/24)
+  ansible.builtin.command: >
+    bash -lc "ip -o -f inet addr show dev {{ _lan_if }} | awk '{print $4; exit}'"
+  register: _lan_cidr_detect
+  changed_when: false
+  failed_when: _lan_cidr_detect.rc != 0 or (_lan_cidr_detect.stdout | trim) == ""
+
+- name: Set nat_ha_lan_cidr from detection
+  ansible.builtin.set_fact:
+    nat_ha_lan_cidr: "{{ _lan_cidr_detect.stdout | trim }}"
+
+- name: Assert detected nat_ha_lan_cidr looks valid
+  ansible.builtin.assert:
+    that:
+      - nat_ha_lan_cidr is match("^[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2}$")
+    fail_msg: "Could not auto-detect LAN CIDR on {{ _lan_if }}. Ensure the iface is up and has IPv4."
+
+# Resolve SNAT public IP (prefer provided vars; otherwise auto-detect on WAN iface)
+- name: Compute SNAT public IP from vars (preferred path)
+  ansible.builtin.set_fact:
+    nat_ha_public_ip: >-
+      {{ (nat_ha_shared_ipv4 | default('')) or
+         (shared_ipv4        | default('')) or
+         (nat_ha_fip         | default('')) or
+         (fip                | default('')) }}
+
+- name: Determine WAN interface name for public IP detection
+  ansible.builtin.set_fact:
+    _wan_if: "{{ nat_ha_wan_iface | default(pub_if | default('eth0')) }}"
+
+- name: Auto-detect public IPv4 on WAN iface if not provided
+  ansible.builtin.command: >
+    bash -lc "ip -o -4 addr show dev {{ _wan_if }} | awk '{print $4}' | cut -d/ -f1 | head -n1"
+  register: _wan_ipv4_detect
+  changed_when: false
+  when: (nat_ha_public_ip | default('')) == ''
+
+- name: Set nat_ha_public_ip from detection (if still empty)
+  ansible.builtin.set_fact:
+    nat_ha_public_ip: "{{ _wan_ipv4_detect.stdout | trim }}"
+  when: (nat_ha_public_ip | default('')) == ''
+
+- name: Validate that a public IP is available for SNAT
+  ansible.builtin.assert:
+    that:
+      - (nat_ha_public_ip | default('')) | length > 0
+    fail_msg: >
+      Could not determine SNAT public IPv4. Set one of:
+      nat_ha_shared_ipv4 (preferred), shared_ipv4, nat_ha_fip, or fip;
+      or ensure {{ _wan_if }} has an IPv4.
+
 - name: Install nftables NAT table (NAT Gateway)
   ansible.builtin.template:
-    src: nat.nft.j2
+    src: 20-nat-ha.nft.j2
     dest: /etc/nftables.d/nat-natgw.nft
     owner: root
     group: root
@@ -152,11 +203,81 @@
     state: absent
   notify: Restart nftables
 
+- name: Validate nftables ruleset syntax
+  ansible.builtin.command: nft -c -f /etc/nftables.conf
+  register: nft_check
+  changed_when: false
+
 - name: Force reload nftables ruleset from /etc/nftables.conf
   ansible.builtin.command: nft -f /etc/nftables.conf
   changed_when: false
 
-# ---------- keepalived ----------
+# ────────────────────────────────────────────────────────────────────────────────
+# 5) conntrackd (FTFW mode + role scripts)
+# ────────────────────────────────────────────────────────────────────────────────
+# Prefer provided iface; else fall back to LAN iface if the provided one is missing
+- name: Pick sync iface (prefer nat_ha_sync_iface, else {{ _lan_if }})
+  ansible.builtin.set_fact:
+    _sync_iface_candidate: "{{ nat_ha_sync_iface | default(_lan_if) }}"
+
+- name: Check if chosen sync iface exists
+  ansible.builtin.command: >
+    bash -lc "ip -o link show {{ _sync_iface_candidate }} >/dev/null 2>&1"
+  register: _sync_iface_check
+  failed_when: false
+  changed_when: false
+
+- name: Fall back to LAN iface when chosen sync iface missing
+  ansible.builtin.set_fact:
+    nat_ha_sync_iface: "{{ _lan_if }}"
+  when: _sync_iface_check.rc != 0
+
+# Sanity: ensure the self sync IP is actually configured on the sync iface
+- name: Ensure nat_ha_sync_ip_self is assigned to nat_ha_sync_iface
+  ansible.builtin.command: >
+    bash -lc "ip -o -4 addr show dev {{ nat_ha_sync_iface }} | awk '{print $4}' | cut -d/ -f1"
+  register: _sync_iface_ips
+  changed_when: false
+
+- name: Assert sync self IP is present on the iface
+  ansible.builtin.assert:
+    that:
+      - (_sync_iface_ips.stdout_lines | list) | select('equalto', nat_ha_sync_ip_self) | list | length > 0
+    fail_msg: >
+      {{ nat_ha_sync_ip_self }} is not configured on {{ nat_ha_sync_iface }}.
+      Either fix host_vars (nat_ha_sync_ip_self / nat_ha_sync_iface) or ensure the IP is added to that interface.
+
+- name: Assert sync IPs are defined for conntrackd
+  ansible.builtin.assert:
+    that:
+      - nat_ha_sync_ip_self is not none
+      - nat_ha_sync_ip_peer is not none
+      - nat_ha_sync_iface is not none
+    fail_msg: >
+      conntrackd sync IPs/iface are missing. Set per-host:
+      nat_ha_sync_ip_self, nat_ha_sync_ip_peer, nat_ha_sync_iface.
+
+- name: Install conntrackd.conf (FTFW mode)
+  ansible.builtin.template:
+    src: conntrackd.conf.j2
+    dest: /etc/conntrackd/conntrackd.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart conntrackd
+
+- name: Install conntrackd role scripts (primary/backup)
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/sbin/{{ item }}"
+    mode: "0755"
+  loop:
+    - conntrackd-master.sh
+    - conntrackd-backup.sh
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 6) keepalived (notify + conf)
+# ────────────────────────────────────────────────────────────────────────────────
 - name: Install keepalived notify script
   ansible.builtin.template:
     src: notify.sh.j2
@@ -165,20 +286,6 @@
   become: yes
   notify: Restart keepalived
 
-- name: Assert VRRP/NAT inputs are present
-  ansible.builtin.assert:
-    that:
-      - vrrp_id is defined
-      - vlan_vip is defined
-      - fip is defined
-      - pub_if is defined
-      - vlan_if is defined
-    fail_msg: >
-      Missing vars (vrrp_id={{ vrrp_id | default('unset') }},
-      vlan_vip={{ vlan_vip | default('unset') }},
-      fip={{ fip | default('unset') }}, pub_if={{ pub_if | default('unset') }},
-      vlan_if={{ vlan_if | default('unset') }}) for {{ inventory_hostname }}
-
 - name: Install keepalived.conf
   ansible.builtin.template:
     src: keepalived.conf.j2
@@ -186,10 +293,158 @@
     mode: "0644"
   notify: Restart keepalived
 
-# Keep lelastic running (role ensures the unit exists)
-- name: Start lelastic as secondary by default
+# ────────────────────────────────────────────────────────────────────────────────
+# 7) Observability — node_exporter + textfile metrics (systemd timer)
+# ────────────────────────────────────────────────────────────────────────────────
+- name: Set node_exporter facts
+  ansible.builtin.set_fact:
+    ne_ver: "1.8.2"
+    ne_pkg: "node_exporter-1.8.2.linux-amd64.tar.gz"
+    ne_url: "https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz"
+    ne_tmp: "/tmp/node_exporter-1.8.2.linux-amd64.tar.gz"
+    ne_dir: "/opt/node_exporter-1.8.2.linux-amd64"
+
+- name: Download node_exporter tarball (to remote /tmp)
+  ansible.builtin.get_url:
+    url: "{{ ne_url }}"
+    dest: "{{ ne_tmp }}"
+    mode: "0644"
+  register: _ne_dl
+  retries: 3
+  delay: 3
+  until: _ne_dl is succeeded
+
+- name: Extract node_exporter under /opt
+  become: yes
+  ansible.builtin.unarchive:
+    src: "{{ ne_tmp }}"
+    dest: /opt/
+    remote_src: true
+    creates: "{{ ne_dir }}/node_exporter"
+
+- name: Install node_exporter binary to /usr/local/bin (symlink)
+  become: yes
+  ansible.builtin.file:
+    src: "{{ ne_dir }}/node_exporter"
+    dest: /usr/local/bin/node_exporter
+    state: link
+    mode: "0755"
+
+- name: Ensure node_exporter textfile directory exists
+  become: yes
+  ansible.builtin.file:
+    path: /var/lib/node_exporter/textfile_collector
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create node_exporter systemd unit
+  become: yes
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/node_exporter.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Prometheus Node Exporter
+      After=network-online.target
+
+      [Service]
+      User=root
+      Group=root
+      ExecStart=/usr/local/bin/node_exporter \
+        --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
+      Restart=on-failure
+
+      [Install]
+      WantedBy=multi-user.target
+  notify:
+    - Reload systemd
+    - Restart node_exporter
+
+- name: Ensure /opt/nat_ha directory exists
+  ansible.builtin.file:
+    path: /opt/nat_ha
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install NAT HA metrics script
+  ansible.builtin.copy:
+    src: nat_ha_metrics.sh
+    dest: /opt/nat_ha/nat_ha_metrics.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install nat-ha-metrics.service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nat-ha-metrics.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=NAT-HA textfile metrics refresh
+
+      [Service]
+      Type=oneshot
+      ExecStart=/opt/nat_ha/nat_ha_metrics.sh /var/lib/node_exporter/textfile_collector/nat_ha.prom
+
+- name: Install nat-ha-metrics.timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/nat-ha-metrics.timer
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Run NAT-HA metrics refresh periodically
+
+      [Timer]
+      OnBootSec=15s
+      OnUnitActiveSec=30s
+      Unit=nat-ha-metrics.service
+
+      [Install]
+      WantedBy=timers.target
+  notify: Reload systemd
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 8) Finalize — run handlers, then enable/start core services
+# ────────────────────────────────────────────────────────────────────────────────
+- name: Flush handlers before starting services
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start nftables
+  ansible.builtin.systemd:
+    name: nftables
+    enabled: true
+    state: started
+
+- name: Enable and start conntrackd
+  ansible.builtin.systemd:
+    name: conntrackd
+    enabled: true
+    state: started
+
+- name: Enable and start keepalived
+  ansible.builtin.systemd:
+    name: keepalived
+    enabled: true
+    state: started
+
+- name: Enable and start lelastic
   ansible.builtin.systemd:
     name: lelastic
+    enabled: true
+    state: started
+
+- name: Enable node_exporter
+  ansible.builtin.systemd:
+    name: node_exporter
+    enabled: true
+    state: started
+
+- name: Enable & start nat-ha-metrics.timer
+  ansible.builtin.systemd:
+    name: nat-ha-metrics.timer
     state: started
     enabled: true
-  become: yes

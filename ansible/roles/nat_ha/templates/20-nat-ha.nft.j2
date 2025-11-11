@@ -1,0 +1,27 @@
+# /etc/nftables.d/nat-natgw.nft
+# Purpose: NAT & forwarding only (inbound ACLs handled by Linode Firewall)
+define WAN = {{ nat_ha_wan_iface | default('eth0') }}
+define LAN = {{ nat_ha_lan_iface | default('eth1') }}
+define SNAT_IP = {{ nat_ha_public_ip }}
+define LAN_CIDR = {{ nat_ha_lan_cidr }}
+
+table inet filter {
+  chain input {
+    type filter hook input priority 0;
+    policy accept;  # Allow all inbound (filtered by Linode Firewall)
+  }
+
+  chain forward {
+    type filter hook forward priority 0;
+    ct state established,related accept
+    iifname $LAN oifname $WAN accept
+    counter drop
+  }
+}
+
+table ip nat {
+  chain postrouting {
+    type nat hook postrouting priority 100;
+    oifname $WAN ip saddr $LAN_CIDR counter snat to $SNAT_IP
+  }
+}

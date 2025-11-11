@@ -1,0 +1,27 @@
+groups:
+- name: nat-ha
+  rules:
+  # Example: gw1 should normally be MASTER (nat_vrrp_role == 1)
+  - alert: VRRPPreferredNotMaster
+    expr: nat_vrrp_role{instance="gw1:9100"} == 0
+    for: 60s
+    labels: { severity: "critical" }
+    annotations:
+      summary: "Preferred node is not MASTER"
+      description: "gw1 is not MASTER for over a minute."
+
+  - alert: ConntrackUsageHigh
+    expr: (nat_conntrack_count / clamp_max(nat_conntrack_max, 1e9)) > 0.8
+    for: 5m
+    labels: { severity: "warning" }
+    annotations:
+      summary: "Conntrack usage above 80%"
+      description: "Current usage is > 80% for 5 minutes."
+
+  - alert: NATDropSuspicious
+    expr: increase(nat_drop_counters_suspected[5m]) > 50
+    for: 5m
+    labels: { severity: "warning" }
+    annotations:
+      summary: "High NAT drop events"
+      description: "Drop counters increased sharply in the last 5 minutes."

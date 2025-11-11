@@ -514,6 +514,10 @@ resource "local_file" "hostvars_per_node" {
 vlan_if: eth1
 ct_local_ip: "${local.local_ip_by_label[each.key]}"
 ct_peer_ip:  "${local.peer_ip_by_label[each.key]}"
+# Ansible role expected names (used in conntrackd.conf.j2)
+nat_ha_sync_iface: "${try(var.sync_iface, "eth2")}"
+nat_ha_sync_ip_self: "${local.local_ip_by_label[each.key]}"
+nat_ha_sync_ip_peer: "${local.peer_ip_by_label[each.key]}"
 EOT
   depends_on = [linode_instance.multi, null_resource.create_hostvars_dir]
 }

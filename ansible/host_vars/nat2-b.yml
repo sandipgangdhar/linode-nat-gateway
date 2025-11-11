@@ -2,3 +2,7 @@
 vlan_if: eth1
 ct_local_ip: "192.168.1.7"
 ct_peer_ip:  "192.168.1.6"
+# Ansible role expected names (used in conntrackd.conf.j2)
+nat_ha_sync_iface: "eth2"
+nat_ha_sync_ip_self: "192.168.1.7"
+nat_ha_sync_ip_peer: "192.168.1.6"

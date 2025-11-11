@@ -2,23 +2,13 @@
 # roles/nat_ha/handlers/main.yml
 
 # --- systemd daemon-reload ---
-- name: reload systemd daemon
+- name: Reload systemd
   ansible.builtin.command: systemctl daemon-reload
   listen:
     - Reload systemd
     - reload systemd
     - daemon-reload
     - Daemon-Reload
-
-# --- lelastic service restart ---
-- name: restart lelastic service
-  ansible.builtin.systemd:
-    name: lelastic
-    state: restarted
-    enabled: true
-  listen:
-    - Restart lelastic
-    - restart lelastic
 
 # --- nftables service restart ---
 - name: restart nftables service
@@ -39,3 +29,36 @@
   listen:
     - Restart keepalived
     - restart keepalived
+
+# --- lelastic service restart ---
+- name: restart lelastic service
+  ansible.builtin.systemd:
+    name: lelastic
+    state: restarted
+    enabled: true
+  listen:
+    - Restart lelastic
+    - restart lelastic
+
+# --- conntrackd restart ---
+- name: restart conntrackd
+  ansible.builtin.systemd:
+    name: conntrackd
+    state: restarted
+    enabled: true
+  listen:
+    - Restart conntrackd
+
+# --- apply sysctl ---
+- name: Apply sysctl
+  ansible.builtin.command: sysctl --system
+  listen: Apply sysctl
+
+- name: Restart node_exporter
+  ansible.builtin.systemd:
+    name: node_exporter
+    state: restarted
+    enabled: true
+  listen:
+    - Restart node_exporter
+    - restart node_exporter

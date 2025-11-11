@@ -1,10 +1,18 @@
+vrrp_script chk_upstream {
+  script "/usr/local/sbin/ha-check.sh"
+  interval 2
+  fall 2
+  rise 2
+}
+
 vrrp_instance {{ vrrp_instance }} {
   state {{ hostvars[inventory_hostname].state | default('BACKUP') }}
   interface {{ vrrp_interface }}
   virtual_router_id {{ vrrp_id }}
   priority {{ hostvars[inventory_hostname].priority | default(100) }}
   advert_int 1
-  nopreempt
+  preempt_delay 5
+  nopreempt false
 
   authentication {
     auth_type PASS
@@ -15,9 +23,12 @@ vrrp_instance {{ vrrp_instance }} {
     {{ vlan_vip }} dev {{ vlan_if }}
   }
 
+  track_script {
+    chk_upstream
+  }
+
   # Notify hooks control FIP bind/unbind and lelastic mode
   notify_master "/usr/local/sbin/keepalived-notify.sh master"
   notify_backup "/usr/local/sbin/keepalived-notify.sh backup"
   notify_fault  "/usr/local/sbin/keepalived-notify.sh fault"
-  notify_stop   "/usr/local/sbin/keepalived-notify.sh stop"
 }

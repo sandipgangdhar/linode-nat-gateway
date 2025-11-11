@@ -1,36 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage patterns this script supports:
-# - keepalived.conf with:
-#     notify_master "/usr/local/sbin/keepalived-notify.sh master"
-#     notify_backup "/usr/local/sbin/keepalived-notify.sh backup"
-#     notify_fault  "/usr/local/sbin/keepalived-notify.sh fault"
-#     notify_stop   "/usr/local/sbin/keepalived-notify.sh stop"
-#
-# - OR single "notify" (keepalived passes: TYPE NAME STATE)
-#     notify "/usr/local/sbin/keepalived-notify.sh"
-#
-# This script normalizes both patterns.
+# Supports either explicit notify_* hooks or single global 'notify'.
 
-PUB_IF="eth0"
+PUB_IF="{{ pub_if | default('eth0') }}"
 FIP="{{ fip }}/32"
+ROLE_FILE="/run/nat-ha-role"
 
 log() { echo "[keepalived-notify] $(date -Is) $*"; }
 
 # Normalize action/state from keepalived
 ACTION="${1:-}"
 if [[ -z "$ACTION" && $# -ge 3 ]]; then
-  # Called via global 'notify' with args: TYPE NAME STATE
-  ACTION="${3,,}"   # STATE in lowercase
+  ACTION="${3,,}"   # STATE from 'notify' is the 3rd arg
 else
-  ACTION="${ACTION,,}"  # lowercase master/backup/fault/stop
+  ACTION="${ACTION,,}"
 fi
+
+write_role_metric() {
+  echo "${1}" > "${ROLE_FILE}"
+  chmod 0644 "${ROLE_FILE}" || true
+}
 
 ensure_fip() {
   if ! ip -4 addr show dev "$PUB_IF" | grep -q " ${FIP}\b"; then
     ip addr add "$FIP" dev "$PUB_IF" label "${PUB_IF}:fip"
-    # Send a few GARPs so upstream ARP tables flip quickly
     if command -v arping >/dev/null 2>&1; then
       arping -U -I "$PUB_IF" "${FIP%/*}" -c 3 || true
     fi
@@ -44,11 +38,13 @@ remove_fip() {
 case "$ACTION" in
   master)
     log "MASTER: adding ${FIP} on ${PUB_IF}"
+    write_role_metric "master"
     ensure_fip
     systemctl try-restart lelastic || true
     ;;
   backup|fault|stop)
     log "BACKUP/FAULT/STOP: removing ${FIP} from ${PUB_IF}"
+    write_role_metric "backup"
     remove_fip
     systemctl try-restart lelastic || true
     ;;
