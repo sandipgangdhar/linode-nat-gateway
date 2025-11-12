@@ -98,6 +98,12 @@
     state: absent
   when: not lelastic_bin.stat.exists
 
+- name: Install lelastic wrapper
+  ansible.builtin.template:
+    src: lelastic-wrapper.sh.j2
+    dest: /usr/local/bin/lelastic-wrapper.sh
+    mode: "0755"
+
 - name: Install lelastic systemd unit (default = secondary)
   ansible.builtin.template:
     src: lelastic.service.j2
@@ -105,7 +111,13 @@
     mode: "0644"
   notify:
     - Reload systemd
-    - Restart lelastic
+
+# --- Enable & start lelastic ---
+- name: Enable and start lelastic
+  ansible.builtin.systemd:
+    name: lelastic
+    enabled: true
+    state: started
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 4) nftables — include layout + auto-detect LAN CIDR
@@ -146,6 +158,10 @@
 - name: Set nat_ha_lan_cidr from detection
   ansible.builtin.set_fact:
     nat_ha_lan_cidr: "{{ _lan_cidr_detect.stdout | trim }}"
+
+- name: Normalize LAN network base
+  ansible.builtin.set_fact:
+    nat_ha_lan_cidr: "{{ (_lan_cidr_detect.stdout | trim).split('/')[0].rsplit('.',1)[0] ~ '.0/' ~ (_lan_cidr_detect.stdout | trim).split('/')[1] }}"
 
 - name: Assert detected nat_ha_lan_cidr looks valid
   ansible.builtin.assert:
@@ -279,19 +295,37 @@
 # 6) keepalived (notify + conf)
 # ────────────────────────────────────────────────────────────────────────────────
 - name: Install keepalived notify script
+  become: yes
   ansible.builtin.template:
     src: notify.sh.j2
     dest: /usr/local/sbin/keepalived-notify.sh
     mode: '0755'
-  become: yes
   notify: Restart keepalived
 
+- name: Install HA health-check script
+  become: yes
+  ansible.builtin.copy:
+    src: ha-check.sh        # file lives at roles/nat_ha/files/ha-check.sh
+    dest: /usr/local/sbin/ha-check.sh
+    mode: '0755'
+    owner: root
+    group: root
+
 - name: Install keepalived.conf
+  become: yes
   ansible.builtin.template:
     src: keepalived.conf.j2
     dest: /etc/keepalived/keepalived.conf
     mode: "0644"
   notify: Restart keepalived
+
+# Enable & start keepalived (unit is provided by the package)
+- name: Enable and start keepalived
+  become: yes
+  ansible.builtin.systemd:
+    name: keepalived
+    enabled: true
+    state: started
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 7) Observability — node_exporter + textfile metrics (systemd timer)

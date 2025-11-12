@@ -7,8 +7,7 @@ After=network-online.target
 Type=simple
 # DO NOT add/remove the FIP here; keepalived-notify manages that.
 # Start lelastic (primary on nat-a, secondary on nat-b)
-ExecStart=/usr/local/bin/lelastic -dcid {{ dcid | default("25") }} {% if hostvars[inventory_hostname].get("state","BACKUP") == "MASTER" %}-primary{% else %}-secondary{% endif %} -allifs
-
+ExecStart=/usr/local/bin/lelastic-wrapper.sh
 Restart=always
 RestartSec=2
 

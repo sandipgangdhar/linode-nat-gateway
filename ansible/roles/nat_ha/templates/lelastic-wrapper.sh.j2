@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DCID="{{ lelastic_dcid }}"
+ROLE_FILE="{{ nat_ha_role_file }}"
+
+MODE="-secondary"
+if [[ -f "$ROLE_FILE" ]] && grep -q "master" "$ROLE_FILE"; then
+  MODE="-primary"
+fi
+
+exec /usr/local/bin/lelastic -dcid "$DCID" $MODE -allifs
