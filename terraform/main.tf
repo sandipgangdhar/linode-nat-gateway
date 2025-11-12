@@ -259,6 +259,7 @@ resource "null_resource" "ip_share_nat_a" {
   count = local.is_multi ? 0 : (var.use_ip_share && length(var.shared_ipv4) > 0 ? 1 : 0)
 
   provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-lc"]
     command = <<-EOC
       set -euo pipefail
       echo "Sharing ${var.shared_ipv4} to nat-a (linode_id=${linode_instance.nat_a[0].id})"
@@ -278,6 +279,7 @@ resource "null_resource" "ip_share_nat_b" {
   count = local.is_multi ? 0 : (var.use_ip_share && length(var.shared_ipv4) > 0 ? 1 : 0)
 
   provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-lc"]
     command = <<-EOC
       set -euo pipefail
       echo "Sharing ${var.shared_ipv4} to nat-b (linode_id=${linode_instance.nat_b[0].id})"
@@ -305,6 +307,7 @@ resource "null_resource" "ip_share_multi" {
   }
 
   provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-lc"]
     command = <<-EOC
       set -euo pipefail
       IP="${each.value.shared_ipv4}"
@@ -332,7 +335,10 @@ resource "null_resource" "ip_share_multi" {
 # -----------------------------------------------------------------------------
 resource "null_resource" "create_hostvars_dir" {
   count = 1
-  provisioner "local-exec" { command = "mkdir -p ../ansible/host_vars" }
+  provisioner "local-exec" { 
+    interpreter = ["/bin/bash", "-lc"]
+    command = "mkdir -p ../ansible/host_vars" 
+  }
 }
 
 # Inventory (single)
@@ -423,7 +429,10 @@ EOT
 # -----------------------------------------------------------------------------
 resource "null_resource" "create_groupvars_dir" {
   count = local.is_multi ? 1 : 0
-  provisioner "local-exec" { command = "mkdir -p ../ansible/group_vars" }
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-lc"]
+    command = "mkdir -p ../ansible/group_vars"
+  }
 }
 
 resource "local_file" "ansible_inventory_multi" {

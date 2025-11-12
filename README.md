@@ -66,13 +66,24 @@ git clone https://github.com/sandipgangdhar/linode-nat-gateway.git
 cd linode-nat-gateway
 git checkout feature/nat-gateway
 
-# 2️⃣ Deploy infrastructure
-cd terraform && terraform apply -auto-approve
+# 2️⃣ Create and edit terraform.tfvars
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars
+# Open terraform.tfvars and set your preferred region, VLAN label, etc.
 
-# 3️⃣ Configure HA NAT
-cd ../ansible && ansible-playbook -i inventory.ini site.yml
+# 3️⃣ Export your Linode API token
+# Terraform expects TF_VAR_ prefix to automatically populate the input variable
+export TF_VAR_linode_token=<YOUR_LINODE_API_TOKEN>
 
-# 4️⃣ Validate setup
+# 4️⃣ Deploy the infrastructure using Terraform
+cd terraform
+terraform init
+terraform apply -auto-approve
+
+# 5️⃣ Configure High Availability NAT
+cd ../ansible
+ansible-playbook -i inventory.ini site.yml
+
+# 6️⃣ Validate deployment and failover
 ansible-playbook -i inventory.ini site.yml -t validate
 ```
 
