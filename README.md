@@ -87,8 +87,6 @@ ansible-playbook -i inventory.ini site.yml
 ansible-playbook -i inventory.ini site.yml -t validate
 ```
 
-> 💡 Future option: add a `Makefile` with targets like `make apply`, `make validate`, `make destroy`.
-
 ---
 
 ## 📊 Current Milestone Progress
