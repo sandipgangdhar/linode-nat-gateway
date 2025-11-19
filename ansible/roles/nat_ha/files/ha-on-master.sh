@@ -14,4 +14,7 @@ arping -c 4 -A -I "${LAN}" "${VIP}" || true
 mkdir -p /var/lib/node_exporter/textfile_collector || true
 echo "nat_vrrp_preferred_master 1 $(date +%s)" > /var/lib/node_exporter/textfile_collector/vrrp_role.prom || true
 
+# In ha-on-master.sh
+systemctl restart dnsmasq || true
+
 logger -t nat-ha "Promoted to MASTER (VIP ${VIP} on ${LAN}, conntrackd Primary)"

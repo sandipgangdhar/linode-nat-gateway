@@ -1,0 +1,27 @@
+---
+- name: Ensure dnsmasq is installed
+  ansible.builtin.apt:
+    name: dnsmasq
+    state: present
+    update_cache: yes
+
+- name: Compute DNS listen IP and upstream servers
+  ansible.builtin.set_fact:
+    nat_dns_listen_ip: "{{ nat_dns_listen_ip }}"
+    nat_dns_upstream_servers: "{{ nat_dns_upstream_servers }}"
+  when: nat_dns_upstream_servers | length > 0
+
+- name: Ensure dnsmasq.d include is present in main config
+  ansible.builtin.lineinfile:
+    path: /etc/dnsmasq.conf
+    regexp: '^conf-dir=/etc/dnsmasq.d'
+    line: 'conf-dir=/etc/dnsmasq.d,.conf'
+    state: present
+
+- name: Deploy NAT DNS forwarder config
+  ansible.builtin.template:
+    src: nat-dnsmasq.conf.j2
+    dest: /etc/dnsmasq.d/nat-dnsmasq.conf
+    owner: root
+    group: root
+    mode: '0644'

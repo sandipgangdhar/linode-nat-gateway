@@ -1,0 +1,6 @@
+---
+# Default: listen on the VLAN VIP (strip /mask from vlan_vip)
+nat_dns_listen_ip: "{{ vlan_vip.split('/')[0] }}"
+
+# Upstream DNS servers – by default, reuse what the host already uses
+nat_dns_upstream_servers: "{{ ansible_dns.nameservers | default([]) }}"

@@ -6,8 +6,10 @@
   vars:
     # Use either `fip` (if set) or fallback to `shared_ipv4` from group_vars
     fip_ip: "{{ (fip | default(shared_ipv4, true)) | default('') }}"
-    # Toggle conntrack replication role
+
+    # Toggle features
     enable_conntrack: true
+    enable_nat_dns: true
 
   pre_tasks:
     - name: Wait for cloud-init to finish (if present)
@@ -73,6 +75,7 @@
           loop:
             - /var/lib/dpkg/lock-frontend
             - /var/lib/dpkg/lock
+            - /var/lib/dpkg/lock
             - /var/cache/apt/archives/lock
 
         - name: Ensure dpkg is configured
@@ -98,18 +101,52 @@
         fail_msg: "Missing one of: vlan_vip, pub_if, vlan_if, dcid, vrrp_id, vrrp_instance, vrrp_interface, vrrp_auth_pass"
       tags: [always]
 
-    - name: Compute vlan_cidr from vlan_vip (e.g., 192.168.1.1/24 -> 192.168.1.0/24)
+    - name: Compute vlan_cidr from vlan_vip (e.g., 10.0.0.1/24 -> 10.0.0.0/24)
       ansible.builtin.set_fact:
         vlan_cidr: "{{ vlan_vip.split('/')[0].rsplit('.', 1)[0] + '.0/' + vlan_vip.split('/')[1] }}"
       tags: [always]
 
+    # ------------------------------------------------------------------
+    # DNS upstream auto-discovery (dns_upstream_servers from Ansible)
+    # ------------------------------------------------------------------
+    # If dns_upstream_servers is NOT already set in group_vars/inventory,
+    # discover from systemd-resolved (resolvectl status) on the NAT node.
+    - name: Discover upstream DNS servers via systemd-resolved (if not provided)
+      ansible.builtin.shell: |
+        resolvectl status \
+          | awk '/DNS Servers: /{for (i=3;i<=NF;i++) print $i}' \
+          | head -n 3
+      register: dns_detect
+      changed_when: false
+      when: dns_upstream_servers is not defined
+
+    - name: Set dns_upstream_servers fact from discovered values
+      ansible.builtin.set_fact:
+        dns_upstream_servers: "{{ dns_detect.stdout_lines | select('match', '^[0-9]') | list }}"
+      when: dns_upstream_servers is not defined
+
+    - name: Ensure we have at least one upstream DNS server
+      ansible.builtin.assert:
+        that:
+          - dns_upstream_servers | length > 0
+        fail_msg: |
+          No upstream DNS servers found. Either:
+            - Ensure systemd-resolved has DNS Servers on the NAT node, or
+            - Set dns_upstream_servers in group_vars/nat.yml (list of IPs).
+      tags: [always]
+
   roles:
+    - role: nat_dns
+      when: enable_nat_dns | bool
+      tags: [nat_dns]
+
     - role: nat_ha
       tags: [nat_ha]
 
     - role: nat_conntrack
       when: enable_conntrack | bool
       tags: [nat_conntrack]
+
 
   post_tasks:
     - name: Re-enable/start auto-update timers
