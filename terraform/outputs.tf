@@ -1,51 +1,45 @@
-# Back-compat (single-pair). These become null in multi-pair mode.
-output "shared_ipv4" {
-  description = "Single-pair: shared IPv4 (null in multi-pair)."
-  value       = local.is_multi ? null : var.shared_ipv4
+###############################################################################
+# NAT Gateway Outputs
+###############################################################################
+
+# List of all NAT pair names
+output "nat_pairs" {
+  description = "List of NAT pair names"
+  value       = local.pair_names
 }
 
-output "vlan_vip" {
-  description = "Single-pair: VLAN VIP (null in multi-pair)."
-  value       = local.is_multi ? null : var.vlan_vip
-}
-
-output "nat_a_vlan_ip" {
-  description = "Single-pair: NAT-A VLAN IP (null in multi-pair)."
-  value       = local.is_multi ? null : var.nat_a_vlan_ip
-}
-
-output "nat_b_vlan_ip" {
-  description = "Single-pair: NAT-B VLAN IP (null in multi-pair)."
-  value       = local.is_multi ? null : var.nat_b_vlan_ip
-}
-
-# Multi-pair compact summary
-output "pair_summary" {
-  value = {
-    for pair_name in local.pair_names :
-    pair_name => {
-      fip      = try(local.nat_pairs_by_name[pair_name].shared_ipv4, null)
-      vlan_vip = try(local.nat_pairs_by_name[pair_name].vlan_vip, null)
-
-      a = {
-        id = try(linode_instance.multi["${pair_name}-a"].id, null)
-        pub = try(
-          linode_instance.multi["${pair_name}-a"].ip_address,
-          one(linode_instance.multi["${pair_name}-a"].ipv4),
-          null
-        )
-        vlan = try(split("/", linode_instance.multi["${pair_name}-a"].config[0].interface[1].ipam_address)[0], null)
-      }
-      b = {
-        id = try(linode_instance.multi["${pair_name}-b"].id, null)
-        pub = try(
-          linode_instance.multi["${pair_name}-b"].ip_address,
-          one(linode_instance.multi["${pair_name}-b"].ipv4),
-          null
-        )
-        vlan = try(split("/", linode_instance.multi["${pair_name}-b"].config[0].interface[1].ipam_address)[0], null)
-      }
-    }
+# Map of pair → VLAN VIP
+output "vlan_vip_by_pair" {
+  description = "VLAN VIP for each pair"
+  value       = {
+    for p in local.pair_names :
+    p => local.nat_pairs_by_name[p].vlan_vip
   }
-  depends_on = [linode_instance.multi]
+}
+
+# Map of pair → shared IPv4 (if any)
+output "shared_ipv4_by_pair" {
+  description = "Shared IPv4 for each pair (empty string if none)"
+  value       = {
+    for p in local.pair_names :
+    p => try(local.nat_pairs_by_name[p].shared_ipv4, "")
+  }
+}
+
+# Map of node_label → public IPv4
+output "public_ip_by_node" {
+  description = "Public IPv4 address for each NAT node"
+  value       = {
+    for label, inst in linode_instance.multi :
+    label => tolist(inst.ipv4)[0]
+  }
+}
+
+# Map of node_label → VLAN IPv4
+output "vlan_ip_by_node" {
+  description = "VLAN IPv4 address (eth1) for each NAT node"
+  value       = {
+    for label, m in local.members_by_label :
+    label => trimsuffix(m.vlan_ip, "/24")
+  }
 }
