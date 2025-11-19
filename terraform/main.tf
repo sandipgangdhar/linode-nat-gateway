@@ -55,37 +55,41 @@ locals {
         shared_ipv4 = try(p.shared_ipv4, "")
         vrrp_id     = p.vrrp_id
         label       = m.label
-        vlan_ip     = m.vlan_ip
+        vlan_ip     = m.vlan_ip        # e.g. "192.168.0.101/16"
         state       = m.state
         priority    = m.priority
       }
     ]
   ])
 
+  # Convenience: map label -> full member object
   members_by_label = {
     for m in local.members_flat : m.label => m
   }
 
-  # Peer IP for each node (trim /24)
-  peer_ip_by_label = merge([
+  # Helper: label -> bare IP (strip CIDR, works for any /XX)
+  local_ip_by_label = {
+    for m in local.members_flat :
+    m.label => split("/", m.vlan_ip)[0]
+  }
+
+  # Helper: label -> peer label (the "other" node in the same pair)
+  peer_label_by_label = merge([
     for pname, p in local.nat_pairs_by_name : {
       for m in p.members :
-      m.label => trimsuffix(
-        element(
-          [for x in p.members : x.vlan_ip if x.label != m.label],
-          0
-        ),
-        "/24"
+      m.label => element(
+        [for x in p.members : x.label if x.label != m.label],
+        0
       )
     }
   ]...)
 
-  # Local IP per node (trim /24)
-  local_ip_by_label = {
-    for m in local.members_flat : m.label => trimsuffix(m.vlan_ip, "/24")
+  # Final: label -> peer IP (also without CIDR)
+  peer_ip_by_label = {
+    for label, peer_label in local.peer_label_by_label :
+    label => local.local_ip_by_label[peer_label]
   }
 }
-
 # -----------------------------------------------------------------------------
 # PLACEMENT GROUPS (multi-pair – per pair)
 # -----------------------------------------------------------------------------
@@ -318,7 +322,7 @@ resource "local_file" "hostvars_per_node" {
     ct_local_ip: "${local.local_ip_by_label[each.key]}"
     ct_peer_ip:  "${local.peer_ip_by_label[each.key]}"
     # Ansible role expected names (used in conntrackd.conf.j2)
-    nat_ha_sync_iface: "${try(var.sync_iface, "eth2")}"
+    nat_ha_sync_iface: "${try(var.sync_iface, "eth1")}"
     nat_ha_sync_ip_self: "${local.local_ip_by_label[each.key]}"
     nat_ha_sync_ip_peer: "${local.peer_ip_by_label[each.key]}"
   EOT

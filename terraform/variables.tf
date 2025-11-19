@@ -151,5 +151,5 @@ variable "vrrp_id" {
 variable "sync_iface" {
   type        = string
   description = "Interface used for conntrackd state-sync (usually the dedicated sync link)"
-  default     = "eth2"
+  default     = "eth1"
 }

@@ -255,10 +255,18 @@
   register: _sync_iface_ips
   changed_when: false
 
+# Normalize self sync IP (strip CIDR if present, e.g. 192.168.0.101/16 -> 192.168.0.101)
+- name: Normalize sync self IP for comparison
+  ansible.builtin.set_fact:
+    _sync_self_ip_nopfx: "{{ (nat_ha_sync_ip_self | string).split('/')[0] }}"
+
 - name: Assert sync self IP is present on the iface
   ansible.builtin.assert:
     that:
-      - (_sync_iface_ips.stdout_lines | list) | select('equalto', nat_ha_sync_ip_self) | list | length > 0
+      - (_sync_iface_ips.stdout_lines | map('trim') | list)
+        | select('equalto', _sync_self_ip_nopfx)
+        | list
+        | length > 0
     fail_msg: >
       {{ nat_ha_sync_ip_self }} is not configured on {{ nat_ha_sync_iface }}.
       Either fix host_vars (nat_ha_sync_ip_self / nat_ha_sync_iface) or ensure the IP is added to that interface.

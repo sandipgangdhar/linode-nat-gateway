@@ -13,7 +13,7 @@ nat_ha_mgmt_cidrs:
   - "172.16.0.0/12"
   - "192.168.0.0/16"
 # Sync link defaults (must be overridden per host)
-nat_ha_sync_iface: eth2
+nat_ha_sync_iface: eth1
 nat_ha_sync_ip_self: null
 nat_ha_sync_ip_peer: null
 # lelastic DCID and runtime role marker file

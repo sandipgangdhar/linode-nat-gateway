@@ -14,7 +14,7 @@ Sync {
   }
   UDP {
     IPv4_address {{ nat_ha_sync_ip_self }}
-    Interface {{ nat_ha_sync_iface | default('eth2') }}
+    Interface {{ nat_ha_sync_iface | default('eth1') }}
     IPv4_Destination_Address {{ nat_ha_sync_ip_peer }}
     Port 3780
     Checksum On
