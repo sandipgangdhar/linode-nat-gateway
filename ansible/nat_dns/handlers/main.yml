@@ -1,7 +1,0 @@
----
-# roles/nat_dns/handlers/main.yml
-
-- name: Restart dnsmasq
-  ansible.builtin.service:
-    name: dnsmasq
-    state: restarted
