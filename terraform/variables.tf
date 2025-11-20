@@ -22,6 +22,7 @@ variable "nat_pairs" {
       vlan_ip  = string
       state    = string
       priority = number
+      type     = optional(string)
     }))
   }))
 
@@ -152,4 +153,10 @@ variable "sync_iface" {
   type        = string
   description = "Interface used for conntrackd state-sync (usually the dedicated sync link)"
   default     = "eth1"
+}
+
+variable "nat_default_type" {
+  description = "Default Linode plan type for all NAT gateways (e.g. g6-standard-2, g6-standard-4, g7-standard-2)"
+  type        = string
+  default     = "g6-standard-2"
 }

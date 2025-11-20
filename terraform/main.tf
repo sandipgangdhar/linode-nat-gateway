@@ -55,9 +55,13 @@ locals {
         shared_ipv4 = try(p.shared_ipv4, "")
         vrrp_id     = p.vrrp_id
         label       = m.label
-        vlan_ip     = m.vlan_ip        # e.g. "192.168.0.101/16"
+        vlan_ip     = m.vlan_ip # e.g. "192.168.0.101/16"
         state       = m.state
         priority    = m.priority
+        type = coalesce(
+          try(m.type, null),   # use per-member type if provided
+          var.nat_default_type # else fall back to global default
+        )
       }
     ]
   ])
@@ -137,7 +141,7 @@ resource "linode_instance" "multi" {
   label                              = each.value.label
   region                             = var.region
   image                              = var.image
-  type                               = var.type
+  type                               = each.value.type
   root_pass                          = var.root_pass != "" ? var.root_pass : null
   authorized_keys                    = var.inject_ssh_via_cloud_init ? null : var.ssh_authorized_keys
   placement_group_externally_managed = true
@@ -188,7 +192,7 @@ resource "null_resource" "ip_share_multi" {
 
   provisioner "local-exec" {
     interpreter = ["/bin/bash", "-lc"]
-    command = <<-EOC
+    command     = <<-EOC
       set -euo pipefail
       IP="${each.value.shared_ipv4}"
       NODE_ID=${linode_instance.multi[each.key].id}

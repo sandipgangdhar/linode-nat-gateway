@@ -3,6 +3,6 @@ vlan_if: eth1
 ct_local_ip: "10.0.0.4"
 ct_peer_ip:  "10.0.0.3"
 # Ansible role expected names (used in conntrackd.conf.j2)
-nat_ha_sync_iface: "eth2"
+nat_ha_sync_iface: "eth1"
 nat_ha_sync_ip_self: "10.0.0.4"
 nat_ha_sync_ip_peer: "10.0.0.3"
