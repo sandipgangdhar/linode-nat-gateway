@@ -27,6 +27,8 @@ host_vars/*.yml
 /ansible/group_vars/nat.yml
 /ansible/group_vars/nat_*.yml
 /ansible/host_vars/nat*.yml
+ansible/group_vars/nat*.yml
+ansible/host_vars/nat*.yml
 
 # Python (if any helper scripts)
 __pycache__/
