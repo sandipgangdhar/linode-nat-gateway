@@ -1,0 +1,32 @@
+# grafana-datasource.yml (ansible/templates)
+#
+# Grafana provisioning file that registers Prometheus as Grafana's default
+# datasource automatically at boot -- no manual "Add data source" click
+# required. Copied as-is by terraform/modules/observability and mounted
+# into the Grafana container at
+# /etc/grafana/provisioning/datasources/datasource.yml.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - url points at the Prometheus container by its Docker Compose service
+#   name ("prometheus"), not localhost or an external IP -- both
+#   containers share the same Compose network.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

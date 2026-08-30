@@ -1,0 +1,42 @@
+# natctl-binary.service (controller)
+#
+# systemd unit for the natctl fleet controller daemon, agent_distribution
+# == "binary" variant -- runs the pre-compiled natctl executable directly
+# instead of `python3 -m natctl.main`. See natctl.service (the "source"
+# variant) and controller/natctl/cloud_init.py's/
+# ansible/cloud-init/nat-node.yaml.tftpl's/
+# ansible/cloud-init/observability.yaml.tftpl's matching v21 comments.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Uploaded by terraform/modules/artifacts alongside natctl.service; the
+#   caller passes whichever one's URL matches the pool's agent_distribution
+#   (natctl_service_url in PoolConfig/Terraform module variables).
+# - Reads /etc/natctl/config.yaml and /etc/natctl/env, identically to the
+#   source variant -- only ExecStart (and the now-unneeded
+#   PYTHONPATH/WorkingDirectory) differ.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+[Unit]
+Description=LNG fleet controller (natctl, compiled binary)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/natctl/env
+ExecStart=/opt/natctl/natctl --config /etc/natctl/config.yaml
+Restart=on-failure
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

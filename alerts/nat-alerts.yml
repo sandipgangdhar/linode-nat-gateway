@@ -1,0 +1,160 @@
+# nat-alerts.yml (alerts)
+#
+# Every Prometheus alert rule this project ships out of the box, covering
+# NAT capacity (conntrack/port exhaustion), node health, fleet-floor
+# violations, drop rate, buddy-sync coverage, and aggregate throughput.
+# Mounted into the Prometheus container by terraform/modules/observability
+# and referenced from ansible/templates/prometheus.yml.tftpl's rule_files.
+# See docs/OBSERVABILITY.md for the full summary table (condition +
+# severity for each alert).
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Fires into Alertmanager (ansible/templates/alertmanager.yml), which
+#   ships with a no-op receiver by default -- wire up a real receiver
+#   (Slack/PagerDuty/email/webhook) before relying on this in production.
+# - Every alert's `description` annotation points at the relevant
+#   docs/RUNBOOK.md procedure or docs/ARCHITECTURE.md section for
+#   first-response guidance.
+#
+# -----------------------------------------------------
+# Best Practices:
+#
+# - Treat `severity: info` alerts (e.g. NATConntrackBuddyUnpaired) as
+#   just that -- they are coverage/mitigation signals, not health
+#   signals, and should not page anyone by themselves.
+# - NATBGPSessionNotEstablished/NATIPFailoverSelfNotAnnounced page on the
+#   fleet's failover *capability*, not on an active failover -- a node
+#   with either condition can still be forwarding traffic fine today, but
+#   cannot safely receive its buddy's shared IP (or reliably keep its own)
+#   if a failure happens next. Treat as urgent regardless.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+groups:
+  - name: lng-nat-gateway
+    rules:
+      - alert: NATConntrackTableNearFull
+        expr: nat_conntrack_utilization_ratio > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Conntrack table on {{ $labels.node }} ({{ $labels.pool }}) is {{ $value | humanizePercentage }} full"
+          description: "natctl should scale the pool out before this becomes critical; verify auto_provision_enabled and max_nodes for this pool. See docs/RUNBOOK.md."
+
+      - alert: NATConntrackTableCritical
+        expr: nat_conntrack_utilization_ratio > 0.95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Conntrack table on {{ $labels.node }} ({{ $labels.pool }}) is critically full ({{ $value | humanizePercentage }})"
+          description: "New connections on this node will start failing imminently. Check natctl logs for why it hasn't scaled the pool out."
+
+      - alert: NATPortExhaustionImminent
+        expr: (nat_port_available_total / (nat_port_available_total + nat_port_allocated_total)) < 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Public IP {{ $labels.public_ip }} ({{ $labels.protocol }}) on {{ $labels.node }} is running low on ephemeral ports"
+          description: "Consider raising egress_ips_per_node for this pool (docs/RUNBOOK.md 'Add an extra egress IP to a running node') or scaling the pool out."
+
+      - alert: NATNodeDown
+        expr: up{job="nat_exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "nat_exporter on {{ $labels.instance }} is not reachable"
+          description: "client-agent instances routing through this node should already be excluding it (they probe /healthz directly, independent of Prometheus) — this alert is about the node itself needing attention, not about client impact."
+
+      - alert: NATNodeUnhealthy
+        expr: nat_node_healthy == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }} ({{ $labels.pool }}) answers but its synthetic health check is failing"
+          description: "Check nat_node_health_check{node=\"{{ $labels.node }}\"} to see which specific check failed (ip_forward, nftables_loaded, egress_reachable)."
+
+      - alert: NATPoolBelowFloor
+        expr: count by (pool) (nat_node_healthy == 1) < on(pool) group_left() natctl_pool_min_nodes
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pool {{ $labels.pool }} has fewer healthy nodes than its configured min_nodes"
+          description: "natctl should be provisioning elastic capacity to restore the floor automatically — check natctl logs if this persists. Cross-check natctl_pool_last_scale_event_info and natctl_pool_autoscale_breach_streak (docs/OBSERVABILITY.md) for why it hasn't."
+
+      - alert: NATHighDropRate
+        expr: rate(nat_nftables_drops_total[5m]) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated nftables drop rate on {{ $labels.node }} ({{ $labels.chain }}/{{ $labels.reason }})"
+          description: "Could indicate a misconfigured allow-list, an attempted policy violation, or a routing issue upstream of this node."
+
+      - alert: NATConntrackBuddyUnpaired
+        expr: nat_conntrack_buddy_paired == 0
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.node }} ({{ $labels.pool }}) has no conntrack buddy assigned"
+          description: "Informational, not urgent: this node is still fully healthy and fully in client-agent's ECMP rotation (buddy-sync is a session-loss MITIGATION, not a health signal — see docs/ARCHITECTURE.md §3.5). Expected transiently on any membership change, or permanently if the pool has an odd number of healthy nodes, or if conntrack_buddy_sync_enabled is false for this pool. Investigate only if it persists on a pool that expects buddy-sync to be active (docs/RUNBOOK.md 'A node has no conntrack buddy')."
+
+      - alert: NATThroughputNearPoolLimit
+        expr: sum by (pool) (rate(nat_interface_bytes_total{direction="tx"}[5m])) * 8 > 0.85 * (count by (pool) (nat_node_healthy == 1) * 8000000000)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Aggregate egress throughput for pool {{ $labels.pool }} is approaching the pool's total plan bandwidth"
+          description: "Feeds natctl's own scale-out decision; if it hasn't already added a node, investigate why (check cooldown_seconds and max_nodes)."
+
+      - alert: NATBGPSessionNotEstablished
+        expr: nat_bgp_peer_state == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "BGP session {{ $labels.node }} -> {{ $labels.peer }} ({{ $labels.pool }}) is not Established"
+          description: "This node cannot reliably announce or fail over its shared IP over this session. Check `vtysh -c 'show bgp summary'` on the node and route-reflector reachability. See docs/RUNBOOK.md's BGP/IP-failover section."
+
+      - alert: NATIPFailoverSelfNotAnnounced
+        expr: (nat_ip_failover_self_announced == 0) and on(node) (nat_node_healthy == 1)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }} ({{ $labels.pool }}) is healthy but is not announcing its own primary shared IP"
+          description: "FRR route-map for this node's primary IP is missing or misapplied — this node's shared IP will not be reachable via BGP. Check the node's FRR config against ansible/templates/frr-bgpd.conf.tftpl (or equivalent) and re-run the natctl reconcile that renders it."
+
+      - alert: NATConntrackInsertFailuresHigh
+        expr: rate(nat_conntrack_stat_total{stat="insert_failed"}[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kernel conntrack insert failures on {{ $labels.node }} ({{ $labels.pool }}) are elevated"
+          description: "A harder resource-exhaustion signal than nat_conntrack_utilization_ratio alone (kernel actually rejected new connections) — parity with AWS NAT Gateway's ErrorPortAllocation. Check nf_conntrack_max headroom and whether the pool should scale out."
+
+      - alert: NATAutoscaleCeilingReached
+        expr: natctl_pool_autoscale_breach_streak > 0 and on(pool) (natctl_pool_floor_nodes + natctl_pool_elastic_nodes) >= on(pool) natctl_pool_max_nodes
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pool {{ $labels.pool }} is breaching a scale-out watermark ({{ $labels.metric }}) but is already at max_nodes"
+          description: "natctl cannot add more capacity — this alert exists because natctl won't fire NATConntrackTableCritical-style urgency on its own once it's out of room. Raise max_nodes for this pool or investigate the sustained demand (docs/RUNBOOK.md 'Pool stuck at max_nodes under sustained load')."
+

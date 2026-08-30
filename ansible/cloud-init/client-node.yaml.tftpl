@@ -1,0 +1,123 @@
+#cloud-config
+# client-node.yaml.tftpl (ansible/cloud-init) -- CUSTOMER-REPO BINARY VARIANT
+#
+# This is the customer-repo-overlay equivalent of the dev repo's
+# ansible/cloud-init/client-node.yaml.tftpl. The dev repo embeds
+# client-agent's Python SOURCE directly (gzip+base64) because
+# vlan_only/vpc_vlan instances have no internet path of their own until
+# client-agent itself brings up the default route -- a real constraint
+# found live (2026-08-02), not something this variant can skip. This
+# variant keeps that same constraint in mind but fetches a pre-compiled
+# client-agent BINARY instead of embedding Python source -- see
+# controller/natctl/api.py's GET /agents/client-agent (served by natctl's
+# own roster API, which a client instance CAN already reach over its
+# VLAN/VPC connected route -- that route comes up automatically the
+# moment the interface gets its static address, independent of
+# client-agent -- see docs/RUNBOOK.md's "Interface modes and routing
+# behavior" in the dev repo for the underlying mechanism this depends on).
+#
+# A compiled binary is multi-MB -- far too large to embed the way source
+# was (Linode's Instance Metadata API caps cloud-init user_data at 16384
+# bytes decoded) -- so it MUST be fetched, not embedded, which is exactly
+# what this variant does instead.
+#
+# IMPORTANT: this fetch step deliberately uses python3's stdlib
+# (urllib.request), NOT curl -- python3 is guaranteed present on every
+# Ubuntu cloud image (cloud-init itself requires it to run at all), but
+# curl is NOT guaranteed present without an `apt-get install`, and
+# apt-get during cloud-init's package-install phase needs internet access
+# that a vlan_only/vpc_vlan instance doesn't have yet -- the exact same
+# chicken-and-egg problem that made source-embedding necessary in the
+# first place. Using python3 (already there) sidesteps that entirely,
+# with no package install needed at all.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Rendered per-instance by this overlay's terraform/modules/client-fleet
+#   main.tf, replacing the dev repo's combined_agent_bundle_raw/
+#   combined_agent_bundle_gz_b64/agent_bundle_extractor_py mechanism
+#   entirely -- see that file's own header comment.
+# - Never edit this file's rendered output directly on a running
+#   instance -- change the template and re-provision instead.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+hostname: ${node_name}
+ssh_pwauth: false
+
+write_files:
+  # Always written, regardless of enable_nat_egress -- every client
+  # instance needs its own static VLAN IP. Filename prefix "00-" is
+  # deliberate, not cosmetic -- see the dev repo's identical comment for
+  # why (Akamai's own network stage writes a competing "05-eth<N>.network"
+  # first; systemd-networkd applies only the lexically-first match).
+  - path: /etc/systemd/network/00-lng-vlan.network
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Match]
+      Name=${vlan_iface}
+
+      [Network]
+      Address=${static_vlan_ip}/${vlan_prefix}
+
+%{ if enable_nat_egress ~}
+  # enable_nat_egress (interface_mode "vlan_only"/"vpc_vlan"): this
+  # instance has no internet path of its own, so client-agent takes over
+  # the default route with ECMP across every healthy node in the pool.
+  # Content shape matches client-agent/lng-client-agent.env.example.
+  - path: /etc/lng-client-agent/env
+    owner: root:root
+    permissions: '0640'
+    content: |
+      NATCTL_ROSTER_URL=${natctl_roster_base_url}/fleet/${pool_name}
+      LNG_PRIVATE_IFACE=${vlan_iface}
+      LNG_ROSTER_POLL_INTERVAL=30
+      LNG_HEALTH_PROBE_INTERVAL=3
+      LNG_HEALTH_PROBE_TIMEOUT=1.5
+      LNG_DRY_RUN=false
+%{ endif ~}
+
+runcmd:
+  - systemctl restart systemd-networkd
+
+%{ if enable_nat_egress ~}
+  - mkdir -p /opt/lng-client-agent
+  # See this file's header comment for why python3's stdlib urllib is
+  # used here instead of curl. Retries for ~a minute -- covers the real
+  # ordering risk that natctl might not be listening yet the instant this
+  # instance boots (unlikely, but a fresh environment's very first client
+  # instance could plausibly race a still-booting observability host).
+  - |
+    python3 - <<'LNG_FETCH_CLIENT_AGENT'
+    import os
+    import time
+    import urllib.request
+
+    url = "${natctl_roster_base_url}/agents/client-agent"
+    dest = "/opt/lng-client-agent/client-agent"
+    last_exc = None
+    for attempt in range(20):
+        try:
+            urllib.request.urlretrieve(url, dest)
+            last_exc = None
+            break
+        except Exception as exc:  # noqa: BLE001 -- best-effort retry loop, not library code
+            last_exc = exc
+            time.sleep(3)
+    if last_exc is not None:
+        raise SystemExit(f"failed to fetch client-agent binary from {url}: {last_exc}")
+    os.chmod(dest, 0o750)
+    LNG_FETCH_CLIENT_AGENT
+  - systemctl daemon-reload
+  - systemctl enable --now lng-client-agent
+%{ endif ~}
+
+  - logger -t lng-cloud-init "LNG client node ${node_name} (pool=${pool_name}) bootstrap complete"

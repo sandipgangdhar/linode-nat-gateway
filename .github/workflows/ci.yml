@@ -1,0 +1,50 @@
+# ci.yml (.github/workflows) -- CUSTOMER-FACING DISTRIBUTION
+#
+# Minimal CI for this repository: Terraform style/syntax checks only.
+# There's no Python source here to lint (natctl/nat-exporter/buddy-sync/
+# client-agent all ship as pre-compiled binaries) -- see the dev repo's
+# own ci.yml (linode-nat-gateway-build, private) for the full pipeline
+# that produces this repository's content.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+      - name: terraform fmt check
+        run: terraform fmt -check -recursive terraform/
+      - name: terraform validate (per module)
+        run: |
+          set -e
+          for dir in terraform/modules/*/ terraform/environments/*/; do
+            echo "== $dir =="
+            (cd "$dir" && terraform init -backend=false -input=false && terraform validate)
+          done
+
+  yaml-json-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate dashboard JSON
+        run: python3 -m json.tool dashboards/nat-overview.json > /dev/null
+      - name: Validate alert rules YAML
+        run: python3 -c "import yaml; yaml.safe_load(open('alerts/nat-alerts.yml'))"
+      - name: Validate natctl example config
+        run: python3 -c "import yaml; yaml.safe_load(open('controller/natctl.example.yaml'))"

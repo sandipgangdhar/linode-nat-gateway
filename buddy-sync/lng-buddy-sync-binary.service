@@ -1,0 +1,40 @@
+# lng-buddy-sync-binary.service (buddy-sync)
+#
+# systemd unit for buddy_sync.py, agent_distribution == "binary" variant --
+# runs the pre-compiled buddy-sync executable directly instead of
+# `python3 /opt/lng-buddy-sync/buddy_sync.py`. See lng-buddy-sync.service
+# (the "source" variant) and controller/natctl/cloud_init.py's/
+# ansible/cloud-init/nat-node.yaml.tftpl's matching v21 comments.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Uploaded by terraform/modules/artifacts alongside lng-buddy-sync.service;
+#   the caller passes whichever one's URL matches the pool's
+#   agent_distribution (lng_buddy_sync_service_url).
+# - Reads /etc/lng-buddy-sync/env, identically to the source variant --
+#   only ExecStart differs.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+[Unit]
+Description=LNG conntrack buddy-pair sync agent (compiled binary)
+After=network-online.target nat-exporter.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/lng-buddy-sync/env
+ExecStart=/opt/lng-buddy-sync/buddy-sync
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

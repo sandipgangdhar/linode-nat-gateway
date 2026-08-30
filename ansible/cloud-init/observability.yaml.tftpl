@@ -1,0 +1,211 @@
+#cloud-config
+# observability.yaml.tftpl (ansible/cloud-init)
+#
+# Cloud-init user-data for the single control-plane instance: brings up
+# Prometheus, Alertmanager, and Grafana via Docker Compose, and runs
+# natctl (the fleet controller) natively on the host rather than in a
+# container. Rendered by terraform/modules/observability/main.tf, which
+# embeds most config file content (Prometheus, Alertmanager, Grafana
+# datasource/dashboards-provisioning YAML, alert rules) directly into this
+# template's arguments -- but NOT the natctl Python package (v9) or the
+# pre-built Grafana dashboard JSON (v15), both of which are fetched at
+# boot from Object Storage instead (see the runcmd section and
+# terraform/modules/artifacts/main.tf's header comment for why: Linode's
+# Instance Metadata API caps cloud-init user_data at 16384 bytes decoded,
+# and a fetched-at-boot URL doesn't change when its target content does --
+# unlike embedded content, which forces this instance to be replaced on
+# every edit).
+#
+# -----------------------------------------------------
+# Why natctl runs natively, not in Docker:
+#
+# natctl writes /opt/lng-observability/file_sd/lng-nodes.json after every
+# reconcile pass -- a Prometheus file_sd target file that the Prometheus
+# container mounts read-only. Running natctl directly on the host keeps
+# that hand-off a plain local file write instead of needing a shared
+# volume/socket between two containers, and keeps natctl's own dependency
+# footprint (see /opt/natctl/requirements.txt) isolated from the
+# Prometheus/Grafana/Alertmanager images.
+#
+# -----------------------------------------------------
+# What this file writes and starts:
+#
+# 1) /opt/lng-observability/docker-compose.yml + supporting configs -
+#    Prometheus, Alertmanager, Grafana (datasource + dashboard-provisioning
+#    YAML embedded; the nat-overview dashboard JSON itself fetched at boot,
+#    see runcmd), started with `docker compose up -d`.
+# 2) /opt/natctl/natctl/*  - The full natctl Python package source,
+#    fetched at boot (one curl per file) from Object Storage
+#    (terraform/modules/artifacts), which uploads controller/natctl/ once
+#    per environment apply -- NOT embedded in this document, since
+#    Linode's Instance Metadata API caps cloud-init user_data at 16384
+#    bytes decoded and the package alone is ~230KB.
+# 3) /etc/natctl/config.yaml - The fully-composed natctl.yaml for this
+#    environment (every pool's settings) -- see
+#    terraform/environments/example/main.tf's natctl_config_yaml local.
+# 4) /etc/natctl/env       - The Linode API token natctl authenticates
+#    with, kept in its own 0600 file rather than embedded in config.yaml.
+# 5) natctl.service         - A systemd unit so natctl restarts
+#    automatically and survives reboots, same as every other LNG service.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Rendered and applied automatically by
+#   terraform/modules/observability -- not intended to be hand-run.
+# - After boot, Grafana is reachable on :3000, Prometheus on :9090 (see
+#   that module's outputs.tf).
+#
+# -----------------------------------------------------
+# Best Practices:
+#
+# - Treat /etc/natctl/env as a secret -- it holds a Linode API token with
+#   linodes/vpc/networking read_write scopes.
+# - If you change natctl's Python source, re-apply Terraform (or
+#   re-provision this instance) rather than hand-editing files under
+#   /opt/natctl/natctl/ on a live host -- those edits will not survive the
+#   next re-apply.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+# roadmap/M2-security.md test case 2.6 -- see ansible/cloud-init/
+# nat-node.yaml.tftpl's matching comment for why this is needed (confirmed
+# live against a real node: sshd's password auth defaults were still
+# enabled despite authorized_keys/root_pass both being set).
+ssh_pwauth: false
+package_update: true
+
+packages:
+%{ if run_monitoring_stack ~}
+  - docker.io
+  - docker-compose-v2
+%{ endif ~}
+%{ if run_natctl && agent_distribution != "binary" ~}
+  - python3
+  - python3-pip
+%{ endif ~}
+  - curl
+
+write_files:
+%{ if run_monitoring_stack ~}
+  - path: /opt/lng-observability/docker-compose.yml
+    permissions: '0644'
+    content: |
+      ${indent(6,docker_compose_yml)}
+
+  - path: /opt/lng-observability/prometheus.yml
+    permissions: '0644'
+    content: |
+      ${indent(6,prometheus_yml)}
+
+  - path: /opt/lng-observability/alertmanager.yml
+    permissions: '0644'
+    content: |
+      ${indent(6,alertmanager_yml)}
+
+  - path: /opt/lng-observability/grafana/datasource.yml
+    permissions: '0644'
+    content: |
+      ${indent(6,grafana_datasource_yml)}
+
+  - path: /opt/lng-observability/grafana/dashboards.yml
+    permissions: '0644'
+    content: |
+      ${indent(6,grafana_dashboards_yml)}
+
+  - path: /opt/lng-observability/alerts/nat-alerts.yml
+    permissions: '0644'
+    content: |
+      ${indent(6,nat_alerts_yml)}
+%{ endif ~}
+
+%{ if run_natctl ~}
+  # v9: the natctl package itself (controller/natctl/*.py) is fetched at
+  # boot from Object Storage (terraform/modules/artifacts), one curl per
+  # file, not embedded here as content: -- see that module's main.tf
+  # header comment (Linode's 16384-byte decoded cloud-init limit; this
+  # instance's dashboards/alerts JSON already leaves little headroom on
+  # its own, even before the ~230KB natctl package is considered).
+  # v10: requirements.txt and natctl.service (both static, non-secret) are
+  # now ALSO fetched the same way -- see runcmd below.
+  - path: /etc/natctl/config.yaml
+    owner: root:root
+    permissions: '0600'
+    content: |
+      ${indent(6,natctl_config_yaml)}
+
+  - path: /etc/natctl/env
+    owner: root:root
+    permissions: '0600'
+    # BUG FIX (found live, 2026-08-29, roadmap/M4-autoscaling.md): this
+    # file used to carry only LINODE_TOKEN -- but FleetController's
+    # object_storage_access_key/secret_key (needed for EVERY pool's
+    # elastic-node artifact uploads, e.g. fleet.py's _provision() ->
+    # object_storage.py's upload_public_object(), unconditionally
+    # whenever run_natctl is true, independent of leader_election/
+    # natctl_on_node_enabled) resolve from
+    # NATCTL_OBJECT_STORAGE_ACCESS_KEY/SECRET_KEY in this exact file
+    # (main.py's build_controllers() -> LeaderElectionConfig.
+    # resolved_access_key()/resolved_secret_key()'s env-var fallback) --
+    # never written here, so every elastic-node provision attempt failed
+    # with a real S3 PutObject 400 (empty/invalid credentials). Mirrors
+    # ansible/cloud-init/nat-node.yaml.tftpl's identical write, which only
+    # ever ran in the OTHER placement mode (natctl_on_node_enabled=true) --
+    # this default single-dedicated-host mode never had it at all.
+    content: |
+      LINODE_TOKEN=${linode_token}
+%{ if object_storage_access_key != "" ~}
+      NATCTL_OBJECT_STORAGE_ACCESS_KEY=${object_storage_access_key}
+      NATCTL_OBJECT_STORAGE_SECRET_KEY=${object_storage_secret_key}
+%{ endif ~}
+%{ endif ~}
+
+runcmd:
+%{ if run_monitoring_stack ~}
+  - systemctl enable --now docker
+  - mkdir -p /opt/lng-observability/file_sd
+  # v15: the dashboard JSON is fetched from Object Storage instead of
+  # embedded in write_files above (terraform/modules/artifacts, see this
+  # file's header comment) -- done before `docker compose up -d` so
+  # Grafana's file-provisioner (30s poll, ansible/templates/
+  # grafana-dashboards.yml) sees it from its very first pass instead of
+  # a brief empty-folder window.
+  - mkdir -p /opt/lng-observability/dashboards
+  - curl -fsSL "${nat_overview_json_url}" -o /opt/lng-observability/dashboards/nat-overview.json
+  - cd /opt/lng-observability && docker compose up -d
+%{ endif ~}
+%{ if run_natctl ~}
+  # v9: fetch the natctl package from Object Storage before installing
+  # its dependencies / starting it -- see the write_files comment above.
+  # v10: requirements.txt and natctl.service are fetched the same way --
+  # daemon-reload is required since systemd hasn't seen the unit file
+  # until this curl step runs (unlike the v9-and-earlier write_files path).
+%{ if agent_distribution == "binary" ~}
+  - mkdir -p /opt/natctl
+  - curl -fsSL "${natctl_bin_url}" -o /opt/natctl/natctl
+  - chown root:root /opt/natctl/natctl
+  - chmod 0750 /opt/natctl/natctl
+%{ else ~}
+  - mkdir -p /opt/natctl/natctl
+  - curl -fsSL "${natctl_requirements_txt_url}" -o /opt/natctl/requirements.txt
+%{ for rel_path, url in natctl_file_urls ~}
+  - curl -fsSL "${url}" -o /opt/natctl/natctl/${rel_path}
+%{ endfor ~}
+  - chmod -R 0644 /opt/natctl/natctl
+%{ endif ~}
+  - curl -fsSL "${natctl_service_url}" -o /etc/systemd/system/natctl.service
+  - chown root:root /etc/systemd/system/natctl.service
+  - chmod 0644 /etc/systemd/system/natctl.service
+%{ if agent_distribution != "binary" ~}
+  - pip3 install -r /opt/natctl/requirements.txt
+%{ endif ~}
+  - systemctl daemon-reload
+  - systemctl enable --now natctl
+%{ endif ~}
+  - logger -t lng-cloud-init "LNG observability host bootstrap complete (run_natctl=${run_natctl}, run_monitoring_stack=${run_monitoring_stack})"

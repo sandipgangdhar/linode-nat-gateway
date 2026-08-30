@@ -1,0 +1,42 @@
+# nat-exporter-binary.service (exporter/nat_exporter)
+#
+# systemd unit for exporter.py, agent_distribution == "binary" variant --
+# runs the pre-compiled nat-exporter executable directly instead of
+# `python3 /opt/nat-exporter/exporter.py`. See nat-exporter.service (the
+# "source" variant) and controller/natctl/cloud_init.py's/
+# ansible/cloud-init/nat-node.yaml.tftpl's matching v21 comments.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Uploaded by terraform/modules/artifacts alongside nat-exporter.service;
+#   the caller passes whichever one's URL matches the pool's
+#   agent_distribution (nat_exporter_service_url).
+# - Reads /etc/nat-exporter/env, identically to the source variant --
+#   only ExecStart differs.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+[Unit]
+Description=LNG Prometheus exporter for NAT node metrics (compiled binary)
+After=network-online.target nftables.service keepalived.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/nat-exporter/env
+ExecStart=/opt/nat-exporter/nat-exporter
+Restart=on-failure
+RestartSec=2
+User=root
+NoNewPrivileges=false
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target

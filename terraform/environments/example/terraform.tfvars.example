@@ -1,0 +1,354 @@
+# terraform.tfvars.example (terraform/environments/example)
+#
+# Sample values for every required/commonly-changed variable in this
+# example environment. Copy this file to terraform.tfvars (which is
+# gitignored) and fill in real values before running terraform apply.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# Create a VPC + subnet yourself first (see "Bring your own VPC" below).
+# cp terraform.tfvars.example terraform.tfvars
+# # edit terraform.tfvars: real linode_token, ssh key, region, vpc_id,
+# # public_subnet_id, password
+# terraform init && terraform apply
+#
+# -----------------------------------------------------
+# Best Practices:
+#
+# - Never commit the real terraform.tfvars (only this .example file is
+#   meant to be checked in) -- it contains secrets once filled in.
+# - Use a strong, unique root_pass and grafana_admin_password; both are
+#   marked sensitive in variables.tf so Terraform will not print them in
+#   plan/apply output.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+# Copy to terraform.tfvars and fill in.
+
+linode_token = "REPLACE_ME"
+region        = "us-east"
+
+# --------------------------------------------------------------------------
+# Bring your own VPC -- REQUIRED. This automation no longer creates the
+# VPC or its subnet(s) itself (v11 -- see terraform/modules/vpc/main.tf's
+# header comment and docs/RUNBOOK.md "Bring your own VPC" for exactly how
+# to create these first, e.g. via linode-cli):
+#
+#   linode-cli vpcs create --label lng-example --region us-east
+#   linode-cli vpcs subnets-create <vpc_id> --label public-nat --ipv4 10.0.0.0/24
+#
+# public_subnet_id's CIDR needs enough headroom for every pool's
+# private_ip_offset range -- 10.0.0.0/24 comfortably fits this example's
+# shared (starts at .20) and dedicated-acme (starts at .50) pools.
+# --------------------------------------------------------------------------
+vpc_id           = 0 # REPLACE_ME with your VPC's numeric id
+public_subnet_id = 0 # REPLACE_ME with your public subnet's numeric id
+
+# Optional: only if some OTHER VPC-resident workload (e.g. an LKE
+# Enterprise cluster's own private subnet) needs to reach natctl's roster
+# API (port 8099) on the observability/control-plane host. This is a
+# Cloud-Firewall concern, not a routing one -- Linode VPC already routes
+# between subnets in the same VPC by default, but
+# terraform/modules/vpc/main.tf's control_plane firewall is default-deny
+# (inbound_policy = "DROP"), so a subnet not listed here still gets its
+# inbound connections to 8099 dropped even though the VPC would otherwise
+# happily route the packets. Listing a subnet's id below adds its real
+# CIDR to that one firewall rule's allowlist (see
+# data.linode_vpc_subnet.private + the natctl-api inbound block in that
+# file) -- nothing else. It does NOT affect the NAT client fleet (that
+# runs over VLAN, not VPC -- see docs/ARCHITECTURE.md §3.0) and does NOT
+# add the subnet to the nat_node firewall. Leave as {} (the default) if
+# nothing outside the NAT/observability nodes themselves needs to call
+# that API.
+# private_subnet_ids = {
+#   "private-app-1"    = 0 # REPLACE_ME
+#   "private-app-2"    = 0 # REPLACE_ME
+#   "private-app-acme" = 0 # REPLACE_ME -- only if enable_dedicated_pool_example is true
+# }
+
+authorized_keys = [
+  "ssh-ed25519 AAAA... you@example.com",
+]
+
+root_pass = "REPLACE_ME_WITH_A_STRONG_PASSWORD"
+
+# --------------------------------------------------------------------------
+# REQUIRED (roadmap/M2-security.md) -- no default, deliberately. Every
+# firewall this environment creates (nat_node, control_plane, client) scopes
+# SSH to exactly these CIDRs, and control_plane also scopes Grafana/
+# Prometheus/Alertmanager (3000/9090/9093) to them. This used to default to
+# 0.0.0.0/0 (open to the entire internet) with only a code comment telling
+# an operator to fix it -- now you must set it explicitly. Use your own
+# admin/office/VPN egress CIDR(s), e.g. a single IP as a /32.
+# --------------------------------------------------------------------------
+admin_cidrs = ["REPLACE_ME/32"] # e.g. ["203.0.113.4/32"]
+
+# Terraform-managed floor for the shared pool. Start minimal (1) and raise
+# it once real load justifies it; natctl also scales elastic capacity above
+# this floor automatically, up to shared_pool_max_nodes — see
+# docs/ARCHITECTURE.md §4.
+shared_pool_floor_nodes = 1
+shared_pool_max_nodes   = 12
+
+# Set to false if you don't need a dedicated-capacity example pool.
+enable_dedicated_pool_example = true
+
+nat_instance_type = "g6-dedicated-4"
+
+grafana_admin_password = "REPLACE_ME"
+
+# --------------------------------------------------------------------------
+# VLAN (private client fleet) -- see docs/ARCHITECTURE.md §3.0/§3.1. THIS,
+# not vlan_elastic_headroom_margin below, is where you actually control
+# the reserved static-IP window: vlan_reserved_ceiling_shared/
+# vlan_usable_ceiling_shared (and the _dedicated_acme variants) are
+# computed FROM vlan_cidr_shared/vlan_cidr_dedicated_acme (main.tf's
+# cidrhost()-based locals -- see docs/RUNBOOK.md), so changing the VLAN
+# CIDR here directly changes where that computed window starts and ends.
+# Every node in a pool joins the matching vlan_label as a member of this
+# same L2 segment -- this is NOT a VPC subnet and has no separate
+# Terraform resource (a VLAN is just a label + whatever CIDR every
+# attached instance's ipam_address agrees to use). Defaults below
+# reproduce this environment's original values exactly, so leaving these
+# commented out/unset changes nothing; override only if you need a
+# different address space (e.g. it collides with something else on your
+# account, or you need more headroom for a much larger
+# shared_pool_max_nodes).
+#
+# vlan_cidr_shared and vlan_cidr_dedicated_acme are always allowed to
+# overlap or nest -- separate VLAN labels are fully isolated L2 domains on
+# Linode regardless of numeric CIDR overlap.
+#
+# vlan_label_shared and vlan_label_dedicated_acme are ALSO allowed to be
+# the SAME value now (v13, "same-VLAN mode") -- e.g. if you already run one
+# VLAN per account for both NAT gateway and VPN traffic and standing up a
+# second VLAN just for this example's dedicated pool isn't practical. When
+# they match, main.tf automatically reserves vlan_cidr_dedicated_acme's
+# WHOLE block (its nodes AND its own reserved window) out of the shared
+# pool's own computed reserved window, so the two pools' reserved windows
+# never overlap on that shared L2 segment -- see docs/RUNBOOK.md's
+# "Same-VLAN mode" section for the full mechanics and its one real
+# limitation (vlan_cidr_dedicated_acme must be nested inside
+# vlan_cidr_shared AND positioned after the shared pool's own floor+elastic
+# node IPs -- main.tf's "same_vlan_dedicated_acme_reservation_valid" check
+# block enforces both at plan time; put it near the END of
+# vlan_cidr_shared's range to avoid wasting address space beyond it).
+#
+# Example, same-VLAN mode:
+#   vlan_label_shared         = "lng-vlan-account"
+#   vlan_cidr_shared          = "10.128.0.0/12"
+#   vlan_label_dedicated_acme = "lng-vlan-account"   # SAME as vlan_label_shared
+#   vlan_cidr_dedicated_acme  = "10.143.255.0/24"    # nested near the top of the /12
+# --------------------------------------------------------------------------
+# vlan_label_shared         = "lng-vlan-shared"
+# vlan_cidr_shared          = "192.168.100.0/22"
+# vlan_label_dedicated_acme = "lng-vlan-acme"   # only relevant if enable_dedicated_pool_example is true
+# vlan_cidr_dedicated_acme  = "192.168.105.0/24" # only relevant if enable_dedicated_pool_example is true
+
+# --------------------------------------------------------------------------
+# Reserved static-IP headroom -- see docs/RUNBOOK.md. The assignable
+# window itself is not a variable -- main.tf computes
+# vlan_reserved_ceiling_shared/vlan_usable_ceiling_shared (+
+# dedicated_acme variants) directly from vlan_cidr_shared/
+# vlan_cidr_dedicated_acme ABOVE and each pool's own
+# vlan_ip_offset/elastic_ip_offset_start/max_nodes, so it always sits
+# inside the right VLAN CIDR and stays clear of every node's static
+# vlan_ip -- see docs/RUNBOOK.md for the exact formula. To change the
+# window's size or location, change vlan_cidr_shared/
+# vlan_cidr_dedicated_acme above; the only knob left here is the safety
+# margin below. Default (30) is deliberately conservative -- it's the
+# SAME number applied to both pools, and the dedicated-acme example
+# pool's vlan_cidr_dedicated_acme is only a /24 with little headroom left
+# after its own floor+elastic addresses (see variables.tf's
+# vlan_elastic_headroom_margin description). Raise this only if every
+# pool you actually enable uses a roomier CIDR (e.g. a /22 like
+# vlan_cidr_shared) -- if it's too large for the smallest enabled pool's
+# CIDR, Terraform's cidrhost() call fails outright at plan time rather than
+# silently producing a colliding range.
+# --------------------------------------------------------------------------
+# vlan_elastic_headroom_margin = 30
+
+# --------------------------------------------------------------------------
+# Reserved IPs -- see docs/ARCHITECTURE.md. Opt-in (default false). When
+# true, every node's primary public IP (floor AND natctl-provisioned
+# elastic nodes) is a Linode Reserved IP that survives an instance
+# replacement -- turn this on if any downstream service IP-whitelists this
+# fleet's egress addresses. Linode's Reserved IP feature is account-gated
+# ("IP reservation is not currently available to all users") -- confirm
+# it's enabled for your account before setting this true, or
+# linode_networking_ip will fail outright on apply.
+# --------------------------------------------------------------------------
+# reserved_ip_enabled = true
+
+# --------------------------------------------------------------------------
+# Object Storage -- REQUIRED (not opt-in), regardless of natctl_on_node_enabled
+# below. terraform/modules/artifacts uploads exporter.py/buddy_sync.py/the
+# natctl package here ONCE per apply, and every NAT node fetches them at
+# boot instead of embedding their content directly in cloud-init --
+# Linode's Instance Metadata API hard-caps user_data at 16384 bytes
+# (decoded), and this project's own source files alone already exceed
+# that with no other features enabled. See docs/ARCHITECTURE.md's
+# "Fetched-at-boot artifacts" section and
+# terraform/modules/artifacts/main.tf's header comment for the full
+# numbers. The SAME bucket/keys also back the leader-election lease when
+# natctl_on_node_enabled is true (see below) -- one bucket, dual purpose.
+# Create the bucket yourself first (Cloud Manager, or `linode-cli
+# object-storage bucket-create`) -- this project does not create it via
+# Terraform.
+# --------------------------------------------------------------------------
+natctl_object_storage_endpoint   = "https://us-east-1.linodeobjects.com"
+natctl_object_storage_bucket     = "lng-artifacts"
+natctl_object_storage_access_key = "REPLACE_ME"
+natctl_object_storage_secret_key = "REPLACE_ME"
+
+# v6: natctl-on-node (opt-in) -- removes the requirement for a dedicated
+# control-plane host by running natctl itself, leader-elected with STONITH
+# fencing, on every NAT node instead. Leave commented out / false to keep
+# the original single-dedicated-host layout (module.observability runs
+# natctl). See docs/RUNBOOK.md's natctl-on-node section before enabling
+# this in production -- fencing briefly interrupts a node's own NAT
+# traffic, and this is defense-in-depth, not mathematically perfect
+# mutual exclusion. Only this toggle is opt-in -- the Object Storage block
+# above it is required either way (see its own comment).
+#
+# natctl_on_node_enabled = true
+
+# v6: already have Prometheus/Grafana (or a remote-write-compatible
+# backend)? Set this to false to skip provisioning this project's own copy
+# entirely -- see docs/OBSERVABILITY.md "Bring your own monitoring". You
+# can also keep run_monitoring_stack = true (the default) and just add
+# customer_prometheus_remote_write_url to have the local Prometheus this
+# environment provisions forward samples into your existing backend too.
+#
+# run_monitoring_stack                      = false
+# customer_prometheus_remote_write_url      = "https://prometheus-blocks-prod-us-central1.grafana.net/api/prom/push"
+# customer_prometheus_remote_write_username = "REPLACE_ME"
+# customer_prometheus_remote_write_password = "REPLACE_ME"
+
+# --------------------------------------------------------------------------
+# v14/v15: client instances (terraform/modules/client-fleet) -- optional,
+# empty {} (the default) creates nothing. One map entry per GROUP of
+# client instances sharing the same pool + interface layout + egress-method
+# settings -- see variables.tf's client_groups description for every
+# field, and terraform/modules/client-fleet/variables.tf's own
+# interface_mode description for the full four-mode menu.
+#
+# All 4 interface_mode values, at a glance (see docs/RUNBOOK.md's "Interface
+# modes and routing behavior, in detail" table for the full routing story):
+#   - "vlan_only"        : VLAN interface only, no public IP, no VPC. Needs
+#                           client-agent for its default route (egress via
+#                           the pool's NAT nodes).
+#   - "public_vlan"       : public interface + VLAN. Has its own default
+#                           route already -- no client-agent needed.
+#   - "vpc_vlan"          : VPC interface (no NAT) + VLAN. VPC alone can't
+#                           reach the internet, so this also needs
+#                           client-agent for its default route.
+#   - "public_vpc_vlan"   : VPC interface with 1:1 NAT (nat_1_1 = "any") +
+#                           VLAN -- public reachability without a separate
+#                           public interface. No client-agent needed.
+# Every mode other than "public_vlan" requires client-agent to actually
+# be installed (see above), and every group -- regardless of mode --
+# requires a static_vlan_slot, since Linode VLANs carry no
+# address-assignment mechanism of their own.
+#
+# Three worked examples below:
+#
+# - "web-tier" (interface_mode = "public_vlan"): has its own public IP, so
+#   client-agent is NOT installed -- these instances already have their
+#   own path to the internet.
+# - "worker-tier" (interface_mode = "vlan_only"): no public IP and no VPC
+#   membership at all -- client-agent IS installed and manages the default
+#   route via ECMP across the target pool's healthy nodes.
+#   ** NOT CURRENTLY USABLE (confirmed live, 2026-08-03): Linode's
+#   Metadata Service does not deliver user-data to an instance with only
+#   a VLAN interface at all -- cloud-init reaches "status: done" with 0
+#   bytes of user-data, so client-agent never installs and the VLAN
+#   interface's own static-address config never gets written either. This
+#   is a platform-level gap, not something fixable in this project's own
+#   Terraform/cloud-init -- see client-fleet/variables.tf's
+#   interface_mode/natctl_roster_vlan_url descriptions and
+#   docs/RUNBOOK.md's onboarding section for the full story. Use
+#   "vpc_vlan" instead below -- same "no internet path of its own,
+#   client-agent takes the default route" behavior, confirmed working
+#   end to end. **
+# - "db-tier" (interface_mode = "public_vpc_vlan"): VPC membership (to
+#   reach other VPC-resident workloads directly) WITH 1:1 NAT for its own
+#   public reachability, on ONE interface -- Linode's own recommended
+#   pattern over a separate public + VPC pair. client-agent is NOT
+#   installed, same reasoning as "web-tier".
+# - "billing-whitelisted" (v17.2, static_vlan_slot = 3): for the narrow
+#   case where some other system has been told to trust traffic from one
+#   fixed address (a downstream service's IP allowlist, etc.) -- no
+#   different from the other three groups' own slots in mechanics, just
+#   called out here because whitelist-safety is the whole point of this
+#   group. You pick a small SLOT NUMBER (0, 1, 2, ...), not an actual
+#   address -- Terraform computes the real address from that slot number,
+#   and that group's address can never be affected by any other group's
+#   config (see client_static_vlan_slot_size below). Requires
+#   client_static_vlan_reserved to be raised above 0 first -- see
+#   docs/RUNBOOK.md's "Static VLAN IPs for client groups" section for the
+#   full picture, including the check blocks in main.tf that fail
+#   `terraform plan` on a slot collision or a reserved-window overflow.
+# --------------------------------------------------------------------------
+# client_groups = {
+#   "web-tier" = {
+#     pool_name          = "shared"
+#     client_count       = 3
+#     interface_mode     = "public_vlan"
+#     instance_type      = "g6-standard-2"
+#     static_vlan_slot   = 0
+#   }
+#   "worker-tier" = {
+#     pool_name          = "shared"
+#     client_count       = 2
+#     interface_mode     = "vlan_only" # NOT CURRENTLY USABLE -- see the note
+#                                        # above this block; use "vpc_vlan" instead
+#     instance_type      = "g6-standard-1"
+#     static_vlan_slot   = 1
+#   }
+#   "db-tier" = {
+#     pool_name          = "shared"
+#     client_count       = 1
+#     interface_mode     = "public_vpc_vlan"
+#     instance_type      = "g6-standard-2"
+#     static_vlan_slot   = 2
+#   }
+#   "billing-whitelisted" = {
+#     pool_name          = "shared"
+#     client_count       = 2
+#     interface_mode     = "public_vlan"
+#     instance_type      = "g6-standard-1"
+#     static_vlan_slot   = 3   # claims a fixed, isolated address block -- see below
+#   }
+# }
+
+# v17.2: width, in addresses, of EVERY static_vlan_slot on a pool -- also
+# the max client_count any one static group can have. Default 10 is
+# generous for a "predictable/whitelisted" use case (usually a handful of
+# instances). This is a per-pool, pool-wide setting -- raising it widens
+# every slot on that pool, including already-claimed ones, which is safe
+# for THOSE slots' addresses (they only depend on their own slot number
+# and this constant, not on each other) but shifts where the NEXT unused
+# slot number begins. See docs/RUNBOOK.md's "Static VLAN IPs for client
+# groups" section.
+# client_static_vlan_slot_size = 10
+
+# v17.1/v17.2: reserves this many VLAN addresses per pool for
+# client_groups' static_vlan_slot entries above, immediately after that
+# pool's own floor+elastic node ceiling and immediately before the pool's
+# unreserved address space. Set it to at least (highest static_vlan_slot
+# used on a pool + 1) * client_static_vlan_slot_size -- 40 below covers
+# slots 0-3 at the default slot size of 10 (matching the four example
+# groups above, with room to add one more static group at slot 4 without
+# re-raising this). See docs/RUNBOOK.md's "Static VLAN IPs for client
+# groups" section. Default 0 (fully backward compatible -- unchanged
+# pre-v17 address layout); only raise this if you actually use
+# static_vlan_slot above.
+# client_static_vlan_reserved = 40

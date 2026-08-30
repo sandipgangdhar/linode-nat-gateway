@@ -1,0 +1,50 @@
+Linode NAT Gateway (LNG) — Proprietary License
+
+Copyright (c) 2026 Sandip Gangdhar. All rights reserved.
+
+This repository and its contents (including but not limited to the
+Terraform/Ansible infrastructure-as-code, configuration templates,
+dashboards, alert rules, documentation, and the compiled binaries
+distributed alongside it) are the proprietary property of Sandip
+Gangdhar ("Licensor").
+
+Subject to the terms of a separate written agreement between you and
+Licensor (a "License Agreement"), Licensor grants you a limited,
+non-exclusive, non-transferable, non-sublicensable license to:
+
+  1. Deploy and run this software, in unmodified or modified form,
+     solely within infrastructure you own or control, for your own
+     internal business purposes.
+  2. Make configuration changes (Terraform variables, natctl.yaml,
+     dashboards, alert thresholds, etc.) as needed to operate your own
+     deployment.
+
+You may NOT, without Licensor's prior written consent:
+
+  - Redistribute, sublicense, sell, rent, lease, or otherwise make this
+    software (in whole or in part, source or compiled) available to any
+    third party, including as part of a hosted or managed service.
+  - Reverse engineer, decompile, disassemble, or otherwise attempt to
+    derive the source code of any compiled binary distributed with this
+    repository, except to the extent such restriction is prohibited by
+    applicable law.
+  - Remove or alter any copyright, trademark, or other proprietary
+    notice.
+  - Use this software to build a directly competing product or service.
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY
+CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM, OUT OF, OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+For licensing inquiries, contact Sandip Gangdhar
+(https://github.com/sandipgangdhar).
+
+---
+NOTE TO SANDIP: this is a starting draft, not legal advice — have this
+reviewed by a lawyer before relying on it, especially the non-compete
+and liability clauses, which vary a lot by jurisdiction and what you
+actually intend to allow customers to do.

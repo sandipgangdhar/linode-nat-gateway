@@ -1,0 +1,163 @@
+# natctl.example.yaml (controller)
+#
+# The fully-annotated reference configuration for natctl -- every field
+# controller/natctl/config.py's Config/PoolConfig/AutoscaleConfig
+# dataclasses accept, with inline comments explaining what each one does
+# and how it must line up with the matching Terraform variables on
+# terraform/modules/nat-fleet for a given pool.
+#
+# -----------------------------------------------------
+# Structure:
+#
+# 1) reconcile_interval_seconds / api - Global controller loop cadence and
+#    roster-API bind address.
+# 2) pools.<name>       - One block per pool (shared, plus an example
+#    dedicated pool). Everything from VPC/VLAN placement through
+#    autoscale thresholds lives here -- see config.py's PoolConfig for the
+#    authoritative field list.
+# 3) prometheus_url / linode - Where to query fleet-wide metrics from, and
+#    how to authenticate to the Linode API.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# cp natctl.example.yaml natctl.yaml
+# # edit natctl.yaml: real subnet/firewall IDs, credentials, pool sizing
+# python -m natctl.main --config natctl.yaml
+#
+# -----------------------------------------------------
+# Best Practices:
+#
+# - Keep every pool's Terraform-side variables (nat-fleet module call) and
+#   this file's matching pool block in sync -- vlan_cidr and ip_failover
+#   settings must agree, since Terraform provisions the floor and natctl
+#   provisions elastic capacity for the exact same pool.
+# - Leave ip_failover_auto_configure off until you've read
+#   docs/RUNBOOK.md's "Enable buddy IP failover for a pool" procedure --
+#   it's a real, reachability-affecting change, not a cosmetic toggle.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+#
+# Copy and adjust, then:
+#   python -m natctl.main --config natctl.yaml
+
+reconcile_interval_seconds: 15
+
+api:
+  listen_host: 0.0.0.0
+  listen_port: 8099
+
+pools:
+  # The default pool every tenant's traffic uses unless assigned to a
+  # dedicated pool below. Point client-agent instances at
+  # http://<this-host>:8099/fleet/shared
+  shared:
+    region: us-east
+    vpc_id: 123456
+    public_subnet_id: 789
+    public_subnet_cidr: "10.0.0.0/24"
+    # v4: VLAN-side CIDR(s) for the private client fleet, not VPC — VPC
+    # can't transit-route to non-VPC destinations, see
+    # docs/ARCHITECTURE.md §3.0. Must match this pool's
+    # terraform/modules/nat-fleet vlan_cidr.
+    private_subnet_cidrs:
+      - "192.168.100.0/22"
+    firewall_id: 456
+    authorized_keys:
+      - "ssh-ed25519 AAAA... you@example.com"
+    root_pass: "REPLACE_ME"
+    # VLAN every node's eth2 joins — must match this pool's nat-fleet
+    # module's vlan_label/vlan_cidr (terraform/environments/example/main.tf).
+    vlan_label: "lng-vlan-shared"
+    vlan_cidr: "192.168.100.0/22"
+    vlan_ip_offset: 20
+    min_nodes: 3       # matches the Terraform floor (node_count) for this pool
+    max_nodes: 12
+    instance_type: g6-dedicated-4
+    egress_ips_per_node: 1
+    elastic_ip_offset_start: 100   # keep well clear of the floor's private_ip_offset range
+    # Must match the natctl_roster_url Terraform variable given to this
+    # pool's nat-fleet module (terraform/environments/example/main.tf),
+    # so floor nodes (wired by Terraform) and elastic nodes (wired here)
+    # point their buddy-sync agent at the same roster endpoint. See
+    # buddy-sync/ and docs/ARCHITECTURE.md §5.
+    conntrack_buddy_sync_enabled: true
+    natctl_roster_base_url: "http://10.0.0.5:8099"
+    # Address marking the top of this pool's Terraform-managed static
+    # VLAN reservation window (client_static_vlan_reserved's
+    # static_vlan_slot window) — see terraform/environments/example/
+    # main.tf's vlan_reserved_ceiling_shared and fleet.py's _provision(),
+    # which refuses to hand a new elastic node an address at or past this
+    # ceiling.
+    vlan_static_ceiling: "192.168.100.100"
+    # Bidirectional buddy IP failover (FRR, v5 — replaces lelastic, which
+    # was architecturally locked to one direction per pair) — see
+    # docs/ARCHITECTURE.md §3.6/§3.6.1. Requires conntrack_buddy_sync_enabled
+    # + natctl_roster_base_url above. Look up linode_bgp_dcid for your
+    # region from Linode's current failover docs
+    # (https://www.linode.com/docs/products/compute/compute-instances/guides/failover/)
+    # — deliberately not defaulted here.
+    ip_failover_enabled: false
+    linode_bgp_dcid: null
+    # SAFETY GATE, default off — see PoolConfig.ip_failover_auto_configure
+    # in controller/natctl/config.py for why. Leave false until you've
+    # manually run the first `linode-cli networking ip-share` yourself and
+    # watched failover converge once; natctl keeps it updated automatically
+    # after that if you flip this on.
+    ip_failover_auto_configure: false
+    autoscale:
+      conntrack_high_watermark: 0.70
+      conntrack_low_watermark: 0.30
+      port_headroom_low_watermark: 0.15
+      throughput_high_watermark: 0.85
+      cooldown_seconds: 300
+      drain_timeout_seconds: 180
+      unhealthy_replace_after_seconds: 900   # see docs/RUNBOOK.md "zombie node" handling -- covers a fresh elastic node's full cloud-init time, not just steady-state failures
+      auto_provision_enabled: true   # fully automatic, bounded by min/max_nodes above
+
+  # Example dedicated pool for a high-value/noisy tenant that needs isolated
+  # capacity instead of sharing the pool above. Point that tenant's
+  # client-agent instances at http://<this-host>:8099/fleet/dedicated-acme-corp
+  dedicated-acme-corp:
+    region: us-east
+    vpc_id: 123456
+    public_subnet_id: 789
+    public_subnet_cidr: "10.0.0.0/24"
+    private_subnet_cidrs:
+      - "192.168.105.0/24"
+    firewall_id: 456
+    authorized_keys:
+      - "ssh-ed25519 AAAA... you@example.com"
+    root_pass: "REPLACE_ME"
+    vlan_label: "lng-vlan-acme"
+    vlan_cidr: "192.168.105.0/24"
+    vlan_ip_offset: 20
+    min_nodes: 2
+    max_nodes: 6
+    instance_type: g6-dedicated-8
+    egress_ips_per_node: 1
+    elastic_ip_offset_start: 150
+    conntrack_buddy_sync_enabled: true
+    natctl_roster_base_url: "http://10.0.0.5:8099"
+    vlan_static_ceiling: ""
+    ip_failover_enabled: false
+    linode_bgp_dcid: null
+    ip_failover_auto_configure: false
+    autoscale:
+      conntrack_high_watermark: 0.70
+      cooldown_seconds: 300
+      unhealthy_replace_after_seconds: 900
+      auto_provision_enabled: true
+
+prometheus_url: http://<observability-instance-ip>:9090
+
+linode:
+  api_base: https://api.linode.com/v4
+  # Read from $LINODE_TOKEN if unset here.
+  token: null

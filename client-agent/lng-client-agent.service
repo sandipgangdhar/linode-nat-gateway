@@ -1,0 +1,34 @@
+# lng-client-agent.service (client-agent) -- CUSTOMER-REPO VARIANT
+#
+# systemd unit for the compiled client-agent binary -- runs
+# /opt/lng-client-agent/client-agent directly instead of
+# `python3 /opt/lng-client-agent/lng_client_agent.py`. Overwrites the dev
+# repo's source-mode lng-client-agent.service entirely -- the customer
+# repo only ever ships the compiled binary, no dual-mode support needed
+# here (see customer-repo-overlay/ansible/cloud-init/client-node.yaml.tftpl
+# and customer-repo-overlay/terraform/modules/client-fleet/main.tf).
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+[Unit]
+Description=LNG client-side ECMP routing agent (compiled binary)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/lng-client-agent/env
+ExecStart=/opt/lng-client-agent/client-agent
+Restart=on-failure
+RestartSec=2
+User=root
+AmbientCapabilities=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,71 @@
+# conntrackd@.service (buddy-sync)
+#
+# systemd TEMPLATE unit (note the "@") for a single conntrack-sync peer
+# relationship -- v8 addition, see buddy.py's compute_conntrack_peers()
+# and this directory's buddy_sync.py's apply_conntrack_peers(). Installed
+# once per node (both cloud-init paths, same gating as
+# lng-buddy-sync.service -- only when buddy-sync is actually wired up for
+# the pool), then INSTANTIATED by buddy_sync.py at runtime, once per
+# current conntrack peer -- "%i" is filled in with that peer's node_id,
+# e.g. `conntrackd@public-instance-3.service`.
+#
+# Why a template unit instead of one plain conntrackd.service: a
+# triangle's hub node holds TWO simultaneous conntrackd peer
+# relationships at once (see docs/ARCHITECTURE.md §3.6 "Odd node
+# counts"), each an entirely ordinary, independent unicast conntrackd
+# process -- distinct config file, lock file, control socket, and UDP
+# port per relationship (see buddy_sync.py's apply_conntrack_peers() for
+# how those paths/ports are derived). A template unit lets systemd manage
+# an arbitrary number of these without buddy_sync.py ever having to
+# hand-write individual .service files -- it just enables/starts or
+# stops/disables `conntrackd@<peer_node_id>` as peers come and go.
+#
+# This is exactly the pattern manually validated against a real
+# three-node triangle before being wired in here (config-level: correct,
+# non-colliding units and configs on the hub node; runtime: the
+# PRE-EXISTING single-peer relationship on that same hub showed clean
+# sync stats and journal handshakes -- the NEW relationship's equivalent
+# live proof was interrupted when the test Linodes were deleted before
+# it completed -- see buddy.py's module docstring for the full, honest
+# validation status).
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - NEVER started directly as `conntrackd.service` -- the distro-default
+#   unit of that exact name is masked at boot (see
+#   controller/natctl/cloud_init.py / ansible/cloud-init/nat-node.yaml.tftpl)
+#   specifically so it can't compete for a UDP port with one of these
+#   instances using an empty stub config.
+# - Reads /etc/conntrackd/conntrackd-<peer_node_id>.conf -- written by
+#   buddy_sync.py's apply_conntrack_peers(), never by hand in production.
+# - Restart=on-failure (not "always", unlike lng-buddy-sync.service):
+#   conntrackd exiting is worth retrying automatically, but this unit's
+#   entire lifecycle (existing at all) is already fully owned by
+#   buddy_sync.py's poll loop -- a peer relationship that's gone away
+#   gets `systemctl disable --now`'d directly, not left to fail forever.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+[Unit]
+Description=LNG conntrackd sync peer %i
+Documentation=man:conntrackd(8)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/conntrackd -C /etc/conntrackd/conntrackd-%i.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+User=root
+
+[Install]
+WantedBy=multi-user.target

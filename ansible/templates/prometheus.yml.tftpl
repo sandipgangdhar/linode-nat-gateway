@@ -1,0 +1,98 @@
+# prometheus.yml.tftpl (ansible/templates)
+#
+# Prometheus's own config, rendered once by terraform/modules/observability
+# and written to /opt/lng-observability/prometheus.yml on the control-plane
+# host, mounted read-only into the Prometheus container.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Scrapes every NAT node's exporter (:9200/metrics) via a Prometheus
+#   file_sd target file that natctl regenerates after every reconcile
+#   pass, so newly-provisioned or removed nodes are picked up
+#   automatically -- no static target list, no Prometheus restart needed.
+#   See docs/OBSERVABILITY.md "Fleet-aware scraping".
+# - Also scrapes natctl's OWN :8099/metrics (fleet-wide node counts, see
+#   controller/natctl/api.py's render_natctl_metrics()) -- a single
+#   static target (host.docker.internal:8099, see
+#   docker-compose.yml.tftpl's extra_hosts), gated on scrape_natctl_metrics
+#   being true (only when THIS host actually runs natctl -- see
+#   terraform/modules/observability/variables.tf's run_natctl). KNOWN
+#   LIMITATION: when natctl instead runs on every NAT node
+#   (natctl_on_node_enabled, run_natctl=false here), there is currently no
+#   scrape target for those natctl instances' /metrics at all -- doing
+#   that properly needs the same file_sd treatment nat_exporter already
+#   gets, not a static target. Deferred; raise this if you're running in
+#   natctl-on-node mode and want fleet-wide node-count metrics.
+# - Alert rules live in alerts/nat-alerts.yml, mounted separately and
+#   referenced via rule_files below; Alertmanager receives firing alerts
+#   on :9093.
+#
+# -----------------------------------------------------
+# Best Practices:
+#
+# - Do not switch scrape_configs back to a static_configs list -- it will
+#   silently go stale the moment natctl adds or removes an elastic node.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts/nat-alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["localhost:9093"]
+
+%{ if remote_write_url != "" ~}
+# v6: optional push to an existing monitoring backend (Grafana Cloud, Mimir,
+# Thanos Receive, VictoriaMetrics, or any other Prometheus-remote-write-
+# compatible receiver) -- see terraform/modules/observability's
+# prometheus_remote_write_url variable and docs/OBSERVABILITY.md "Bring
+# your own monitoring". This Prometheus keeps scraping and serving its own
+# :9090/Grafana locally either way; this just ALSO forwards every sample
+# upstream.
+remote_write:
+  - url: ${remote_write_url}
+%{ if remote_write_username != "" ~}
+    basic_auth:
+      username: ${remote_write_username}
+      password: ${remote_write_password}
+%{ endif ~}
+%{ endif ~}
+
+scrape_configs:
+  # v2 (active-active fleet): the node population changes as natctl
+  # autoscales, so static_configs would go stale. natctl writes a
+  # Prometheus file_sd target file after every reconcile pass
+  # (natctl/main.py's write_file_sd) covering every currently-discovered
+  # node across every pool — Prometheus picks up additions/removals on its
+  # own via this file, no natctl restart or Prometheus reload needed. See
+  # docs/OBSERVABILITY.md "Fleet-aware scraping".
+  - job_name: nat_exporter
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/file_sd/lng-nodes.json
+        refresh_interval: 30s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+
+%{ if scrape_natctl_metrics ~}
+  # v19: natctl's own fleet-wide /metrics -- see this file's header
+  # comment above for why this is a single static target rather than
+  # file_sd (natctl itself, unlike NAT nodes, doesn't autoscale or move).
+  - job_name: natctl_metrics
+    static_configs:
+      - targets: ["host.docker.internal:8099"]
+%{ endif ~}

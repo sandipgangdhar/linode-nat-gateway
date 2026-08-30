@@ -1,0 +1,248 @@
+#!/usr/sbin/nft -f
+# nftables.conf.tftpl (ansible/templates)
+#
+# The actual NAT ruleset every node runs. Rendered per-node by
+# terraform/modules/nat-fleet and written to /etc/nftables.conf, loaded at
+# boot with `nft -f`. This is the file that does the real work: it is what
+# makes this a NAT gateway at all, everything else in the repo exists to
+# deploy, scale, and observe fleets of nodes running this ruleset.
+#
+# -----------------------------------------------------
+# Structure:
+#
+# 1) chain forward  - Allows traffic from the private client fleet's known
+#    VLAN CIDRs, from the VLAN interface out the public interface;
+#    default-drop otherwise.
+# 2) chain input     - Default-drop, with narrow allow rules for the
+#    exporter (9200), SSH (never on VLAN), and buddy-pair conntrackd sync
+#    (3780-4779, scoped to the pool's own VPC subnet).
+# 3) chain snat_primary / chain postrouting - The actual NAT: masquerades
+#    traffic from the private client CIDRs out the public interface.
+#
+# -----------------------------------------------------
+# Parameters (from Terraform):
+#
+# 1) public_iface / vpc_iface / vlan_iface - Always eth0/eth1/eth2 in this
+#    project's node shape.
+# 2) private_subnet_cidrs  - The VLAN-side client CIDRs allowed to be
+#    forwarded/NATed.
+# 3) pool_subnet_cidr       - Non-empty only when buddy-pair sync is wired
+#    up for this pool; scopes the conntrackd port to that subnet.
+# 4) reserved_public_ip     - Empty by default (see below); when non-empty
+#    (reserved_ip_enabled, see nat-fleet/variables.tf), this node's
+#    Reserved IP address, used for an explicit `snat ip to` instead of
+#    `masquerade`.
+# 5) natctl_on_node_enabled - Opens 8099 (natctl's roster API) on the VPC
+#    interface only, when natctl runs directly on this node -- see the
+#    2026-08-02 bug-fix comment on that rule below.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Uses `masquerade` (not a literal `snat ip to <ip>`) UNLESS
+#   reserved_public_ip is set. The original reason for always using
+#   masquerade was avoiding a Terraform dependency cycle -- this file is
+#   rendered as part of the SAME linode_instance resource whose own
+#   ip_address attribute would create one if referenced here. A Reserved
+#   IP (linode_networking_ip) doesn't have that problem: it's a SEPARATE
+#   resource, allocated independently and known before linode_instance.node
+#   is even created, so referencing its .address here is an ordinary
+#   forward reference, not a cycle -- see nat-fleet/main.tf's comment on
+#   the linode_networking_ip.reserved resource. Explicit `snat ip to` also
+#   avoids a real correctness risk `masquerade` has once reserved IPs are
+#   in play: Linode always assigns a Linode-managed IPv4 to eth0 whenever
+#   a Reserved IP isn't passed to linode_instance's own `ipv4` argument at
+#   create time, but if it ever ends up coexisting with a second address
+#   on eth0 for any reason, `masquerade` picks whichever the kernel
+#   currently prefers -- not guaranteed to be the reserved one. `snat ip
+#   to` has no such ambiguity: it always uses the exact address given.
+# - BUG FIX (found live, 2026-08-01): this used to render bare "snat to
+#   <ip>", with no address-family qualifier. That's invalid inside this
+#   file's `table inet lng_nat` -- confirmed live, nftables.service
+#   refused to start on a freshly-provisioned floor node: "Error: ip or
+#   ip6 must be specified with address for inet tables". `inet` tables
+#   are dual-stack, so nftables can't infer the family without an
+#   explicit qualifier; every address here is always an IPv4 Linode
+#   reservation, so `ip` is always correct. Mirrors the identical fix in
+#   controller/natctl/cloud_init.py's render_nftables() and
+#   scripts/add-egress-ip.sh -- see "Keep the two cloud-init renderers in
+#   sync" in docs/RUNBOOK.md.
+# - Every node NATs to its OWN public IP, never a shared one -- buddy IP
+#   failover (docs/ARCHITECTURE.md section 3.6) is a separate mechanism
+#   handled by FRR, not by this ruleset.
+#
+# -----------------------------------------------------
+# Best Practices:
+#
+# - Cloud Firewall does not filter VLAN traffic at all -- this ruleset's
+#   `input` chain is the ONLY access control for eth2 (see
+#   docs/ARCHITECTURE.md section 3.7). Never assume Cloud Firewall is
+#   backstopping a VLAN-facing rule the way it does for eth0/eth1.
+# - Extra egress IPs (egress_ips_per_node > 1) are allocated by Terraform
+#   but deliberately NOT wired into snat_primary automatically -- see
+#   docs/RUNBOOK.md "Add an extra egress IP to a running node".
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+flush ruleset
+
+table inet lng_nat {
+
+  counter drop_forward_default { }
+  counter accept_forward { }
+  counter drop_input_default { }
+
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+
+    ct state established,related accept
+
+    # roadmap/M2-security.md DDoS/flood addendum: `ct state established,
+    # related accept` above already exits every packet belonging to an
+    # already-open connection, so every rule below only ever sees NEW
+    # connection attempts (SYNs) -- meaning this rate limit bounds how
+    # fast NEW conntrack entries can be opened through this node, without
+    # throttling throughput on connections already established. This is
+    # the specific attack this guards against: a SYN flood (from a
+    # malicious or compromised VLAN client, or a spoofed/reflected source
+    # if one ever reached this far) filling the conntrack table and
+    # denying NAT service to every other client sharing this node. Sized
+    # deliberately generous (5000 new conns/sec is roughly 100x what
+    # M4/M6's live load drills ever generated in this same window) to
+    # avoid false-positives against real traffic -- this is a coarse,
+    # global (not per-source-IP) safety net, not a tuned production
+    # value; tighten it if this pool's real traffic profile justifies it.
+    #
+    # Only traffic originating from our known VLAN client subnets may be
+    # forwarded out. This node serves whichever clients are configured to
+    # include it in their ECMP next-hop set — see docs/ARCHITECTURE.md §3.
+%{ for cidr in private_subnet_cidrs ~}
+    ip saddr ${cidr} iifname "${vlan_iface}" oifname "${public_iface}" limit rate 5000/second burst 10000 packets counter name accept_forward accept
+%{ endfor ~}
+
+    counter name drop_forward_default drop
+  }
+
+  chain input {
+    type filter hook input priority 0; policy drop;
+    ct state established,related accept
+    iif lo accept
+    # roadmap/M2-security.md DDoS/flood addendum: unconditional ICMP
+    # accept had no rate limit at all -- on the VLAN interface (eth2)
+    # this was the ONLY thing gating a ping flood at all (Cloud Firewall
+    # does not filter VLAN traffic, §3.7 below), and even on eth0/eth1 a
+    # source already inside the Cloud Firewall's admin_cidrs allowlist
+    # (or one that got past it) had no per-node bound either. 25/second
+    # is a conservative, well-established idiom for basic ping-flood
+    # mitigation -- far above legitimate diagnostic ping usage, far below
+    # what a flood needs to be disruptive. Deliberately NOT applied to
+    # ICMPv6 below: RA/ND traffic for BGP IP-failover's route-reflector
+    # peering runs over ICMPv6, and a live fix (see that rule's own
+    # comment) already proved how easily throttling it breaks IP
+    # failover entirely -- ICMPv6 stays as its own, separately-reasoned
+    # exception.
+    ip protocol icmp limit rate 25/second accept
+    # BUG FIX (found live, 2026-08-29, roadmap/M1-live-deployment.md): this
+    # chain had no ICMPv6 accept rule at all -- only the IPv4 line above.
+    # Router Advertisements (needed for SLAAC) and Neighbor Discovery are
+    # ICMPv6, and DHCPv6 replies are UDP/546 -- both got silently dropped by
+    # this chain's own default-drop policy, so eth0 never acquired its
+    # Linode-assigned global IPv6 address (confirmed: net.ipv6.conf.eth0.accept_ra
+    # stuck at 0, `ip -6 addr show eth0` showed only the link-local address).
+    # Since buddy IP failover (docs/ARCHITECTURE.md §3.6) peers with Linode's
+    # BGP route reflectors over IPv6, this silently broke IP failover
+    # entirely whenever ip_failover_enabled=true -- not region-specific.
+    # Confirmed fix live: adding these two rules and reconfiguring the
+    # interface immediately restored the global IPv6 address and 0%-loss
+    # connectivity to the route reflector. Mirrors the identical fix needed
+    # in controller/natctl/cloud_init.py's render_nftables() -- see "Keep
+    # the two cloud-init renderers in sync" in docs/RUNBOOK.md.
+    ip6 nexthdr icmpv6 accept
+    udp dport 546 accept
+    # IMPORTANT: Linode Cloud Firewall does NOT filter VLAN traffic at all
+    # (only public + VPC interfaces) — confirmed against Linode's own
+    # documentation, see docs/ARCHITECTURE.md §3.7. So for eth2 (VLAN), this
+    # ruleset is the ONLY access control that exists; nothing upstream is
+    # backstopping it the way terraform/modules/vpc's Cloud Firewall does
+    # for eth0/eth1. Accordingly: 9200 (exporter/healthz) is intentionally
+    # open on every interface, including VLAN — client-agent instances live
+    # on the VLAN and must reach it directly. 22 (SSH) is explicitly NOT
+    # exposed on the VLAN — admin access comes over public/VPC, where Cloud
+    # Firewall is the primary gate and this rule is defense in depth.
+    tcp dport 9200 accept
+    # roadmap/M2-security.md DDoS/flood addendum: SSH is already scoped to
+    # var.admin_cidrs at the Cloud Firewall layer (a single /32 in this
+    # deployment) -- this rate limit is defense in depth against a
+    # compromised admin source (or a source that gets past the firewall
+    # some other way) opening a connection flood against sshd itself.
+    # Sized generously for a small, single-admin-CIDR fleet: 60/minute
+    # burst 20 comfortably covers even a heavy live-testing session
+    # making many rapid SSH connections (this project's own operational
+    # pattern), while still bounding a true flood.
+    iifname != "${vlan_iface}" tcp dport 22 limit rate 60/minute burst 20 packets accept
+%{ if pool_subnet_cidr != "" ~}
+    # conntrackd buddy-pair sync (see buddy-sync/ and docs/ARCHITECTURE.md
+    # §5). Scoped to the pool's own subnet rather than one fixed peer IP,
+    # because natctl reassigns buddies dynamically as the fleet scales —
+    # any node in the pool may become any other node's buddy over time.
+    # BUG FIX (found live, 2026-08-29, roadmap/M3-ha-failover.md): this
+    # only opened the literal base port 3780, but
+    # buddy_sync.py's _conntrack_peer_port() derives each relationship's
+    # ACTUAL port as CONNTRACKD_BASE_PORT + hash%CONNTRACKD_PORT_RANGE
+    # (3780-4779 inclusive) so two simultaneous peers (a triangle's hub)
+    # never collide on the same port -- only the rare pair that happens
+    # to hash to exactly 3780 ever actually worked. Confirmed live: both
+    # sides of a real pairing showed "Bytes sent > 0, Bytes recv: 0"
+    # (broadcasting their own state, never receiving the peer's) with the
+    # real derived port (4173) silently dropped by this narrower rule.
+    udp dport 3780-4779 ip saddr ${pool_subnet_cidr} accept
+%{ endif ~}
+%{ if natctl_on_node_enabled ~}
+    # BUG FIX (found live, 2026-08-02): natctl_on_node_enabled means natctl
+    # runs directly on this node and serves its roster API on 8099, but
+    # this rule never existed here -- only the SEPARATE Cloud Firewall got
+    # a matching fix (terraform/modules/vpc/main.tf's natctl-api rule).
+    # That fixed reachability from outside the node, but this ruleset's
+    # own default-drop input policy was still silently dropping it before
+    # natctl's socket ever saw the packet. Confirmed live: natctl
+    # confirmed listening (`ss -tlnp`), Cloud Firewall confirmed correct
+    # (terraform state + Linode console), yet `curl --noproxy '*'` from a
+    # client still timed out -- this node's own nftables was the last gate
+    # nobody had opened.
+    iifname "${vpc_iface}" tcp dport 8099 accept
+    # v20: also reachable over the VLAN -- a true "vlan_only" client has
+    # no VPC interface at all, so the rule above alone still leaves it
+    # unable to reach the roster (see client-fleet/variables.tf's
+    # natctl_roster_vlan_url for the full story). Cloud Firewall does not
+    # filter VLAN traffic at all (§3.7), so this rule is the ONLY gate for
+    # it -- same trust model already used for 9200/exporter above (every
+    # VLAN client is already trusted for that).
+    iifname "${vlan_iface}" tcp dport 8099 accept
+%{ endif ~}
+    counter name drop_input_default drop
+  }
+
+  # Named chain (rather than an inline `masquerade` statement) so
+  # scripts/add-egress-ip.sh can later rebuild postrouting as a verdict map
+  # that jumps here for bucket 0 and to a new snat_extra_N chain for each
+  # additional egress IP, without needing to touch this file — see the
+  # day-2 note above.
+  chain snat_primary {
+%{ if reserved_public_ip != "" ~}
+    snat ip to ${reserved_public_ip}
+%{ else ~}
+    masquerade
+%{ endif ~}
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority 100;
+    ip saddr { ${join(", ", private_subnet_cidrs)} } oifname "${public_iface}" counter jump snat_primary
+  }
+}

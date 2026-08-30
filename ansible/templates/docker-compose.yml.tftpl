@@ -1,0 +1,102 @@
+# docker-compose.yml.tftpl (ansible/templates)
+#
+# Defines the three containers that make up the observability stack on
+# the control-plane host: Prometheus, Alertmanager, and Grafana. Rendered
+# once by terraform/modules/observability and started via
+# `docker compose up -d` in observability.yaml.tftpl's runcmd. natctl
+# itself runs natively on the host, not as a container here -- see
+# observability.yaml.tftpl's header for why.
+#
+# -----------------------------------------------------
+# Parameters (from Terraform):
+#
+# 1) grafana_admin_password - Injected as GF_SECURITY_ADMIN_PASSWORD;
+#    change this from its default before any real deployment.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Prometheus's file_sd directory is mounted read-only from
+#   /opt/lng-observability/file_sd, which natctl (running on the host)
+#   writes to directly -- this is the only coupling between natctl and
+#   the containerized stack.
+# - Grafana is pre-provisioned with the Prometheus datasource and the
+#   nat-overview dashboard via the provisioning volumes below -- no manual
+#   Grafana setup needed after boot.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+version: "3.8"
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    volumes:
+      - /opt/lng-observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - /opt/lng-observability/alerts:/etc/prometheus/alerts:ro
+      # natctl (running natively on the host, not in a container) writes
+      # fleet membership here after every reconcile pass; Prometheus reads
+      # it via file_sd so scrape targets track the fleet's live node count
+      # as it autoscales — see docs/OBSERVABILITY.md "Fleet-aware scraping".
+      - /opt/lng-observability/file_sd:/etc/prometheus/file_sd:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    # lets prometheus.yml.tftpl's natctl_metrics job reach natctl's own
+    # :8099/metrics (fleet-wide node counts) on the HOST, from inside
+    # this container —
+    # natctl runs natively on the host (see this file's own header
+    # comment), not in a container, so "localhost:8099" from inside here
+    # would resolve to the Prometheus container itself, not the host.
+    # host-gateway requires Docker 20.10+ (this project's image is Ubuntu
+    # 22.04 with a current Docker install — fine).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    restart: unless-stopped
+    volumes:
+      - /opt/lng-observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      # BUG FIX (found live, 2026-08-30): this had no data volume at all --
+      # docs/ARCHITECTURE.md used to state this as an accepted trade-off
+      # ("Alertmanager has zero persistence today"), but it's a small,
+      # well-scoped fix, not a fundamental limitation: /alertmanager is
+      # where the container persists active silences and its notification
+      # log (which is what prevents re-sending a notification for an
+      # alert that's still firing). Without this volume, EVERY container
+      # restart (a host reboot, an image update, `docker compose up -d`
+      # re-run) silently dropped both -- an operator-created silence
+      # (e.g. "known issue, don't page me") would reappear as a fresh
+      # page after any routine restart, and every still-firing alert
+      # would re-notify as if it were brand new. Matches prometheus-data/
+      # grafana-data's existing pattern below.
+      - alertmanager-data:/alertmanager
+    ports:
+      - "9093:9093"
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${grafana_admin_password}
+      - GF_INSTALL_PLUGINS=
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - /opt/lng-observability/dashboards:/etc/grafana/provisioning/dashboards-src:ro
+      - /opt/lng-observability/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - /opt/lng-observability/grafana/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+    ports:
+      - "3000:3000"
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  alertmanager-data:

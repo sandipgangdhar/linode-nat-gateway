@@ -1,0 +1,705 @@
+{
+  "title": "LNG \u2014 NAT Fleet Overview",
+  "description": "nat-overview.json (dashboards). Note: JSON has no comment syntax, so this field carries the documentation a header comment would elsewhere in this repo. Provisioned automatically into Grafana's 'LNG NAT Gateway' folder by ansible/templates/grafana-dashboards.yml (see terraform/modules/observability). Panels are grouped as: fleet summary (total nodes/throughput/conntrack across every pool), per-pool detail (node count, conntrack %, port headroom per IP, throughput, PPS, drop rate), node health grid, and a capacity-forecast panel. The 'pool' template variable filters every panel. Data source: Prometheus, scraping every node's :9200/metrics via natctl's fleet-aware file_sd target file, plus natctl's own :8099/metrics for fleet-wide node-count figures -- see docs/OBSERVABILITY.md for the full metric/alert catalogue this dashboard visualizes. Author: Sandip Gangdhar (https://github.com/sandipgangdhar). (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026.",
+  "uid": "lng-nat-overview",
+  "schemaVersion": 39,
+  "version": 7,
+  "editable": true,
+  "timezone": "browser",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "annotations": {
+    "list": [
+      {
+        "name": "Scale events",
+        "enable": true,
+        "datasource": "Prometheus",
+        "iconColor": "orange",
+        "useValueForTime": true,
+        "target": {
+          "expr": "natctl_pool_last_scale_event_info{pool=~\"$pool\"} * on(pool) group_left() (natctl_pool_last_scale_event_timestamp{pool=~\"$pool\"} * 1000)"
+        },
+        "titleFormat": "{{direction}} scale event ({{pool}})",
+        "textFormat": "reason={{reason}} sustained={{sustained}} required={{required}}"
+      }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "pool",
+        "type": "query",
+        "query": "label_values(nat_node_healthy, pool)",
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total Nodes",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "count(nat_node_healthy{pool=~\"$pool\"})",
+          "legendFormat": "nodes"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Healthy Nodes",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(nat_node_healthy{pool=~\"$pool\"})",
+          "legendFormat": "healthy"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Fleet Egress Throughput (bps)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(nat_interface_bytes_total{direction=\"tx\",pool=~\"$pool\"}[5m])) * 8",
+          "legendFormat": "tx bps"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Fleet Conntrack Utilization",
+      "type": "gauge",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "max": 1,
+          "min": 0,
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "avg(nat_conntrack_utilization_ratio{pool=~\"$pool\"})",
+          "legendFormat": "avg"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Drop Rate (pkt/s)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(nat_nftables_drops_total{pool=~\"$pool\"}[5m]))",
+          "legendFormat": "drops/s"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Port Headroom (min across fleet)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "min(nat_port_available_total{pool=~\"$pool\"} / (nat_port_available_total{pool=~\"$pool\"} + nat_port_allocated_total{pool=~\"$pool\"}))",
+          "legendFormat": "headroom"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Nodes per Pool",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "expr": "count by (pool) (nat_node_healthy{pool=~\"$pool\"})",
+          "legendFormat": "{{pool}} total"
+        },
+        {
+          "expr": "sum by (pool) (nat_node_healthy{pool=~\"$pool\"})",
+          "legendFormat": "{{pool}} healthy"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Conntrack Utilization by Node",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "nat_conntrack_utilization_ratio{pool=~\"$pool\"}",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Throughput by Node and Direction",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(nat_interface_bytes_total{interface=\"eth0\",pool=~\"$pool\"}[5m]) * 8",
+          "legendFormat": "{{node}} {{direction}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "PPS by Node",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "targets": [
+        {
+          "expr": "rate(nat_interface_packets_total{interface=\"eth0\",pool=~\"$pool\"}[5m])",
+          "legendFormat": "{{node}} {{direction}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Port Allocation by Public IP",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "targets": [
+        {
+          "expr": "nat_port_allocated_total{pool=~\"$pool\"}",
+          "legendFormat": "{{node}} {{public_ip}} {{protocol}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Node Health Checks (1 = passing)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "targets": [
+        {
+          "expr": "nat_node_health_check{pool=~\"$pool\"}",
+          "legendFormat": "{{node}} {{check}}"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Drop Reasons",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "targets": [
+        {
+          "expr": "rate(nat_nftables_drops_total{pool=~\"$pool\"}[5m])",
+          "legendFormat": "{{node}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Buddy-Paired Nodes",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 36
+      },
+      "description": "Nodes with an active conntrackd buddy assigned (session-loss mitigation, not a health signal \u2014 see docs/ARCHITECTURE.md \u00a73.5)",
+      "targets": [
+        {
+          "expr": "sum(nat_conntrack_buddy_paired{pool=~\"$pool\"})",
+          "legendFormat": "paired"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "Buddy Pairing by Node",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 20,
+        "x": 4,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "max": 1,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "nat_conntrack_buddy_paired{pool=~\"$pool\"}",
+          "legendFormat": "{{node}} <-> {{buddy}}"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "BGP Peers Established (fleet)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 44
+      },
+      "description": "Sum of established FRR BGP sessions across all nodes -- see docs/ARCHITECTURE.md IP-sharing section.",
+      "targets": [
+        {
+          "expr": "sum(nat_bgp_peers_established_total{pool=~\"$pool\"})",
+          "legendFormat": "established"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "title": "BGP Peers Configured (fleet)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 44
+      },
+      "targets": [
+        {
+          "expr": "sum(nat_bgp_peers_total{pool=~\"$pool\"})",
+          "legendFormat": "configured"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "title": "IP-Failover Self-Announced Nodes",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 44
+      },
+      "description": "Nodes currently announcing their own primary shared IP via BGP route-map (route-map primary).",
+      "targets": [
+        {
+          "expr": "sum(nat_ip_failover_self_announced{pool=~\"$pool\"})",
+          "legendFormat": "self-announced"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "title": "IP-Failover Buddy Announcements",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 44
+      },
+      "description": "Sum of secondary (buddy) route-map announcements a node would use to take over its buddy's shared IP.",
+      "targets": [
+        {
+          "expr": "sum(nat_ip_failover_buddy_count{pool=~\"$pool\"})",
+          "legendFormat": "buddy-announced"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "title": "BGP Peer State by Node & Peer",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "description": "1 = Established, 0 = any other FRR peer state (Active/Connect/Idle/etc).",
+      "fieldConfig": {
+        "defaults": {
+          "max": 1,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "nat_bgp_peer_state{pool=~\"$pool\"}",
+          "legendFormat": "{{node}} {{peer}}"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "title": "IP-Failover Role by Node",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "description": "self_announced = node currently owns/announces its own shared IP; buddy_count = number of buddy IPs this node is prepared to take over.",
+      "targets": [
+        {
+          "expr": "nat_ip_failover_self_announced{pool=~\"$pool\"}",
+          "legendFormat": "{{node}} self-announced"
+        },
+        {
+          "expr": "nat_ip_failover_buddy_count{pool=~\"$pool\"}",
+          "legendFormat": "{{node}} buddy-count"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "title": "Conntrack Insert Rate by Node",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 56
+      },
+      "description": "New connections tracked per second, from `conntrack -S` kernel accounting -- parity with AWS NAT Gateway's ActiveConnectionCount / GCP Cloud NAT's new connections metric.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(nat_conntrack_stat_total{pool=~\"$pool\",stat=\"insert\"}[5m])",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "title": "Conntrack Failures / Errors / Drops by Node",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 56
+      },
+      "description": "insert_failed/error/drop/search_restart per second -- parity with AWS NAT Gateway's ErrorPortAllocation / GCP Cloud NAT's dropped_sent_packets_count.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(nat_conntrack_stat_total{pool=~\"$pool\",stat=~\"insert_failed|error|drop|search_restart\"}[5m])",
+          "legendFormat": "{{node}} {{stat}}"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "title": "Floor Nodes",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 64
+      },
+      "description": "Terraform-managed floor -- never touched by autoscale.",
+      "targets": [
+        {
+          "expr": "sum(natctl_pool_floor_nodes{pool=~\"$pool\"})",
+          "legendFormat": "floor"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "title": "Elastic Nodes",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 64
+      },
+      "description": "natctl-managed nodes currently added on top of the floor.",
+      "targets": [
+        {
+          "expr": "sum(natctl_pool_elastic_nodes{pool=~\"$pool\"})",
+          "legendFormat": "elastic"
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "title": "Configured Min Nodes",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 64
+      },
+      "targets": [
+        {
+          "expr": "max(natctl_pool_min_nodes{pool=~\"$pool\"})",
+          "legendFormat": "min"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "title": "Configured Max Nodes",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 64
+      },
+      "targets": [
+        {
+          "expr": "max(natctl_pool_max_nodes{pool=~\"$pool\"})",
+          "legendFormat": "max"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "title": "Last Scale Event",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 64
+      },
+      "description": "Why the most recent scale-out/scale-in fired -- direction, reason, sustained-breach metric(s), and required node count. Value is always 1; the text is carried entirely as labels (see natctl_pool_last_scale_event_info in docs/OBSERVABILITY.md).",
+      "options": {
+        "textMode": "name",
+        "colorMode": "background",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "natctl_pool_last_scale_event_info{pool=~\"$pool\"}",
+          "legendFormat": "{{direction}} required={{required}} reason={{reason}} sustained={{sustained}}"
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "title": "Autoscale Metric vs Watermarks (conntrack)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 68
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "natctl_pool_autoscale_current{pool=~\"$pool\",metric=\"conntrack\"}",
+          "legendFormat": "current"
+        },
+        {
+          "expr": "natctl_pool_autoscale_high_watermark{pool=~\"$pool\",metric=\"conntrack\"}",
+          "legendFormat": "scale-out watermark"
+        },
+        {
+          "expr": "natctl_pool_autoscale_low_watermark{pool=~\"$pool\",metric=\"conntrack\"}",
+          "legendFormat": "scale-in watermark"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "title": "Autoscale Metric vs Watermarks (port headroom, throughput)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 68
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "natctl_pool_autoscale_current{pool=~\"$pool\",metric=\"port_headroom\"}",
+          "legendFormat": "port_headroom current"
+        },
+        {
+          "expr": "natctl_pool_autoscale_low_watermark{pool=~\"$pool\",metric=\"port_headroom\"}",
+          "legendFormat": "port_headroom scale-out watermark"
+        },
+        {
+          "expr": "natctl_pool_autoscale_current{pool=~\"$pool\",metric=\"throughput_ratio\"}",
+          "legendFormat": "throughput_ratio current"
+        },
+        {
+          "expr": "natctl_pool_autoscale_high_watermark{pool=~\"$pool\",metric=\"throughput_ratio\"}",
+          "legendFormat": "throughput_ratio scale-out watermark"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "title": "Autoscale Breach Streak by Metric",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 76
+      },
+      "description": "Consecutive reconcile passes each metric has been breached on the scale-out side. A scale-out fires once this reaches sustained_breach_passes (see terraform variable of the same name).",
+      "targets": [
+        {
+          "expr": "natctl_pool_autoscale_breach_streak{pool=~\"$pool\"}",
+          "legendFormat": "{{metric}}"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "title": "Scale Event Delta Over Time",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 76
+      },
+      "description": "Node count change from each scale decision -- positive bars/steps are scale-out, negative are scale-in.",
+      "targets": [
+        {
+          "expr": "natctl_pool_last_scale_event_delta{pool=~\"$pool\"}",
+          "legendFormat": "delta"
+        }
+      ]
+    }
+  ]
+}

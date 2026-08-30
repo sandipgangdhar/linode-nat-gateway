@@ -1,0 +1,120 @@
+# config.example.yaml (acceptance-tests)
+#
+# Template for config.yaml, the file run_acceptance_tests.py actually
+# reads (see lib/config.py). Copy this to config.yaml in this same
+# directory and fill in your real deployment's endpoints, hosts, and
+# credentials -- config.yaml itself should never be committed (see the
+# repo .gitignore).
+#
+# -----------------------------------------------------
+# Usage:
+#
+#   cp config.example.yaml config.yaml
+#   # edit config.yaml with your real values, matching Terraform's own
+#   # outputs.tf (roster_url_*, grafana_url, prometheus_url) plus the
+#   # node/client hosts you want specific drills to target.
+#   python run_acceptance_tests.py
+#
+# Every block below is independently optional except `pools.<name>.roster_url`
+# -- a check whose required config isn't present SKIPs (not FAILs) for
+# that pool. Leave out a `node_failure_drill`/`ip_failover_drill`/
+# `autoscale_drill` block entirely for any pool you don't want that
+# specific (increasingly disruptive/expensive) check to run against.
+#
+# -----------------------------------------------------
+# Best Practices:
+#
+# - Never commit a filled-in config.yaml -- the SSH key path in here is a
+#   real credential for a live deployment.
+# - Values here should match Terraform's outputs.tf for the environment
+#   you deployed (terraform/environments/example/outputs.tf) --
+#   `terraform output` prints roster_url_*/grafana_url/prometheus_url
+#   directly.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+# SSH access used by every check that needs to reach a real instance
+# (client instances for checks 02/05, NAT nodes themselves for checks
+# 03/04). A single shared user/key across every host this suite touches,
+# matching this project's own cloud-init default (root, key-based).
+ssh:
+  user: root
+  key_path: ~/.ssh/lng_acceptance_tests  # or omit to use your default SSH agent
+
+# The observability stack this pool's cloud-init deployed --
+# terraform/environments/example/outputs.tf's grafana_url/prometheus_url.
+# alertmanager_url is optional (some deployments don't expose it
+# externally at all -- see docs/RUNBOOK.md).
+control_plane:
+  prometheus_url: "http://203.0.113.50:9090"
+  grafana_url: "http://203.0.113.50:3000"
+  alertmanager_url: "http://203.0.113.50:9093"
+
+pools:
+  shared:
+    # Required. terraform output natctl_roster_url_shared (or the
+    # equivalent for whichever pool you're validating).
+    roster_url: "http://203.0.113.50:8099/fleet/shared"
+    # This pool's terraform/modules/nat-fleet min_nodes (or node_count if
+    # this pool has no elastic floor) -- check 01 fails if fewer than
+    # this many nodes report healthy.
+    min_nodes: 2
+
+    # Used by check 02 (NAT egress): a private-subnet instance already
+    # running client-agent, reachable via SSH, with NO public IP of its
+    # own (see check_02's own caution about this assumption).
+    client_host: "192.168.100.201"
+    egress_test_target: "https://ifconfig.me/ip"
+    egress_sample_count: 5
+
+    # Used by check 03 -- a thin wrapper around
+    # scripts/node-failure-drill.sh. node_host is the NAT node's address
+    # AS IT APPEARS IN THE CLIENT'S ROUTE TABLE -- on pure-nat-gateway
+    # this is the node's VLAN address (client-agent's ECMP nexthops are
+    # VLAN, not VPC -- docs/ARCHITECTURE.md §3.0/§3.2). node_ssh_host is
+    # the SEPARATE address actually used to SSH into the node -- it must
+    # be different from node_host on this branch, since the node's own
+    # nftables ruleset deliberately excludes SSH on the VLAN interface
+    # (roadmap/M2-security.md test case 2.8); use the node's VPC or
+    # public IP instead, whichever your Cloud Firewall's admin_cidrs/
+    # VPC-subnet scoping actually lets you reach from wherever you run
+    # this suite. Omit node_ssh_host to fall back to node_host, for any
+    # topology where a single address genuinely serves both roles.
+    # client_host is the same private client instance as above (or a
+    # different one -- any client-agent instance observing this pool
+    # works).
+    node_failure_drill:
+      node_host: "192.168.1.10"
+      node_ssh_host: "10.0.0.10"
+      client_host: "192.168.100.201"
+      max_wait_seconds: 20
+
+    # Used by check 04 -- the live BGP IP-failover proof from
+    # docs/ARCHITECTURE.md section 3.6.1. Only meaningful for a pool with
+    # ip_failover_enabled=true and an already-converged buddy pairing
+    # (confirm via nat_conntrack_buddy_paired in Grafana first). Requires
+    # SSH access to primary_ssh_host and that this suite itself can ping
+    # primary_public_ip directly (i.e. runs somewhere with real internet
+    # egress, not from inside the VLAN).
+    ip_failover_drill:
+      primary_public_ip: "172.237.46.98"
+      primary_ssh_host: "172.237.46.98"
+      failover_wait_seconds: 15
+      max_acceptable_loss_percent: 0
+
+    # Used by check 05 -- OPT IN ONLY. Provisions a real, billable
+    # elastic node by driving genuine load through scripts/loadtest.sh.
+    # Leave this whole block commented out / absent unless you
+    # specifically want to pay for and verify autoscaling right now.
+    # autoscale_drill:
+    #   client_host: "192.168.100.201"
+    #   connections: 500
+    #   duration: 120
+    #   target: "https://www.gstatic.com/generate_204"
+    #   expected_scale_within_seconds: 300

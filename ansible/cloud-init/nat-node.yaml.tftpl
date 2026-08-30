@@ -1,0 +1,524 @@
+#cloud-config
+# nat-node.yaml.tftpl (ansible/cloud-init)
+#
+# This is the cloud-init user-data template every NAT node boots with. It
+# fully configures a node with zero manual post-boot steps: the nftables
+# NAT ruleset, the Prometheus exporter, optional conntrackd buddy-pair
+# sync, and optional BGP-based buddy IP failover (FRR). Rendered per-node by
+# terraform/modules/nat-fleet/main.tf, with that node's own static IPs and
+# this pool's feature flags substituted into the `$${...}` / `%%{ if ... }`
+# placeholders below (escaped here with an extra $/% so Terraform's
+# templatefile() -- which scans the WHOLE file for interpolation syntax,
+# including inside # comments -- doesn't try to actually evaluate this
+# description of the syntax as the syntax itself).
+#
+# -----------------------------------------------------
+# Interface layout (see docs/ARCHITECTURE.md section 3.0/3.1):
+#
+# 1) eth0 (public) - A real public IP, never VPC's 1:1 NAT -- required
+#    because VPC IPs cannot use Linode's IP Sharing feature, which buddy
+#    IP failover depends on.
+# 2) eth1 (VPC)     - Serves buddy-pair conntrackd sync traffic.
+# 3) eth2 (VLAN)    - Transparent NAT/masquerade for the private client
+#    fleet. VLAN is used instead of VPC here because VPC cannot
+#    transit-route a packet through a peer instance to a non-VPC
+#    destination (validated empirically, see docs/ARCHITECTURE.md
+#    section 3.0).
+#
+# -----------------------------------------------------
+# What gets installed, conditionally, based on this pool's flags:
+#
+# 1) nftables + the Prometheus exporter - Always installed; this is the
+#    core NAT/masquerade path and its health/metrics surface.
+# 2) conntrackd + buddy-sync             - Installed only when
+#    natctl_roster_url is set. Mirrors this node's connection state to a
+#    dynamically-assigned buddy elsewhere in the pool. On its own this
+#    only protects connection STATE -- it does not help a dead node's
+#    public IP become reachable again, which is why IP failover (below)
+#    exists as a separate, additive mechanism.
+# 3) FRR (BGP-based IP Sharing)           - Installed only when
+#    ip_failover_enabled is true. Each node runs two independent,
+#    route-map-tagged BGP `network` statements at once -- one for its own
+#    IP ("primary", pushed once at boot, self-detected, never touched
+#    again) and one for its buddy's IP ("secondary", assigned dynamically
+#    by buddy_sync.py as buddy pairings change). This is what makes buddy
+#    IP failover bidirectional -- see docs/ARCHITECTURE.md section 3.6/3.6.1
+#    for the live validation this design is built on.
+#
+# -----------------------------------------------------
+# v10: nftables.conf and the nat-exporter/lng-buddy-sync/conntrackd@/natctl
+# systemd unit files are all fetched at boot from Object Storage (curl, in
+# runcmd below), not embedded as write_files content: blocks. v9 (fetching
+# exporter.py/buddy_sync.py/the natctl package) alone was NOT enough
+# headroom against Linode's 16384-byte decoded cloud-init limit once
+# natctl_on_node_enabled is on for a real environment -- confirmed against a
+# real `terraform apply` failure even after v9 shipped. None of these
+# specific files carry secrets (verified line-by-line): nftables.conf is
+# just NAT/firewall rules; the systemd unit files only reference external
+# env files by path, never contain a credential themselves. See
+# terraform/modules/artifacts/main.tf's header comment for the static
+# (one-per-environment) uploads and terraform/modules/nat-fleet/main.tf for
+# the per-node upload (nftables.conf differs per node by IP/CIDR, so it's
+# NOT a candidate for the shared artifacts module -- each node gets its own
+# object). natctl_config_yaml is
+# deliberately NOT moved to Object Storage fetch -- it embeds this pool's
+# plaintext root_pass (needed by natctl's own elastic-node provisioning),
+# and this module's uploads are public-read (see artifacts/main.tf's "Why
+# public-read" section) -- a secret-bearing document has no business on a
+# public URL. It stays a small write_files content: block, same as before.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Never edit this file's rendered output directly on a running node --
+#   change the template (or the Terraform variables feeding it) and
+#   re-provision instead, so the floor stays reproducible.
+# - Keep this file's behavior in sync with controller/natctl/cloud_init.py,
+#   which renders the equivalent bootstrap for natctl-provisioned elastic
+#   nodes -- see docs/RUNBOOK.md "Keep the two cloud-init renderers in
+#   sync".
+#
+# -----------------------------------------------------
+# Best Practices:
+#
+# - Router-id is set exactly once, at boot, and never touched live --
+#   changing `bgp router-id` on a running FRR instance forces a full BGP
+#   session reset on every peer (see docs/ARCHITECTURE.md section 3.6.1).
+#   Only the "secondary" network statement is ever touched after boot.
+# - Order matters in `runcmd` below: FRR/buddy-sync's env file must be
+#   fully written (including the self-detected NAT_PUBLIC_IP) before
+#   lng-buddy-sync starts, since it reads that file once at process start.
+#   Likewise, every fetched systemd unit file must land on disk (and get a
+#   `systemctl daemon-reload`) BEFORE the matching `systemctl enable --now`
+#   -- unlike write_files content, curl'd units are not on disk yet when
+#   cloud-init reaches the write_files stage, only once runcmd actually
+#   runs the fetch step.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+hostname: ${node_name}
+# roadmap/M2-security.md test case 2.6: `authorized_keys` and `root_pass`
+# are both set on every node (root_pass for Lish emergency console access,
+# a separate auth channel — see docs/RUNBOOK.md), but the base Ubuntu
+# image leaves sshd's PasswordAuthentication/PermitRootLogin at their
+# password-permitting defaults unless something explicitly overrides
+# them — confirmed live, not assumed (`sshd -T` on a real node showed
+# `passwordauthentication yes`). ssh_pwauth: false makes cloud-init write
+# `PasswordAuthentication no` into sshd_config and restart sshd, so SSH
+# itself becomes key-only while Lish's own (unrelated) password auth is
+# untouched.
+ssh_pwauth: false
+package_update: true
+package_upgrade: false
+
+packages:
+  - nftables
+%{ if agent_distribution != "binary" ~}
+  - python3
+%{ endif ~}
+  - curl
+  - conntrack
+%{ if natctl_roster_url != "" ~}
+  - conntrackd
+%{ endif ~}
+%{ if ip_failover_enabled ~}
+  # v5: apt-packaged frr, not a GitHub-released static binary like
+  # lelastic was — no version-pin runcmd step needed (see
+  # docs/RUNBOOK.md for the note this replaces).
+  - frr
+%{ endif ~}
+%{ if natctl_on_node_enabled && agent_distribution != "binary" ~}
+  # v6: natctl-on-node (opt-in) — this node itself is leader-election-
+  # eligible to run the fleet controller, removing the requirement for a
+  # separate dedicated control-plane host. See leader_election section
+  # further down and controller/natctl/leader_election.py. v21: pip is
+  # only needed to install requirements.txt for the .py-source natctl
+  # package -- binary mode fetches one executable instead, see runcmd
+  # below.
+  - python3-pip
+%{ endif ~}
+
+write_files:
+  - path: /etc/nat-exporter/env
+    owner: root:root
+    permissions: '0640'
+    # NAT_PUBLIC_IPS is deliberately absent here and filled in by runcmd
+    # below (self-discovered post-boot) rather than passed in as a
+    # template variable — this instance's own public IP is only known
+    # AFTER Linode creates it, and it's created as part of this same
+    # cloud-init payload, so referencing it here would be a dependency
+    # cycle in Terraform. See the comment in nftables.conf.tftpl for the
+    # same issue on the NAT rule side (solved there with `masquerade`).
+    #
+    # NAT_PRIVATE_IP is set to the VLAN IP (not VPC) because client-agent —
+    # the fast-path, most failure-sensitive consumer of the roster's
+    # private_ip field — lives on the VLAN, not the VPC (v3 had a single
+    # private_ip because the client fleet was VPC-resident; v4 moved it to
+    # VLAN, see docs/ARCHITECTURE.md §3.0). NAT_VPC_IP is carried
+    # separately.
+    content: |
+      NAT_NODE_NAME=${node_name}
+      NAT_NODE_ID=${node_id}
+      NAT_POOL_NAME=${pool_name}
+      NAT_PRIVATE_IP=${vlan_ip}
+      NAT_VPC_IP=${vpc_ip}
+      NAT_PORT_RANGE_MIN=1024
+      NAT_PORT_RANGE_MAX=65535
+
+%{ if natctl_on_node_enabled ~}
+  # v6: natctl-on-node (opt-in, natctl_on_node_enabled). This node runs the
+  # SAME natctl package terraform/modules/observability embeds on its
+  # dedicated host — mirrored file-for-file here rather than factored into
+  # a shared template, since cloud-init templates can't share includes
+  # (see docs/RUNBOOK.md "Keep the two cloud-init renderers in sync" for
+  # why this project accepts that duplication elsewhere too). Every node
+  # in this pool gets the full package + config; only ONE of them (the
+  # elected leader — see leader_election.py) is ever allowed to actually
+  # mutate Linode state at any given moment, so it's safe for this to
+  # be on by default across the whole pool once natctl_on_node_enabled is
+  # true.
+  #
+  # v10: this composed config is the ONE piece of natctl-on-node content
+  # that stays embedded (not fetched) -- see this file's v10 header note
+  # above for why (it carries this pool's plaintext root_pass, and every
+  # other Object Storage upload in this design is public-read).
+  - path: /etc/natctl/config.yaml
+    owner: root:root
+    permissions: '0600'
+    content: |
+      ${indent(6, natctl_config_yaml)}
+
+  - path: /etc/natctl/env
+    owner: root:root
+    permissions: '0600'
+    # NATCTL_SELF_NODE_ID is safe to set at Terraform render time (this
+    # node's own name is decided BEFORE creation, unlike its Linode
+    # instance ID or public IP — see locals.node_ids in main.tf).
+    # NATCTL_SELF_LINODE_ID, LINODE_TOKEN's peers on every other node, and
+    # the Object Storage credentials for the leader-election lease are
+    # deliberately kept out of /etc/natctl/config.yaml itself (see
+    # config.py's LeaderElectionConfig docstring) — this file gets the
+    # 0600 treatment instead, same as LINODE_TOKEN always has. Only
+    # written when object_storage_access_key/secret_key are actually set,
+    # since a fleet can enable natctl_on_node_enabled with leader_election
+    # left disabled in natctl_config_yaml (single-mutator-by-convention,
+    # no fencing) if it isn't ready for real auto-failover yet.
+    content: |
+      NATCTL_SELF_NODE_ID=${node_id}
+      LINODE_TOKEN=${linode_token}
+%{ if object_storage_access_key != "" ~}
+      NATCTL_OBJECT_STORAGE_ACCESS_KEY=${object_storage_access_key}
+      NATCTL_OBJECT_STORAGE_SECRET_KEY=${object_storage_secret_key}
+%{ endif ~}
+%{ endif ~}
+
+  - path: /etc/sysctl.d/99-lng-nat.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      net.ipv4.ip_forward = 1
+      net.ipv4.conf.all.rp_filter = 0
+      net.ipv4.conf.default.rp_filter = 0
+      net.netfilter.nf_conntrack_max = ${conntrack_max}
+      net.ipv4.tcp_fin_timeout = 20
+      net.netfilter.nf_conntrack_tcp_timeout_established = 3600
+
+%{ if natctl_roster_url != "" ~}
+  # Conntrack buddy-pair sync — see buddy-sync/ and docs/ARCHITECTURE.md §5.
+  # Opt-in: only wired up when natctl_roster_url is set for this pool
+  # (terraform/modules/nat-fleet's natctl_roster_url variable). Nodes don't
+  # get conntrackd.conf at boot — buddy_sync.py writes it once it learns
+  # this node's assigned buddy from natctl, so there's no chicken-and-egg
+  # problem with a peer IP that isn't known yet.
+  - path: /etc/lng-buddy-sync/env
+    owner: root:root
+    permissions: '0640'
+    # NAT_PRIVATE_IP here is the VPC IP (eth1), not VLAN — buddy-pair
+    # conntrackd sync traffic runs over VPC in v4 (see the nftables.conf
+    # pool_subnet_cidr comment in main.tf), separate from the VLAN-side
+    # NAT_PRIVATE_IP used in /etc/nat-exporter/env above. Yes, two files
+    # define the same env var name to mean two different IPs on purpose —
+    # each is local to its own service's env file, never sourced together.
+    # NAT_PUBLIC_IP (v5, only when ip_failover_enabled) is deliberately
+    # absent here too — appended by runcmd below, once this node's own
+    # public IP is self-discovered post-boot, same reasoning as
+    # NAT_PUBLIC_IPS in /etc/nat-exporter/env.
+    content: |
+      NATCTL_ROSTER_URL=${natctl_roster_url}/fleet/${pool_name}
+      NAT_NODE_ID=${node_id}
+      NAT_PRIVATE_IP=${vpc_ip}
+      NAT_IP_FAILOVER_ENABLED=${ip_failover_enabled}
+%{ endif ~}
+
+%{ if ip_failover_enabled ~}
+  # v5: BGP-based IP Sharing via FRR (replaces lelastic) lets a buddy
+  # take over a dead node's public IP, which is what actually makes the
+  # conntrackd sync above useful for connection survival (without this, a
+  # dead node's public IP is simply gone and no amount of mirrored
+  # conntrack state helps — see docs/ARCHITECTURE.md §3.6). FRR, unlike
+  # lelastic, can run two independent, route-map-tagged `network`
+  # statements on one node at once — one for this node's own IP
+  # ("primary"), one for its buddy's ("secondary") — which is what makes
+  # BIDIRECTIONAL buddy IP failover possible at all (§3.6.1's live
+  # validation). daemons/frr.conf are installed here; router-id and the
+  # "primary" self-announcement are pushed once at boot by runcmd below
+  # (self-detected — this node's own public IP isn't known until Linode
+  # creates it), and never touched again. Only the "secondary" statement
+  # is assigned dynamically, by natctl's ip-failover orchestration +
+  # buddy_sync.py, once this node has a buddy — same chicken-and-egg
+  # reasoning as buddy_sync.py owning conntrackd's lifecycle above.
+  - path: /etc/frr/daemons
+    owner: root:root
+    permissions: '0644'
+    content: |
+      zebra=yes
+      bgpd=yes
+      staticd=yes
+      vtysh_enable=yes
+
+  - path: /etc/frr/frr.conf
+    # v11: owner deliberately left as the write_files default (root:root),
+    # NOT frr:frr -- write_files runs before the frr package (which
+    # creates that system user) is guaranteed installed, and `owner:
+    # frr:frr` here raced that install: Akamai's DataSourceAkamaiLocal
+    # processes write_files in an early pass that reliably loses this
+    # race, permanently failing with `getpwnam(): name not found: 'frr'`
+    # and leaving `cloud-init status` stuck reporting error forever (even
+    # once boot otherwise completes cleanly) -- a real, live-caught bug,
+    # not a hypothetical. The chown to frr:frr now happens explicitly in
+    # runcmd below, after packages are installed, right before frr
+    # starts -- required because buddy_sync.py's apply_secondary_ip()
+    # does `vtysh ... write memory`, which needs this file writable by
+    # the frr user to persist config across restarts.
+    permissions: '0640'
+    content: |
+      ! LNG buddy IP failover — base FRR config (v5, replaces lelastic).
+      ! router-id and the "primary" network statement (this node's own
+      ! public IP) are pushed once at boot by runcmd below, not templated
+      ! here. The "secondary" statement (buddy's IP) is added/removed live
+      ! by buddy-sync/buddy_sync.py. Mirrors controller/natctl/cloud_init.py's
+      ! render_frr_conf() — keep both in sync (docs/RUNBOOK.md).
+      router bgp 65001
+        no bgp ebgp-requires-policy
+        coalesce-time 1000
+        bgp bestpath as-path multipath-relax
+        neighbor RS peer-group
+        neighbor RS remote-as external
+        neighbor RS remote-as 65000
+        neighbor RS ebgp-multihop 10
+        neighbor RS capability extended-nexthop
+        neighbor 2600:3c0f:${linode_bgp_dcid}:34::1 peer-group RS
+        neighbor 2600:3c0f:${linode_bgp_dcid}:34::2 peer-group RS
+        neighbor 2600:3c0f:${linode_bgp_dcid}:34::3 peer-group RS
+        neighbor 2600:3c0f:${linode_bgp_dcid}:34::4 peer-group RS
+        address-family ipv4 unicast
+          redistribute static
+          neighbor RS activate
+        exit-address-family
+
+      route-map primary permit 10
+        set community 65000:1
+      route-map secondary permit 10
+        set community 65000:2
+
+      ipv6 nht resolve-via-default
+%{ endif ~}
+
+runcmd:
+  - sysctl --system
+  # v10: nftables.conf is fetched from Object Storage (per-node object,
+  # uploaded by terraform/modules/nat-fleet -- differs per node by IP/CIDR,
+  # so it isn't a candidate for the shared, one-per-environment artifacts
+  # module), not embedded -- see this file's v10 header note.
+  - curl -fsSL "${nftables_conf_url}" -o /etc/nftables.conf
+  - chown root:root /etc/nftables.conf
+  - chmod 0640 /etc/nftables.conf
+  - systemctl enable --now nftables
+  - nft -f /etc/nftables.conf
+  # Self-discover this node's own public IP(s) now that Linode has assigned
+  # them, and hand that to the exporter — see the note on /etc/nat-exporter/env
+  # above for why this can't be a template variable.
+  - |
+    PUB_IPS=$(ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1 | paste -sd, -)
+    echo "NAT_PUBLIC_IPS=$${PUB_IPS}" >> /etc/nat-exporter/env
+  # v9: exporter.py is fetched from Object Storage (terraform/modules/
+  # artifacts), not embedded in this document -- see that module's main.tf
+  # header comment (Linode's 16384-byte decoded cloud-init limit). `curl`
+  # is in packages: above, so it's already installed by the time runcmd
+  # runs. -f makes curl fail loudly (non-zero exit -> this whole cloud-init
+  # run reports failure, visible in `cloud-init status`) rather than
+  # silently writing an empty/error-page file if the fetch fails.
+  # v10: nat-exporter.service (the unit file itself) is now ALSO fetched
+  # the same way, one more static, non-secret file the shared artifacts
+  # module uploads once per environment. v21: agent_distribution picks
+  # between the .py source path (run via python3, default, unchanged
+  # from before v21) and a pre-compiled binary path -- see
+  # controller/natctl/cloud_init.py's matching v21 comment, this
+  # renderer must stay in sync with that one.
+  - mkdir -p /opt/nat-exporter
+%{ if agent_distribution == "binary" ~}
+  - curl -fsSL "${exporter_bin_url}" -o /opt/nat-exporter/nat-exporter
+  - chown root:root /opt/nat-exporter/nat-exporter
+  - chmod 0750 /opt/nat-exporter/nat-exporter
+%{ else ~}
+  - curl -fsSL "${exporter_py_url}" -o /opt/nat-exporter/exporter.py
+  - chown root:root /opt/nat-exporter/exporter.py
+  - chmod 0750 /opt/nat-exporter/exporter.py
+%{ endif ~}
+  - curl -fsSL "${nat_exporter_service_url}" -o /etc/systemd/system/nat-exporter.service
+  - chown root:root /etc/systemd/system/nat-exporter.service
+  - chmod 0644 /etc/systemd/system/nat-exporter.service
+  - systemctl daemon-reload
+  - systemctl enable --now nat-exporter
+%{ if ip_failover_enabled ~}
+  # v5: bring up FRR and push this node's own public IP in as router-id +
+  # the "primary" self-announcement — self-detected (not known until
+  # Linode creates this instance, same constraint as NAT_PUBLIC_IPS
+  # above), applied exactly once, and never touched again. Also appends
+  # NAT_PUBLIC_IP to buddy-sync's env file, which MUST happen before
+  # lng-buddy-sync starts below (it reads that file once at process
+  # start). buddy-sync/buddy_sync.py only ever touches the *secondary*
+  # network statement afterward, deliberately: live testing showed a
+  # `bgp router-id` change forces a full BGP session reset on every peer,
+  # while a `network ... route-map` statement change does not — see
+  # docs/ARCHITECTURE.md §3.6.1.
+  # v11: write_files left frr.conf as root:root (see that entry's comment
+  # above for why) -- fix ownership here, now that the frr package (and
+  # its frr:frr system user) is guaranteed present, before frr starts.
+  - chown frr:frr /etc/frr/frr.conf
+  - systemctl enable --now frr
+  - |
+%{ if reserved_public_ip != "" ~}
+    # reserved_ip_enabled: this node's eth0 address is a Reserved IP,
+    # already known at Terraform-render time (see nat-fleet/main.tf and
+    # nftables.conf.tftpl's matching comment) -- no need to self-detect it
+    # off eth0 here, which matters once a Reserved IP is in play since
+    # `ip addr show eth0 | head -n1` has no way to guarantee it picks the
+    # reserved address specifically over any other address that might be
+    # present on the interface.
+    PUB_IP="${reserved_public_ip}"
+%{ else ~}
+    PUB_IP=$(ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1 | head -n1)
+%{ endif ~}
+    mkdir -p /etc/systemd/network
+    printf '[Match]\nName=lo\n\n[Network]\nAddress=%s/32\n' "$PUB_IP" > /etc/systemd/network/10-lng-ip-failover.network
+    systemctl restart systemd-networkd
+    vtysh -c "configure terminal" -c "router bgp 65001" -c "bgp router-id $PUB_IP" -c "address-family ipv4 unicast" -c "network $PUB_IP/32 route-map primary" -c "exit-address-family" -c "end" -c "write memory"
+    echo "NAT_PUBLIC_IP=$${PUB_IP}" >> /etc/lng-buddy-sync/env
+%{ endif ~}
+%{ if natctl_roster_url != "" ~}
+  # `systemctl mask` (not just disable) the conntrack-tools package's own
+  # default conntrackd.service -- apt installing `conntrackd` auto-enables
+  # it with an empty stub /etc/conntrackd/conntrackd.conf, which would
+  # otherwise be free to bind UDP port 3780 and collide with one of
+  # buddy_sync.py's own per-peer conntrackd@<peer_node_id> instances (v8,
+  # see apply_conntrack_peers() in buddy-sync/buddy_sync.py). Masking also
+  # blocks anything else on the box from starting it later -- every
+  # conntrackd process this node ever runs goes through a
+  # conntrackd@<peer_node_id> instance from here on, never the bare
+  # default unit. Those per-peer instances themselves are intentionally
+  # NOT enabled here — buddy_sync.py starts each one once it learns that
+  # real peer from natctl, so nothing ever runs with an empty/bogus
+  # config in the window before that.
+  - systemctl mask --now conntrackd
+  # v9: buddy_sync.py is fetched from Object Storage, not embedded -- see
+  # the exporter.py comment above for the same reasoning/flags.
+  # v10: lng-buddy-sync.service and the conntrackd@.service TEMPLATE unit
+  # (both static, non-secret) are now ALSO fetched -- daemon-reload is
+  # required here (unlike the v9-and-earlier write_files path) since
+  # systemd hasn't seen either unit file until this curl step runs. v21:
+  # see the exporter.py block above's matching comment.
+  - mkdir -p /opt/lng-buddy-sync
+%{ if agent_distribution == "binary" ~}
+  - curl -fsSL "${buddy_sync_bin_url}" -o /opt/lng-buddy-sync/buddy-sync
+  - chown root:root /opt/lng-buddy-sync/buddy-sync
+  - chmod 0750 /opt/lng-buddy-sync/buddy-sync
+%{ else ~}
+  - curl -fsSL "${buddy_sync_py_url}" -o /opt/lng-buddy-sync/buddy_sync.py
+  - chown root:root /opt/lng-buddy-sync/buddy_sync.py
+  - chmod 0750 /opt/lng-buddy-sync/buddy_sync.py
+%{ endif ~}
+  - curl -fsSL "${lng_buddy_sync_service_url}" -o /etc/systemd/system/lng-buddy-sync.service
+  - curl -fsSL "${conntrackd_peer_service_url}" -o /etc/systemd/system/conntrackd@.service
+  - chown root:root /etc/systemd/system/lng-buddy-sync.service /etc/systemd/system/conntrackd@.service
+  - chmod 0644 /etc/systemd/system/lng-buddy-sync.service /etc/systemd/system/conntrackd@.service
+  - systemctl daemon-reload
+  - systemctl enable --now lng-buddy-sync
+%{ endif ~}
+%{ if natctl_on_node_enabled ~}
+  # v6: natctl-on-node. NATCTL_SELF_LINODE_ID can't be a template variable
+  # for the same reason NAT_PUBLIC_IPS/router-id above can't be — this
+  # node's own Linode instance ID is only assigned by Linode's API AFTER
+  # creation, and this cloud-init payload is embedded in that SAME create
+  # call (see the dependency-cycle note at the top of main.tf). Resolved
+  # instead via Linode's Instance Metadata Service (IMDS), the same
+  # self-lookup mechanism Linode documents for "what is my own instance
+  # ID" — see docs/RUNBOOK.md's natctl-on-node section. Falls back to
+  # leaving NATCTL_SELF_LINODE_ID unset (rather than writing a bogus
+  # value) if IMDS is unreachable or the image doesn't support it; natctl
+  # itself refuses to start with leader_election.enabled and no self
+  # identity (see main.py's build_leader_election()), so this fails
+  # closed, not silently.
+  # BUG FIX (found live, 2026-08-01): this used to pipe the IMDS response
+  # through `python3 -c 'import json,...; json.load(sys.stdin)...'`. Linode's
+  # IMDS (http://169.254.169.254/v1/instance) does NOT return JSON --
+  # confirmed live via `curl -i`: Content-Type: text/plain, body is plain
+  # "key: value" lines (id: 102018660, label: ..., etc). json.load() on
+  # that raised JSONDecodeError every time, so NATCTL_SELF_LINODE_ID was
+  # NEVER actually set by this path on any node that ever booted with it --
+  # silently, since the 2>/dev/null swallowed the traceback and the script
+  # just treated it as "empty result, log a warning and move on". Fixed to
+  # parse the real plain-text format directly (also drops the python3
+  # dependency for this one line).
+  - |
+    IMDS_TOKEN=$(curl -s -X PUT -H "Metadata-Token-Expiry-Seconds: 3600" http://169.254.169.254/v1/token)
+    if [ -n "$${IMDS_TOKEN}" ]; then
+      SELF_LINODE_ID=$(curl -s -H "Metadata-Token: $${IMDS_TOKEN}" http://169.254.169.254/v1/instance | grep '^id: ' | cut -d' ' -f2)
+      if [ -n "$${SELF_LINODE_ID}" ]; then
+        echo "NATCTL_SELF_LINODE_ID=$${SELF_LINODE_ID}" >> /etc/natctl/env
+      else
+        logger -t lng-cloud-init "WARNING: could not parse this node's own Linode instance ID from IMDS -- NATCTL_SELF_LINODE_ID left unset, natctl will refuse to start if leader_election.enabled"
+      fi
+    else
+      logger -t lng-cloud-init "WARNING: Linode Instance Metadata Service unreachable -- NATCTL_SELF_LINODE_ID left unset, natctl will refuse to start if leader_election.enabled"
+    fi
+  # v9: the natctl package itself (controller/natctl/*.py) is fetched from
+  # Object Storage, one curl per file, not embedded -- see the exporter.py
+  # comment above for the same reasoning. One `- curl ... -o ...` line per
+  # file (natctl_file_urls, from terraform/modules/artifacts) -- this loop
+  # unrolls at Terraform render time into one runcmd entry per file, same
+  # shape as the old write_files loop it replaces.
+  # v10: requirements.txt and the natctl.service unit (both static,
+  # non-secret) are now ALSO fetched instead of embedded. v21:
+  # agent_distribution == "binary" replaces the whole per-.py-file loop +
+  # pip install with one curl of a single pre-compiled executable -- see
+  # controller/natctl/cloud_init.py's matching v21 comment.
+%{ if agent_distribution == "binary" ~}
+  - mkdir -p /opt/natctl
+  - curl -fsSL "${natctl_bin_url}" -o /opt/natctl/natctl
+  - chown root:root /opt/natctl/natctl
+  - chmod 0750 /opt/natctl/natctl
+%{ else ~}
+  - mkdir -p /opt/natctl/natctl
+  - curl -fsSL "${natctl_requirements_txt_url}" -o /opt/natctl/requirements.txt
+%{ for rel_path, url in natctl_file_urls ~}
+  - curl -fsSL "${url}" -o /opt/natctl/natctl/${rel_path}
+%{ endfor ~}
+  - chmod -R 0644 /opt/natctl/natctl
+%{ endif ~}
+  - curl -fsSL "${natctl_service_url}" -o /etc/systemd/system/natctl.service
+  - chown root:root /etc/systemd/system/natctl.service
+  - chmod 0644 /etc/systemd/system/natctl.service
+%{ if agent_distribution != "binary" ~}
+  - pip3 install -r /opt/natctl/requirements.txt
+%{ endif ~}
+  - systemctl daemon-reload
+  - systemctl enable --now natctl
+%{ endif ~}
+  - logger -t lng-cloud-init "LNG NAT node ${node_name} (pool=${pool_name}) bootstrap complete"
