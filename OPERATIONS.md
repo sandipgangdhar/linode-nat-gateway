@@ -93,17 +93,18 @@ Four layered mechanisms, each closing a specific gap:
 
 1. **Client-side ECMP** (always on). Survives a node dying — but a single in-flight TCP connection on that node is lost. No NAT design avoids this on its own.
 2. **Conntrack buddy-pair sync** (opt-in: `conntrack_buddy_sync_enabled`). Mirrors connection-tracking state between paired nodes. On its own this does nothing useful — the dead node's IP still isn't reachable — it only pays off combined with layer 3.
-3. **Buddy IP failover** (opt-in: `ip_failover_enabled`). FRR (FRRouting) plus Akamai's BGP-based IP Sharing — every node is bidirectionally both its own primary announcer and its buddy's secondary. `ip_failover_auto_configure` gates the actual Linode IP-share API call (off by default — an operator authorizes the first pairing manually via Cloud Manager or `linode-cli networking ip-share`, then `natctl` keeps it updated automatically as pairings reshuffle).
+3. **Buddy IP failover** (opt-in: `ip_failover_enabled`). FRR (FRRouting) plus Akamai's BGP-based IP Sharing — every node is bidirectionally both its own primary announcer and its buddy's secondary. `ip_failover_auto_configure` gates the actual Linode IP-share API call and **defaults to true**: `natctl` authorizes each pairing itself as it forms. This matters more than it might look — without a registered IP-share, Akamai's BGP route reflectors reject the session outright (TCP connects, but every BGP OPEN gets an immediate close), so failover doesn't degrade without it, it simply never comes up. Set it `false` only if you want to authorize the first pairing yourself via Cloud Manager or `linode-cli networking ip-share` before trusting `natctl` with it.
 4. **Odd node counts**: with 3+ healthy nodes and an odd count, one node ("the hub") backs up two buddies instead of one — no node is ever left fully unprotected.
 
 **Zombie-node handling**: `natctl` checks *healthy* node count against `min_nodes`, not raw count. A persistently-unhealthy elastic node is drained and replaced automatically after `unhealthy_replace_after_seconds`. A Terraform-managed floor node is **never** auto-touched — `natctl` instead provisions extra elastic capacity to compensate, and the pool running above its nominal floor with one node marked unhealthy is expected, not itself an error.
 
 **Turning on HA deliberately**, in order:
 1. Set `conntrack_buddy_sync_enabled = true` and redeploy — starts mirroring state, nothing user-visible yet.
-2. Set `ip_failover_enabled = true`. Leave `ip_failover_auto_configure` off for the first pairing.
-3. Verify a pairing converged (check the roster's `ip_failover_buddy_ips` field, or the `nat_conntrack_buddy_paired` Grafana panel) before trusting it.
+2. Set `ip_failover_enabled = true` (`ip_failover_auto_configure` stays at its default of `true`, so no separate action is needed for `natctl` to authorize pairings itself).
+3. Verify a pairing converged (check the roster's `ip_failover_buddy_ips` field, or the `nat_conntrack_buddy_paired` Grafana panel) and that BGP actually established (`vtysh -c "show bgp summary"` should show `Established`, not `Active`) before trusting it.
 4. Only then run a real failover drill (`acceptance-tests/checks/check_04_ip_failover_bgp.py`) to prove it end to end.
-5. Once you've watched it converge correctly, flip `ip_failover_auto_configure = true` if you want `natctl` to keep it updated automatically going forward.
+
+If you'd rather authorize the first pairing yourself before `natctl` touches it, set `ip_failover_auto_configure = false`, run `linode-cli networking ip-share` by hand for both directions, watch it converge, then flip it back to `true`.
 
 ## Changing instance types
 

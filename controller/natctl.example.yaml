@@ -32,9 +32,14 @@
 #   this file's matching pool block in sync -- vlan_cidr and ip_failover
 #   settings must agree, since Terraform provisions the floor and natctl
 #   provisions elastic capacity for the exact same pool.
-# - Leave ip_failover_auto_configure off until you've read
-#   docs/RUNBOOK.md's "Enable buddy IP failover for a pool" procedure --
-#   it's a real, reachability-affecting change, not a cosmetic toggle.
+# - ip_failover_auto_configure defaults true below because leaving it off
+#   with no manual `linode-cli networking ip-share` ever run means buddy
+#   IP failover silently never establishes at all -- BGP sessions just
+#   sit in Active forever, no error surfaced (see PoolConfig's field
+#   comment in controller/natctl/config.py for the live incident this is
+#   based on). Set it false only if you specifically want to run the
+#   first pairing by hand and watch it converge -- see docs/RUNBOOK.md's
+#   "Enable buddy IP failover for a pool" procedure.
 #
 # -----------------------------------------------------
 # Author:
@@ -105,12 +110,12 @@ pools:
     # — deliberately not defaulted here.
     ip_failover_enabled: false
     linode_bgp_dcid: null
-    # SAFETY GATE, default off — see PoolConfig.ip_failover_auto_configure
-    # in controller/natctl/config.py for why. Leave false until you've
-    # manually run the first `linode-cli networking ip-share` yourself and
-    # watched failover converge once; natctl keeps it updated automatically
-    # after that if you flip this on.
-    ip_failover_auto_configure: false
+    # Defaults true — see PoolConfig.ip_failover_auto_configure in
+    # controller/natctl/config.py for why (leaving it false with no manual
+    # `linode-cli networking ip-share` ever run means BGP IP failover
+    # silently never establishes). Set false only if you want to run the
+    # first pairing by hand and watch it converge before trusting natctl.
+    ip_failover_auto_configure: true
     autoscale:
       conntrack_high_watermark: 0.70
       conntrack_low_watermark: 0.30
@@ -148,7 +153,7 @@ pools:
     vlan_static_ceiling: ""
     ip_failover_enabled: false
     linode_bgp_dcid: null
-    ip_failover_auto_configure: false
+    ip_failover_auto_configure: true
     autoscale:
       conntrack_high_watermark: 0.70
       cooldown_seconds: 300
