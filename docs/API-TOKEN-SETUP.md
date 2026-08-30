@@ -30,6 +30,7 @@ A token with `*` (unscoped, full account access) will work, but it is not least-
 | `ips` | `read_write` | Reserved IP creation/release (`linode_networking_ip`, opt-in `reserved_ip_enabled`), extra egress IPs (`linode_instance_ip`), and BGP-based IP Sharing calls (`natctl`'s buddy IP failover, `docs/ARCHITECTURE.md` §3.6). |
 | `object_storage` | `read_write` | Uploading exporter/buddy-sync/natctl source and per-node config to Object Storage at boot-fetch time (`terraform/modules/artifacts`, `controller/natctl/object_storage.py`) — see that module's own header comment for why files are fetched at boot instead of embedded in cloud-init. |
 | `vpc` | `read_only` | LNG **reuses an existing VPC and its subnets** — see `docs/RUNBOOK.md`'s "Bring your own VPC" section — it never creates, modifies, or deletes a VPC or subnet, only reads one via a Terraform `data` source. `read_write` is not needed and should not be granted. |
+| `events` | `read_only` | **Required for `terraform destroy`/`apply` to actually complete** — real gap found live, 2026-08-30: the Linode Terraform provider polls `/account/events` internally to confirm an async operation (instance create/delete, etc.) has finished, independent of whichever specific resource scope (`linodes`, `firewall`, ...) authorized the operation itself. Without this scope, `terraform destroy` issues the delete calls but then fails with `"failed to initialize event poller: ... [401] Your OAuth token is not authorized to use this endpoint"` before confirming completion — the delete may or may not have actually gone through, leaving Terraform state inconsistent with real infrastructure. Confirmed missing from this project's own least-privilege token until this finding; add it. |
 
 Every other scope category (`account`, `domains`, `nodebalancers`, `lke`, `databases`, `stackscripts`, `longview`, `images`, and so on) should be **left unset entirely** — LNG never calls any API under those categories. Do not grant `account` access "just in case"; it exposes billing and user-management endpoints this project has no use for.
 
@@ -51,7 +52,7 @@ Equivalent, non-interactive version of the same steps:
 ```bash
 linode-cli profile token-create \
   --label "lng-<environment>-automation" \
-  --scopes "linodes:read_write,firewall:read_write,ips:read_write,object_storage:read_write,vpc:read_only" \
+  --scopes "linodes:read_write,firewall:read_write,ips:read_write,object_storage:read_write,vpc:read_only,events:read_only" \
   --text --no-headers --format token
 ```
 

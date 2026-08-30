@@ -1,0 +1,33 @@
+# .gitignore (repository root) -- CUSTOMER-FACING DISTRIBUTION
+#
+# Real gap found live, 2026-08-30: the publish pipeline had no .gitignore
+# at all in this repo until this file existed -- meaning a customer's own
+# terraform.tfvars (Linode API token, root_pass) or *.tfstate (which can
+# contain sensitive values in plan output) had no protection against
+# being accidentally committed. Mirrors the dev repo's own .gitignore,
+# trimmed to what's actually relevant here (no Python source ships in
+# this repo, so no __pycache__/venv/pytest-cache entries needed).
+#
+# Author: Sandip Gangdhar (https://github.com/sandipgangdhar)
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+crash.log
+crash.*.log
+.terraformrc
+terraform.rc
+
+# Acceptance-test suite: keep the template (config.example.yaml), ignore
+# the real one -- it carries live SSH paths and credentials.
+acceptance-tests/config.yaml
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
