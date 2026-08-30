@@ -65,6 +65,10 @@ locals {
     : var.natctl_roster_base_url
   )
 
+  # REAL BUG found live, 2026-08-30 (M11) -- see client-node.yaml.tftpl's
+  # matching comment. Static, non-secret content, safe to embed directly.
+  lng_client_agent_service_content = file("${path.module}/../../../client-agent/lng-client-agent.service")
+
   vlan_prefix = try(split("/", var.vlan_cidr)[1], "")
   client_vlan_ips = {
     for i, node_id in local.node_ids :
@@ -124,14 +128,15 @@ resource "linode_instance" "client" {
 locals {
   client_cloud_init = {
     for node_id in local.node_ids : node_id => templatefile("${path.module}/../../../ansible/cloud-init/client-node.yaml.tftpl", {
-      node_name              = node_id
-      node_id                = node_id
-      pool_name              = var.pool_name
-      vlan_iface             = local.vlan_iface
-      static_vlan_ip         = local.client_vlan_ips[node_id]
-      vlan_prefix            = local.vlan_prefix
-      enable_nat_egress      = local.enable_nat_egress
-      natctl_roster_base_url = local.natctl_roster_url_effective
+      node_name                        = node_id
+      node_id                          = node_id
+      pool_name                        = var.pool_name
+      vlan_iface                       = local.vlan_iface
+      static_vlan_ip                   = local.client_vlan_ips[node_id]
+      vlan_prefix                      = local.vlan_prefix
+      enable_nat_egress                = local.enable_nat_egress
+      natctl_roster_base_url           = local.natctl_roster_url_effective
+      lng_client_agent_service_content = local.lng_client_agent_service_content
     })
   }
 }

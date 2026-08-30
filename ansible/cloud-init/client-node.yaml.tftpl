@@ -83,6 +83,24 @@ write_files:
       LNG_HEALTH_PROBE_INTERVAL=3
       LNG_HEALTH_PROBE_TIMEOUT=1.5
       LNG_DRY_RUN=false
+
+  # REAL BUG found live, 2026-08-30 (M11 of the customer-repo live-test
+  # program): this file originally fetched the client-agent BINARY but
+  # never wrote its systemd unit anywhere, so `systemctl enable --now
+  # lng-client-agent` in runcmd below failed with "Unit file
+  # lng-client-agent.service does not exist" -- confirmed live, the
+  # binary landed correctly on disk but the service never started at
+  # all. The unit file is tiny, static, and non-secret, so -- unlike the
+  # binary itself -- there's no reason to fetch it separately; just embed
+  # it directly, same as the VLAN network config above. Content comes
+  # from client-agent/lng-client-agent.service (the customer repo's own
+  # binary-mode unit, already checked into this repo) via this overlay's
+  # terraform/modules/client-fleet/main.tf.
+  - path: /etc/systemd/system/lng-client-agent.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      ${indent(6, lng_client_agent_service_content)}
 %{ endif ~}
 
 runcmd:
