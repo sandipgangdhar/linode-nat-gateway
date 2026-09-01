@@ -19,12 +19,13 @@
 # -----------------------------------------------------
 # Two ways to run this:
 #
-# 1) MANUALLY, on an already-running server, as root, with flags:
+# 1) MANUALLY, on an already-running server, as root, with flags. No
+#    internet access needed on this server -- client-agent is fetched
+#    over the roster connection itself (see --artifact-base-url below):
 #
 #    ./install-nat-client.sh \
 #      --roster-url http://10.60.32.20:8099/fleet/shared \
-#      --vlan-ip 192.168.100.251/22 \
-#      --artifact-base-url https://lng-artifacts.in-maa-1.linodeobjects.com/lng-artifacts
+#      --vlan-ip 192.168.100.251/22
 #
 # 2) As LINODE USER DATA (Cloud Manager "Add-ons" tab at create time, or
 #    `linode-cli linodes rebuild --metadata.user_data`), so a fresh
@@ -37,7 +38,6 @@
 #    #!/usr/bin/env bash
 #    export LNG_ROSTER_URL="http://10.60.32.20:8099/fleet/shared"
 #    export LNG_VLAN_IP="192.168.100.251/22"
-#    export LNG_ARTIFACT_BASE_URL="https://lng-artifacts.in-maa-1.linodeobjects.com/lng-artifacts"
 #    # ... paste the rest of install-nat-client.sh's body from the
 #    # "set -euo pipefail" line down ...
 #
@@ -67,13 +67,29 @@
 #      collisions yourself (`linode-cli vlans list`, cross-referenced
 #      against each member's ipam_address) before picking one.
 #
-# 3) --artifact-base-url <url> / LNG_ARTIFACT_BASE_URL (required)
-#      Base URL of your deployment's artifacts bucket, WITHOUT a
-#      trailing slash, e.g.
+# 3) --artifact-base-url <url> / LNG_ARTIFACT_BASE_URL (optional)
+#      DEFAULT BEHAVIOR (no flag needed): client-agent is fetched from
+#      natctl's own roster API -- GET <roster origin>/agents/client-agent
+#      -- derived automatically from --roster-url by stripping its path.
+#      This is deliberate, not a shortcut: a "vlan_only"/"vpc_vlan" client
+#      has NO internet path of its own until client-agent itself brings
+#      one up (that's the entire point of those modes), so it can never
+#      reach an internet-facing Object Storage URL directly -- confirmed
+#      live, 2026-09-01 (a real DNS/routing failure against the bucket
+#      URL on a genuinely private-only test client). natctl itself
+#      fetches the binary from Object Storage once at ITS OWN startup
+#      (it has real internet via its own public IP) and re-serves it
+#      locally over the same roster host/port -- see
+#      controller/natctl/api.py's GET /agents/client-agent (dev repo) and
+#      terraform/environments/example/main.tf's client_agent_bin_url
+#      wiring. Only pass this flag to override with a direct Object
+#      Storage fetch instead -- e.g. for a "public_vlan"-mode client that
+#      already has its own internet path and would rather not depend on
+#      natctl's serving endpoint being configured/reachable. If given:
+#      base URL of your artifacts bucket, WITHOUT a trailing slash, e.g.
 #      https://lng-artifacts.in-maa-1.linodeobjects.com/lng-artifacts
 #      (matches terraform/modules/artifacts main.tf's key layout --
-#      this script fetches "<base>/bin/client-agent"). Same bucket your
-#      terraform.tfvars' natctl_object_storage_bucket/_endpoint point at.
+#      fetches "<base>/bin/client-agent").
 #
 # 4) --vlan-iface <name> / LNG_VLAN_IFACE (optional)
 #      Which network interface is the VLAN one. If omitted, this script
@@ -134,7 +150,13 @@ done
 
 : "${LNG_ROSTER_URL:?--roster-url (or LNG_ROSTER_URL) is required, e.g. http://10.60.32.20:8099/fleet/shared}"
 : "${LNG_VLAN_IP:?--vlan-ip (or LNG_VLAN_IP) is required, e.g. 192.168.100.251/22}"
-: "${LNG_ARTIFACT_BASE_URL:?--artifact-base-url (or LNG_ARTIFACT_BASE_URL) is required, e.g. https://lng-artifacts.in-maa-1.linodeobjects.com/lng-artifacts}"
+# LNG_ARTIFACT_BASE_URL is intentionally optional now -- see the
+# --artifact-base-url parameter comment above. Left unset, client-agent
+# is fetched from natctl's own roster API instead of an internet-facing
+# Object Storage URL, which is what actually works for a private-only
+# ("vlan_only"/"vpc_vlan") client (confirmed live, 2026-09-01, against a
+# genuinely internet-less test client -- the bucket-URL fetch just hung
+# on DNS resolution, exactly as expected for a host with no route out).
 LNG_ROSTER_POLL_INTERVAL="${LNG_ROSTER_POLL_INTERVAL:-30}"
 LNG_HEALTH_PROBE_INTERVAL="${LNG_HEALTH_PROBE_INTERVAL:-3}"
 LNG_HEALTH_PROBE_TIMEOUT="${LNG_HEALTH_PROBE_TIMEOUT:-1.5}"
@@ -188,10 +210,26 @@ ip link set "${LNG_VLAN_IFACE}" up
 #    host may not have yet if its only path out is the NAT gateway this
 #    script hasn't finished configuring (same chicken-and-egg reasoning
 #    as ansible/cloud-init/client-node.yaml.tftpl).
+#
+#    Default source: natctl's own roster API (same host/port as
+#    LNG_ROSTER_URL, just a different path) -- reachable over VPC/VLAN
+#    with no internet needed, since natctl already fetched this binary
+#    itself at its own startup and re-serves it locally. Only use the
+#    Object Storage bucket directly if LNG_ARTIFACT_BASE_URL was
+#    explicitly passed (a client that already has its own internet path
+#    and would rather not depend on natctl's serving endpoint).
+if [[ -n "${LNG_ARTIFACT_BASE_URL:-}" ]]; then
+  CLIENT_AGENT_URL="${LNG_ARTIFACT_BASE_URL}/bin/client-agent"
+else
+  ROSTER_ORIGIN="$(printf '%s' "${LNG_ROSTER_URL}" | sed -E 's#(https?://[^/]+).*#\1#')"
+  CLIENT_AGENT_URL="${ROSTER_ORIGIN}/agents/client-agent"
+fi
+echo "Fetching client-agent from: ${CLIENT_AGENT_URL}"
+
 mkdir -p /opt/lng-client-agent
 python3 -c "
 import urllib.request
-urllib.request.urlretrieve('${LNG_ARTIFACT_BASE_URL}/bin/client-agent', '/opt/lng-client-agent/client-agent')
+urllib.request.urlretrieve('${CLIENT_AGENT_URL}', '/opt/lng-client-agent/client-agent')
 "
 chmod +x /opt/lng-client-agent/client-agent
 
