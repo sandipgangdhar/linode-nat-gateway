@@ -1,0 +1,1268 @@
+<title>NAT Gateway: The Definitive Guide</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,900&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root{
+  --paper:#f7f4ec;
+  --paper-raised:#ffffff;
+  --ink:#1b1f2b;
+  --ink-soft:#5a5f74;
+  --ink-faint:#8a8fa0;
+  --line:#ded8c6;
+  --line-strong:#c9c2ab;
+  --accent:#3c4bc9;
+  --accent-strong:#2e3aa3;
+  --accent-soft:#e9eafb;
+  --surface:#efece0;
+  --good:#1f8a52;
+  --good-soft:#e3f3e9;
+  --warn:#a8690f;
+  --warn-soft:#f8ecd8;
+  --crit:#bd3b3b;
+  --crit-soft:#fbe6e5;
+  --code-bg:#181c28;
+  --code-ink:#dfe3f0;
+  --code-key:#8fb3ff;
+  --code-str:#c9d97a;
+  --code-mut:#7a8095;
+  --shadow: 0 1px 2px rgba(30,25,10,.06), 0 8px 24px rgba(30,25,10,.06);
+  --serif-display:'Fraunces', 'Iowan Old Style', 'Palatino Linotype', serif;
+  --serif-body:'Source Serif 4', 'Iowan Old Style', Georgia, serif;
+  --mono:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#11141d;
+    --paper-raised:#171b28;
+    --ink:#e9e6da;
+    --ink-soft:#a3a8c0;
+    --ink-faint:#6d7290;
+    --line:#2b3044;
+    --line-strong:#3a4058;
+    --accent:#8b9bfb;
+    --accent-strong:#aab6ff;
+    --accent-soft:#1d2340;
+    --surface:#1a1e2c;
+    --good:#5cc98d;
+    --good-soft:#173427;
+    --warn:#e0ab52;
+    --warn-soft:#3a2c14;
+    --crit:#f08585;
+    --crit-soft:#3a1c1e;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 32px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#11141d;
+  --paper-raised:#171b28;
+  --ink:#e9e6da;
+  --ink-soft:#a3a8c0;
+  --ink-faint:#6d7290;
+  --line:#2b3044;
+  --line-strong:#3a4058;
+  --accent:#8b9bfb;
+  --accent-strong:#aab6ff;
+  --accent-soft:#1d2340;
+  --surface:#1a1e2c;
+  --good:#5cc98d;
+  --good-soft:#173427;
+  --warn:#e0ab52;
+  --warn-soft:#3a2c14;
+  --crit:#f08585;
+  --crit-soft:#3a1c1e;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 32px rgba(0,0,0,.35);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font-family:var(--serif-body);
+  font-size:16.5px;
+  line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3,h4{font-family:var(--serif-display);color:var(--ink);text-wrap:balance;font-weight:700;letter-spacing:-.01em}
+a{color:var(--accent)}
+code, pre, .mono{font-family:var(--mono)}
+
+/* ---------- layout shell ---------- */
+.shell{display:flex;min-height:100vh}
+.sidebar{
+  width:308px;flex:0 0 308px;
+  border-right:1px solid var(--line);
+  background:var(--paper-raised);
+  position:sticky;top:0;height:100vh;overflow-y:auto;
+  padding:28px 22px 60px;
+}
+.sidebar::-webkit-scrollbar{width:8px}
+.sidebar::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:4px}
+
+.brand{display:flex;align-items:flex-start;gap:10px;margin-bottom:22px;padding-bottom:18px;border-bottom:1px solid var(--line)}
+.brand-otto{width:34px;height:34px;flex:0 0 34px;border-radius:50%;background:var(--accent-soft);display:flex;align-items:center;justify-content:center;margin-top:1px}
+.brand-otto svg{width:76%;height:76%}
+.brand-text{display:flex;flex-direction:column;gap:2px}
+.brand-mark{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:600}
+.brand-title{font-family:var(--serif-display);font-size:19px;font-weight:700;line-height:1.15;margin-top:4px}
+
+/* ---------- mascot ---------- */
+.mascot-badge{
+  width:132px;height:132px;flex:0 0 132px;border-radius:50%;
+  background:radial-gradient(circle at 50% 38%,var(--accent-soft),var(--surface));
+  border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+  box-shadow:var(--shadow);
+}
+.mascot-badge svg{width:70%;height:70%}
+.cover-top{display:flex;align-items:center;gap:26px;flex-wrap:wrap}
+
+.toc-part{margin-top:22px}
+.toc-part:first-of-type{margin-top:0}
+.toc-part-label{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-faint);margin:0 0 6px 2px;display:flex;gap:8px;align-items:baseline;
+}
+.toc-part-label b{color:var(--accent);font-weight:600}
+.toc-list{list-style:none;margin:0;padding:0}
+.toc-list li a{
+  display:block;padding:5px 8px;border-radius:6px;
+  font-size:14px;color:var(--ink-soft);text-decoration:none;
+  border-left:2px solid transparent;
+}
+.toc-list li a:hover{background:var(--surface);color:var(--ink)}
+.toc-list li a.active{color:var(--accent);border-left-color:var(--accent);background:var(--accent-soft);font-weight:600}
+
+.menu-btn{display:none}
+
+main{flex:1;min-width:0;padding:0}
+.content{max-width:820px;margin:0 auto;padding:64px 48px 140px}
+
+/* ---------- cover ---------- */
+.cover{
+  min-height:78vh;display:flex;flex-direction:column;justify-content:center;gap:22px;
+  border-bottom:1px solid var(--line);padding-bottom:56px;margin-bottom:56px;
+}
+.cover-eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);font-weight:600}
+.cover h1{font-size:clamp(38px,5.4vw,64px);line-height:1.03;margin:0;max-width:14ch}
+.cover .subtitle{font-family:var(--serif-body);font-size:19px;color:var(--ink-soft);max-width:56ch;font-style:italic}
+.cover-meta{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
+.pill{
+  font-family:var(--mono);font-size:11.5px;letter-spacing:.03em;color:var(--ink-soft);
+  border:1px solid var(--line-strong);border-radius:999px;padding:5px 12px;background:var(--paper-raised)
+}
+.cover-diagram{margin-top:18px}
+
+/* ---------- part & chapter headers ---------- */
+.part-open{
+  margin:88px 0 34px;padding-top:8px;
+}
+.part-open:first-of-type{margin-top:0}
+.part-num{font-family:var(--mono);font-size:13px;letter-spacing:.1em;color:var(--accent);font-weight:600;text-transform:uppercase}
+.part-title{font-size:clamp(26px,3.4vw,34px);margin:6px 0 10px}
+.part-dek{color:var(--ink-soft);font-size:16px;max-width:62ch}
+.part-rule{height:1px;background:linear-gradient(90deg,var(--accent),transparent);margin-top:22px}
+
+section.chapter{margin:52px 0;scroll-margin-top:24px}
+.chapter h2{font-size:24px;display:flex;align-items:baseline;gap:10px;margin-bottom:14px}
+.chapter h2 .chno{font-family:var(--mono);font-size:14px;color:var(--ink-faint);font-weight:500}
+.chapter h3{font-size:18px;margin:26px 0 10px}
+.chapter p{margin:12px 0}
+.chapter ul, .chapter ol{padding-left:22px;margin:12px 0}
+.chapter li{margin:6px 0}
+.lede{font-size:17.5px;color:var(--ink-soft)}
+
+/* ---------- callouts ---------- */
+.callout{
+  border:1px solid var(--line);border-left:3px solid var(--accent);
+  background:var(--surface);border-radius:8px;padding:14px 18px;margin:18px 0;
+  font-size:15px;
+}
+.callout.warn{border-left-color:var(--warn);background:var(--warn-soft)}
+.callout.crit{border-left-color:var(--crit);background:var(--crit-soft)}
+.callout.good{border-left-color:var(--good);background:var(--good-soft)}
+.callout .co-label{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink-faint);display:block;margin-bottom:4px}
+.callout.warn .co-label{color:var(--warn)}
+.callout.crit .co-label{color:var(--crit)}
+.callout.good .co-label{color:var(--good)}
+
+/* ---------- tables ---------- */
+.table-wrap{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}
+table{border-collapse:collapse;width:100%;background:var(--paper-raised);font-size:14.5px}
+thead th{
+  text-align:left;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink-faint);background:var(--surface);padding:10px 14px;border-bottom:1px solid var(--line);white-space:nowrap;
+}
+tbody td{padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+tbody tr:last-child td{border-bottom:none}
+tbody td:first-child{font-weight:600;white-space:nowrap}
+td code, th code{background:var(--surface);padding:1px 5px;border-radius:4px;font-size:12.5px}
+
+/* ---------- badges ---------- */
+.badge{display:inline-block;font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;padding:2px 8px;border-radius:5px;font-weight:600}
+.badge.crit{background:var(--crit-soft);color:var(--crit)}
+.badge.warn{background:var(--warn-soft);color:var(--warn)}
+.badge.info{background:var(--accent-soft);color:var(--accent)}
+
+/* ---------- code ---------- */
+pre.code{
+  background:var(--code-bg);color:var(--code-ink);border-radius:10px;padding:16px 18px;
+  overflow-x:auto;font-size:13.5px;line-height:1.6;box-shadow:var(--shadow);margin:16px 0;
+}
+pre.code .k{color:var(--code-key)}
+pre.code .s{color:var(--code-str)}
+pre.code .m{color:var(--code-mut)}
+.formula{
+  font-family:var(--mono);background:var(--code-bg);color:var(--code-ink);
+  border-radius:10px;padding:18px 22px;text-align:center;font-size:16px;margin:18px 0;box-shadow:var(--shadow);
+}
+
+/* ---------- diagrams ---------- */
+.diagram-frame{
+  border:1px solid var(--line);border-radius:12px;background:var(--paper-raised);
+  padding:18px;margin:20px 0;box-shadow:var(--shadow);overflow-x:auto;
+}
+.diagram-cap{font-family:var(--mono);font-size:11.5px;color:var(--ink-faint);text-align:center;margin-top:8px}
+
+/* ---------- component cards ---------- */
+.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px;margin:20px 0}
+.card{border:1px solid var(--line);border-radius:10px;padding:16px;background:var(--paper-raised);box-shadow:var(--shadow)}
+.card h4{font-size:15px;margin:0 0 6px;font-family:var(--serif-body);font-weight:700}
+.card .tag{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--accent)}
+.card p{font-size:13.5px;color:var(--ink-soft);margin:8px 0 0}
+
+/* ---------- footer ---------- */
+.book-footer{border-top:1px solid var(--line);margin-top:80px;padding-top:26px;display:flex;flex-direction:column;gap:16px}
+.footer-mascot{display:flex;align-items:center;gap:12px}
+.footer-otto-badge{width:44px;height:44px;flex:0 0 44px;border-radius:50%;background:var(--accent-soft);border:1px solid var(--line);display:flex;align-items:center;justify-content:center}
+.footer-otto-badge svg{width:72%;height:72%}
+.footer-mascot-text{display:flex;flex-direction:column;gap:1px}
+.footer-otto-name{font-family:var(--serif-display);font-weight:700;font-size:15px;color:var(--ink)}
+.footer-otto-role{font-family:var(--mono);font-size:11.5px;color:var(--ink-faint);font-style:italic}
+.footer-desc{color:var(--ink-faint);font-size:13px;font-family:var(--mono)}
+
+::selection{background:var(--accent-soft);color:var(--ink)}
+
+@media (max-width: 920px){
+  .sidebar{position:fixed;left:0;top:0;z-index:40;transform:translateX(-100%);transition:transform .2s ease;box-shadow:var(--shadow)}
+  .sidebar.open{transform:translateX(0)}
+  .menu-btn{
+    display:flex;position:fixed;top:14px;left:14px;z-index:50;align-items:center;gap:8px;
+    background:var(--paper-raised);border:1px solid var(--line-strong);border-radius:8px;
+    padding:8px 12px;font-family:var(--mono);font-size:12px;color:var(--ink);box-shadow:var(--shadow);
+  }
+  .content{padding:88px 22px 100px}
+  .cover{min-height:60vh}
+}
+</style>
+
+<div class="shell">
+  <button class="menu-btn" id="menuBtn">☰ Contents</button>
+  <nav class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-otto" aria-hidden="true">
+        <svg viewBox="0 0 240 240">
+          <g fill="none" stroke="#5b4b9e" stroke-width="14" stroke-linecap="round">
+            <path d="M92,150 C60,175 40,190 34,214"/>
+            <path d="M104,162 C86,192 76,205 68,224"/>
+            <path d="M120,168 C118,198 116,210 116,228"/>
+            <path d="M136,162 C154,192 164,205 172,224"/>
+            <path d="M148,150 C180,175 200,190 206,214"/>
+          </g>
+          <g fill="#3c4bc9">
+            <circle cx="34" cy="214" r="8"/><circle cx="68" cy="224" r="8"/><circle cx="116" cy="228" r="8"/>
+            <circle cx="172" cy="224" r="8"/><circle cx="206" cy="214" r="8"/>
+          </g>
+          <ellipse cx="120" cy="115" rx="66" ry="62" fill="#6a5aad"/>
+          <circle cx="98" cy="105" r="19" fill="#fbf6ea"/><circle cx="142" cy="105" r="19" fill="#fbf6ea"/>
+          <circle cx="101" cy="108" r="9" fill="#221a2e"/><circle cx="145" cy="108" r="9" fill="#221a2e"/>
+          <path d="M104,132 C112,140 128,140 136,132" fill="none" stroke="#221a2e" stroke-width="4" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <span class="brand-mark">Reference · Edition 1</span>
+        <span class="brand-title">NAT Gateway: The Definitive Guide</span>
+      </div>
+    </div>
+    <div id="tocRoot"></div>
+  </nav>
+
+  <main>
+    <div class="content" id="content">
+
+      <!-- ============ COVER ============ -->
+      <div class="cover">
+        <div class="cover-top">
+          <div class="mascot-badge" aria-hidden="true">
+            <svg viewBox="0 0 240 240">
+              <g fill="none" stroke="#5b4b9e" stroke-width="14" stroke-linecap="round">
+                <path d="M92,150 C60,175 40,190 34,214"/>
+                <path d="M104,162 C86,192 76,205 68,224"/>
+                <path d="M120,168 C118,198 116,210 116,228"/>
+                <path d="M136,162 C154,192 164,205 172,224"/>
+                <path d="M148,150 C180,175 200,190 206,214"/>
+              </g>
+              <g fill="#3c4bc9">
+                <circle cx="34" cy="214" r="8"/><circle cx="68" cy="224" r="8"/><circle cx="116" cy="228" r="8"/>
+                <circle cx="172" cy="224" r="8"/><circle cx="206" cy="214" r="8"/>
+              </g>
+              <ellipse cx="120" cy="115" rx="66" ry="62" fill="#6a5aad"/>
+              <circle cx="98" cy="105" r="19" fill="#fbf6ea"/><circle cx="142" cy="105" r="19" fill="#fbf6ea"/>
+              <circle cx="101" cy="108" r="9" fill="#221a2e"/><circle cx="145" cy="108" r="9" fill="#221a2e"/>
+              <path d="M104,132 C112,140 128,140 136,132" fill="none" stroke="#221a2e" stroke-width="4" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div>
+            <span class="cover-eyebrow">Akamai Cloud · Self-Operated Networking</span>
+            <h1>NAT Gateway: The Definitive Guide</h1>
+          </div>
+        </div>
+        <p class="subtitle">Everything required to deploy, operate, and scale a highly available, self-hosted NAT gateway — built entirely on Akamai Cloud's own compute, VPC, VLAN, firewall, and BGP primitives.</p>
+        <div class="cover-meta">
+          <span class="pill">Architecture</span>
+          <span class="pill">Control Plane</span>
+          <span class="pill">High Availability</span>
+          <span class="pill">Autoscaling</span>
+          <span class="pill">Observability</span>
+          <span class="pill">Day-2 Operations</span>
+        </div>
+      </div>
+
+      <!-- ============ PART I ============ -->
+      <div class="part-open" id="part-1">
+        <div class="part-num">Part I</div>
+        <h2 class="part-title" style="font-size:clamp(26px,3.4vw,34px)">Architecture &amp; Design</h2>
+        <p class="part-dek">What a NAT gateway pool actually is on Akamai Cloud, the one networking fact that shapes every other design decision in this book, and why every node carries three interfaces instead of one.</p>
+        <div class="part-rule"></div>
+      </div>
+
+      <section class="chapter" id="c1-1">
+        <h2><span class="chno">1.1</span> What This Is</h2>
+        <p class="lede">A NAT gateway pool is a set of independently active compute instances, each holding its own public egress IP, that a whole private subnet shares for outbound internet access — the same job AWS NAT Gateway or GCP Cloud NAT do, built instead from primitives you own and operate directly: Compute Instances, a VPC, a VLAN, Cloud Firewall, and BGP-based IP Sharing.</p>
+        <p>Every node in a pool forwards real customer traffic all the time — there is no active/passive pair and no idle standby capacity waiting for a failure. Private-subnet instances run a small routing agent that spreads their outbound traffic across every currently healthy node in the pool using ordinary Linux multipath routing (ECMP). A separate control-plane service continuously health-checks the fleet, hands out the current node list to every client, and grows or shrinks the pool automatically as load changes.</p>
+        <p>A purpose-built metrics exporter gives every node full visibility into its own connection-tracking table, port allocation, throughput, and packet drops — considerably more granular than either hyperscaler's own NAT monitoring.</p>
+
+        <h3>Why a shared, static IP pool matters</h3>
+        <p>Every VPC-member instance already gets a private interface and, if it wants one, its own individual 1:1 NAT to a public address — a clean building block, but not what most real deployments need. A partner or vendor firewall allow-list, or a compliance regime that requires all egress to be auditable and traceable to a small, known set of addresses, needs a whole private subnet funneled through a small, shared, static pool of egress IPs instead of one address per instance. That single requirement — a shared, controllable, observable egress boundary — is the reason this whole system exists.</p>
+      </section>
+
+      <section class="chapter" id="c1-2">
+        <h2><span class="chno">1.2</span> The Constraint That Shapes Everything</h2>
+        <p class="lede">A VPC fabric will not transit-route a packet through a peer VPC instance out to a non-VPC destination. A private instance sitting in the same VPC as a NAT node cannot simply add a route pointing at that node's VPC address and expect its traffic to reach the internet through it — the fabric drops it.</p>
+        <p>This single fact is why the private client fleet rides a completely separate Layer-2 fabric — a Linode VLAN — instead of VPC. A VLAN has no such restriction: any device attached to it can forward traffic through any other device on the same segment, exactly the behavior a NAT gateway needs from its clients. It is also why every node in the fleet carries not one but three purpose-built interfaces, each doing exactly one job, described next.</p>
+      </section>
+
+      <section class="chapter" id="c1-3">
+        <h2><span class="chno">1.3</span> The Three-Interface Node</h2>
+        <p>Every NAT node has exactly three network interfaces, and each one exists for a single, non-overlapping reason:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Interface</th><th>Network</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td>eth0</td><td>Public internet</td><td>A real, routable public IP — never a VPC 1:1 NAT address, because only a real public IP is eligible for BGP-based IP Sharing. Handles all internet egress and is the address a buddy node fails over.</td></tr>
+            <tr><td>eth1</td><td>VPC</td><td>A private, node-to-node channel used exclusively for buddy-pair connection-state synchronization. Never carries client traffic.</td></tr>
+            <tr><td>eth2</td><td>VLAN</td><td>Transparent NAT/masquerade for the private client fleet. This traffic never touches Cloud Firewall at all — the node's own local firewall ruleset is the only security gate on this interface.</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="diagram-frame">
+          <pre class="mermaid">
+flowchart LR
+  subgraph CLIENTS["Private Client Fleet (VLAN)"]
+    C1["Client instance"]
+    C2["Client instance"]
+    C3["Client instance"]
+  end
+  subgraph N1["NAT Node A"]
+    direction TB
+    n1e2["eth2 · VLAN"]
+    n1e1["eth1 · VPC"]
+    n1e0["eth0 · Public IP"]
+  end
+  subgraph N2["NAT Node B (buddy)"]
+    direction TB
+    n2e2["eth2 · VLAN"]
+    n2e1["eth1 · VPC"]
+    n2e0["eth0 · Public IP"]
+  end
+  C1 -- "ECMP" --> n1e2
+  C2 -- "ECMP" --> n1e2
+  C3 -- "ECMP" --> n2e2
+  n1e1 <-- "conntrack sync + BGP" --> n2e1
+  n1e0 -- "internet egress" --> INTERNET(("Internet"))
+  n2e0 -- "internet egress" --> INTERNET
+          </pre>
+          <div class="diagram-cap">Fig. 1 — the three-interface node, active-active across the pool, buddy-paired for HA</div>
+        </div>
+      </section>
+
+      <section class="chapter" id="c1-4">
+        <h2><span class="chno">1.4</span> Active-Active, Pools, and Isolation</h2>
+        <p>Every node in a pool is independently active — there is no master, no standby, no shared floating IP that all traffic funnels through. A <strong>pool</strong> is the unit of both scaling and isolation: the default <strong>shared</strong> pool serves every tenant that doesn't need dedicated capacity, and a tenant that does gets its own <strong>dedicated pool</strong> — its own VLAN, its own scaling bounds, fully isolated from every other tenant's traffic, but built from the exact same mechanism, not separate code.</p>
+        <p>Because every node is active all the time, one heavy tenant's traffic can burst across the entire pool rather than being capped at whatever a single pair could carry — the direct fix for the single biggest limitation of an active/passive design.</p>
+      </section>
+
+      <!-- ============ PART II ============ -->
+      <div class="part-open" id="part-2">
+        <div class="part-num">Part II</div>
+        <h2 class="part-title">The Control Plane</h2>
+        <p class="part-dek">The fleet's brain: how it discovers nodes, how the roster URL that every client and every dashboard depends on actually works, where it runs, and how it stays available.</p>
+        <div class="part-rule"></div>
+      </div>
+
+      <section class="chapter" id="c2-1">
+        <h2><span class="chno">2.1</span> The Fleet Controller</h2>
+        <p class="lede">A single control-plane service is the fleet's brain. Every pass, it discovers every instance tagged as belonging to a pool, runs a real health check against each one, computes which nodes are paired as failover "buddies," provisions or removes elastic capacity within its configured bounds, and serves the roster that every routing agent, every sync daemon, and the metrics pipeline all depend on.</p>
+        <p>Nothing about the fleet controller is read back from a database. Every pass rebuilds the entire fleet's state from scratch, directly from live cloud-provider discovery and each node's own health probe. This single design choice is what makes the control plane genuinely disposable: if it restarts, or is temporarily unavailable, it has nothing to recover — the very next pass reconstructs an accurate picture of the fleet on its own.</p>
+
+        <div class="callout">
+          <span class="co-label">What actually stops if the control plane goes down</span>
+          Already-provisioned nodes keep forwarding traffic untouched — they don't ask permission to do their job. What pauses is <em>new decisions</em>: provisioning or removing elastic nodes, reassigning failover buddies, replacing a persistently unhealthy node, and roster freshness beyond whatever every client already cached.
+        </div>
+      </section>
+
+      <section class="chapter" id="c2-2">
+        <h2><span class="chno">2.2</span> The Roster URL</h2>
+        <p class="lede">Every routing decision in the system — which nodes a client should send traffic through, which peer a node should mirror connection state with, which target Prometheus should scrape — ultimately traces back to one HTTP endpoint: <code>GET /fleet/&lt;pool&gt;</code>, served by the fleet controller.</p>
+
+        <h3>What it actually is</h3>
+        <p>It is a plain HTTP endpoint, not a separate service or a piece of infrastructure that gets "provisioned." The moment the fleet controller starts and binds its listening port, that endpoint exists — creating the roster URL is simply a byproduct of deploying and starting the control plane itself, nothing more. Its response is a JSON document: the current node list for that pool, each node's address and current health state, and an integer version number that increments any time the underlying picture actually changes.</p>
+
+        <h3>How it's kept fresh</h3>
+        <p>Every reconcile pass — discover instances, health-check each one, recompute buddy pairings, evaluate whether the pool should scale — ends with the controller recomputing an in-memory roster snapshot and diffing it against the previous pass. Only a real change bumps the version number and wakes anyone waiting on it; a pass with nothing new to report is a no-op from the roster's point of view. There is no separate "update the roster" step to remember — publishing the roster is simply what every reconcile pass ends in.</p>
+
+        <h3>Long-polling: near-instant reaction, near-zero idle traffic</h3>
+        <p>A plain <code>GET /fleet/&lt;pool&gt;</code> always returns immediately with whatever the current snapshot is — nothing about that behavior changes. Add <code>?wait=true&amp;since=&lt;version&gt;</code>, and the connection is instead held open until either something actually changes or roughly 25 seconds pass, whichever comes first. A routing agent that uses this holds one open connection and reacts within a fraction of a second of any real fleet change, while producing essentially zero request volume during a quiet period — the same blocking-query pattern used by mature service-discovery systems elsewhere in the industry.</p>
+
+        <h3>Health is authoritative here, not advisory</h3>
+        <p>The roster response carries each node's already-computed healthy/unhealthy verdict directly, and every routing agent trusts that verdict by default rather than independently re-probing every node on its own. This is a deliberate, structural simplification, not a shortcut: every node and every client sit on the same physical VLAN Layer-2 segment, so reachability is essentially uniform across every client — there is no realistic scenario where a client's own probe would see something the control plane's own health check missed. An operator who wants the old belt-and-suspenders behavior anyway can turn on an additional local probe per client; when it's on, a node only counts as usable if <em>both</em> the control plane and the client's own check agree.</p>
+
+        <h3>How the roster URL itself stays available</h3>
+        <p>This depends entirely on where the control plane runs (see the next chapter). Run on a single dedicated host, there is exactly one instance answering roster requests — a control-plane single point of failure for <em>freshness</em>, not for traffic already flowing. Run on every node instead, every single node answers roster reads identically and correctly regardless of which one currently holds write authority over the fleet — at that point the roster URL is effectively as available as the fleet itself, since any surviving node can answer it.</p>
+
+        <h3>What happens if a client can't reach it</h3>
+        <p>A routing agent that fails to reach the roster URL never blackholes existing traffic. It keeps serving whatever roster it last successfully fetched, and if the set of healthy nodes it's holding onto is ever completely empty, it deliberately leaves the existing route in place rather than tearing egress down entirely. The failure mode of an unreachable control plane is "traffic keeps flowing on stale information," never "traffic stops."</p>
+      </section>
+
+      <section class="chapter" id="c2-3">
+        <h2><span class="chno">2.3</span> Where the Control Plane Runs</h2>
+        <p>There are two supported placements for the fleet controller, and switching between them changes nothing about how any client talks to it — the roster URL's shape is identical either way.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th></th><th>Single dedicated host</th><th>Running on every node</th></tr></thead>
+          <tbody>
+            <tr><td>Where it runs</td><td>One instance, alongside the monitoring stack</td><td>Every NAT node, no dedicated host at all</td></tr>
+            <tr><td>Simplicity</td><td>Simplest to reason about</td><td>More moving parts — needs leader election</td></tr>
+            <tr><td>Control-plane SPOF</td><td>Yes, for new decisions only</td><td>No — every node answers reads</td></tr>
+            <tr><td>Credential exposure</td><td>Token lives on one firewalled host</td><td>Token exists on every node</td></tr>
+            <tr><td>Trade-off</td><td>A dedicated host to run and pay for</td><td>Fencing a dead leader briefly interrupts that node's own NAT role too</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="diagram-frame">
+          <pre class="mermaid">
+flowchart TB
+  subgraph A["Single dedicated host"]
+    direction LR
+    ctl["Fleet Controller"]
+    mon["Prometheus · Grafana · Alertmanager"]
+    ctl --- mon
+  end
+  A -.->|"roster reads/writes"| n1a["NAT Node"]
+  A -.-> n2a["NAT Node"]
+  A -.-> n3a["NAT Node"]
+
+  subgraph B["Every node runs its own controller"]
+    direction LR
+    b1["Node A — Controller (leader)"]
+    b2["Node B — Controller (follower)"]
+    b3["Node C — Controller (follower)"]
+  end
+  b1 == "read/write, fencing-protected" ==> LinodeAPI[("Cloud API")]
+  b2 -.->|"read-only"| LinodeAPI
+  b3 -.->|"read-only"| LinodeAPI
+          </pre>
+          <div class="diagram-cap">Fig. 2 — single dedicated host vs. the controller running on every node</div>
+        </div>
+
+        <p>Running the controller on every node is possible because it is entirely stateless — everything it computes is derived fresh from live discovery and health checks each pass, never read back from storage. The one real problem this placement introduces is the one every active-active control plane has to solve: more than one instance could try to mutate cloud state at the same moment. That problem, and how it's solved, is the next chapter.</p>
+      </section>
+
+      <section class="chapter" id="c2-4">
+        <h2><span class="chno">2.4</span> Leader Election and Fencing</h2>
+        <p class="lede">When the controller runs on every node, read-only work — discovery, health checks, buddy-pairing computation, serving the roster — runs on every instance all the time, regardless of leadership. Only the calls that actually change cloud state (provisioning a node, updating a BGP IP-sharing assignment) are gated to a single leader at a time.</p>
+
+        <h3>The lease is a bulletin board, not the safety mechanism</h3>
+        <p>Leadership is tracked via a lease record — a small object naming the current leader, its term, and an expiry — stored durably so every instance can read the same value. That record is deliberately treated as a best-effort hint, never as the actual source of correctness: a lease alone cannot guarantee only one writer is active at a time under every possible network condition.</p>
+
+        <h3>The real safety mechanism: fencing</h3>
+        <p>Before a candidate ever claims leadership, it powers off the previous leader through the cloud provider's own instance power-management API and polls until that shutdown is <em>confirmed</em> — either a genuinely offline status, or a not-found response meaning the instance no longer exists. If the power-off call fails, or confirmation never arrives in time, the candidate aborts the election outright rather than proceeding — an unconfirmed fence provides no real guarantee, so the system fails closed instead of optimistically continuing.</p>
+        <p>Layered on top: randomized timing before a candidate ever attempts an election (reducing the odds of two candidates colliding at once), a write-then-reverify step immediately after claiming leadership, and a fresh leadership check immediately before <em>every individual</em> mutating call — not just once per pass — so a node that loses leadership mid-cycle stops mutating within one call's window, not one whole cycle's.</p>
+
+        <div class="callout warn">
+          <span class="co-label">Honest limit</span>
+          This is defense in depth, not mathematically perfect mutual exclusion the way a hardware-fenced active/passive pair would be. A network partition that isolates the current leader from the lease store, but not from the cloud API it's calling, is a scenario this design does not fully close.
+        </div>
+
+        <h3>The trade-off fencing accepts</h3>
+        <p>A fenced node is powered off, not just demoted. Once the controller runs on the NAT nodes themselves rather than an isolated dedicated host, the node being fenced is also, at that moment, forwarding real NAT traffic — so a fencing event briefly interrupts that node's own data-plane role too. Buddy IP failover (Part IV) is what limits the blast radius of that specific interruption, exactly the same way it limits any other single node's failure.</p>
+      </section>
+
+      <section class="chapter" id="c2-5">
+        <h2><span class="chno">2.5</span> Credentials</h2>
+        <p>The control plane's cloud API token needs three scopes: read/write on instances, read/write on VPC, and read/write on networking — the last one specifically because buddy IP failover calls the provider's IP-sharing API, and because fencing uses the same instance power-management endpoints already covered by the instance scope.</p>
+        <p>Secrets are resolved from a narrowly-permissioned local file or an environment variable — never written into the shared, widely-distributed configuration file itself. In the single-host placement, this token lives on exactly one tightly firewalled instance. Once the controller runs on every node, the same token exists everywhere the controller runs — a real increase in how many places a sensitive credential lives, worth weighing deliberately against the single point of failure that placement removes.</p>
+      </section>
+
+      <!-- ============ PART III ============ -->
+      <div class="part-open" id="part-3">
+        <div class="part-num">Part III</div>
+        <h2 class="part-title">The Data Plane</h2>
+        <p class="part-dek">The pieces that actually touch a customer's packets: the NAT node itself, and the client-side agent that decides which node to send traffic through.</p>
+        <div class="part-rule"></div>
+      </div>
+
+      <section class="chapter" id="c3-1">
+        <h2><span class="chno">3.1</span> NAT Nodes</h2>
+        <p>A NAT node is an ordinary compute instance running a kernel-level packet filter and connection tracker (nftables), configured to masquerade — rewrite the source address of — every packet arriving on its VLAN interface out through its public interface. This is the literal thing a customer pictures when they hear "NAT gateway"; every other component in this book exists purely to deploy, scale, secure, or observe a fleet of these.</p>
+        <p>Nothing about a node's own state is durable. Its connection-tracking table, its firewall counters, and its interface statistics are all in-kernel and rebuilt fresh on every boot from configuration fetched at start time. A broken node is treated as fully disposable — destroyed and replaced by the fleet, never repaired from a backup, because there is nothing on it worth restoring.</p>
+
+        <h3>What happens if a node stops</h3>
+        <p>With no additional protection layered on, whichever connections were actively flowing through that node at the moment it died are lost — a client detects the loss and reroutes within seconds, but the in-flight TCP state itself is gone. With buddy conntrack sync and BGP IP failover both enabled (Part IV), a meaningful share of that traffic can instead continue through the node's live buddy.</p>
+      </section>
+
+      <section class="chapter" id="c3-2">
+        <h2><span class="chno">3.2</span> The Client Routing Agent</h2>
+        <p class="lede">A small, dependency-free agent runs on every private-subnet instance that needs NAT egress. It long-polls the roster URL and maintains a resilient multipath ("ECMP") route pointed at every node the control plane currently reports healthy.</p>
+
+        <h3>Consistent hashing, not round-robin</h3>
+        <p>The nexthop group it installs uses the kernel's resilient hashing mode, which is what gives the system its most important routing property: when a node leaves the healthy set, only the roughly <code>1/N</code> share of flows that were hashed to that specific node get reshuffled — every other flow, on every other node, is completely undisturbed. A naive route replacement would instead reshuffle every flow on every membership change, resetting far more connections than the actual failure warranted.</p>
+
+        <h3>Setting the hash policy itself</h3>
+        <p>Getting real distribution out of that mechanism also requires the kernel to hash on enough of each packet to tell separate connections apart. The agent sets this itself at every startup — hashing on source and destination port in addition to the address pair — so that many separate connections to the very same destination spread across the whole pool instead of all landing on one node, the same five-tuple approach used by every hardware router and both hyperscalers' own NAT implementations.</p>
+
+        <h3>The one thing it manages, and the one thing it never touches</h3>
+        <p>The agent manages exactly one thing: the default route. It installs one only on an instance that has no other path to the internet of its own; an instance that already has a public address or its own NAT path is left completely alone, since something else already owns that route. It never touches a VLAN or VPC interface's own connected route — those come from the kernel the instant the interface gets an address, independent of anything the agent does.</p>
+
+        <div class="callout good">
+          <span class="co-label">Fail-safe by design</span>
+          On a roster-fetch failure, the agent keeps its last-known-good membership rather than guessing. If the healthy set it holds ever becomes completely empty, it deliberately leaves the existing route in place rather than tearing egress down — a stale route beats no route at all.
+        </div>
+      </section>
+
+      <section class="chapter" id="c3-3">
+        <h2><span class="chno">3.3</span> Connecting a Client Instance</h2>
+        <p>An instance can be attached to the fleet in one of four interface shapes, depending on what other network access it already has. The routing agent is installed and given control of the default route only in the two shapes where nothing else already provides one.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Interface layout</th><th>Default route</th><th>VPC reachability</th><th>Public reachability</th></tr></thead>
+          <tbody>
+            <tr><td>VLAN only</td><td>Routing agent — ECMP over the VLAN</td><td>None</td><td>None (VLAN-local only)</td></tr>
+            <tr><td>Public + VLAN</td><td>Untouched — ordinary public routing</td><td>None</td><td>Yes, directly</td></tr>
+            <tr><td>VPC + VLAN</td><td>Routing agent — ECMP over the VLAN</td><td>Yes, via the VPC interface's connected route</td><td>None — VPC alone cannot reach the internet</td></tr>
+            <tr><td>VPC (1:1 NAT) + VLAN</td><td>Untouched — the VPC's own NAT path</td><td>Yes</td><td>Yes, via the VPC's 1:1 NAT address</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>Whichever shape applies, the sequence is the same: attach the required interface(s) at the account level, apply a static VLAN address to the VLAN interface, then run a short configuration step against the instance that applies the address, installs the routing agent only if the instance actually needs it, and starts it pointed at the pool's roster URL.</p>
+      </section>
+
+      <section class="chapter" id="c3-4">
+        <h2><span class="chno">3.4</span> Static VLAN Addressing</h2>
+        <p>A VLAN carries no address-assignment mechanism of its own — there is nothing like DHCP running on it. Every address, on every node and every client, is a static assignment applied directly to the interface.</p>
+        <p>For client instances specifically, the address is chosen by an operator (or the operator's own provisioning automation) and applied by a short configuration step run directly against the already-existing instance. Immediately before applying it, that step runs a live duplicate-address probe against the exact address on the exact VLAN segment — a last-moment collision check that catches an address already answering on the segment, whether it belongs to a node or another client, at the one moment it actually matters, rather than relying on a human to remember to check first.</p>
+        <p>A block of VLAN address space, sized by however many client addresses are expected to be hand-assigned over the deployment's lifetime, is reserved immediately above the range the fleet uses for its own nodes — this guarantees the fleet's own automatic address allocation can never wander into space meant for a manually assigned client, even though there is no per-client bookkeeping of which specific address inside that block is actually in use at any moment. The duplicate-address probe is what protects against colliding with another already-assigned client; the reserved block is what protects against colliding with a future node.</p>
+      </section>
+
+      <!-- ============ PART IV ============ -->
+      <div class="part-open" id="part-4">
+        <div class="part-num">Part IV</div>
+        <h2 class="part-title">High Availability</h2>
+        <p class="part-dek">Four independent, layered mechanisms, each closing a specific gap the layer below it leaves open — including exactly how a two-node buddy pair differs from a three-node triangle.</p>
+        <div class="part-rule"></div>
+      </div>
+
+      <section class="chapter" id="c4-1">
+        <h2><span class="chno">4.1</span> Four Layers, Each Closing a Specific Gap</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Layer</th><th>Always on?</th><th>What it protects against</th><th>What it doesn't</th></tr></thead>
+          <tbody>
+            <tr><td>Client-side ECMP</td><td>Always</td><td>A dead node's <em>future</em> traffic — rerouted within seconds</td><td>The single in-flight connection that was on that node at the moment it died</td></tr>
+            <tr><td>Buddy conntrack sync</td><td>Opt-in</td><td>Session state itself, mirrored to a live peer</td><td>By itself, nothing — the peer still needs the dead node's IP to be reachable</td></tr>
+            <tr><td>Buddy IP failover</td><td>Opt-in</td><td>Reachability of the dead node's own public IP, taken over by its buddy</td><td>A correlated failure of both buddy members simultaneously</td></tr>
+            <tr><td>Anti-affinity placement</td><td>Opt-in</td><td>Both buddy members sharing the same physical host</td><td>Any failure that isn't host-correlated</td></tr>
+          </tbody>
+        </table></div>
+        <p>None of these layers require the ones above them — ECMP alone is a complete, working system. Each additional layer is a deliberate trade of a little more operational complexity for a smaller and smaller blast radius on any single failure.</p>
+      </section>
+
+      <section class="chapter" id="c4-2">
+        <h2><span class="chno">4.2</span> Buddy Pairing: the 2-Node Pair and the 3-Node Triangle</h2>
+        <p class="lede">Every reconcile pass, the currently healthy node set is sorted deterministically and paired up two at a time. With an even number of nodes, this produces exactly what it sounds like: ordinary mutual pairs, each member backing up the other. An odd number of nodes is where the interesting behavior lives.</p>
+
+        <h3>The ordinary pair</h3>
+        <p>Two nodes, A and B. Each independently: (1) announces its own public IP as primary, (2) stands ready to take over the other's IP as secondary, and (3) mirrors connection-tracking state with the other. This relationship is fully symmetric and fully bidirectional — there is no primary/backup role assigned to either member; both are simultaneously each.</p>
+
+        <h3>The 3-node triangle</h3>
+        <p>With three or more nodes and an odd count, the trailing three nodes — call them A, B, and C in sorted order — form a triangle instead of leaving one node with no partner at all:</p>
+        <ul>
+          <li>A and B form a completely ordinary mutual pair, exactly as above.</li>
+          <li>B — the "hub" — additionally takes on C as a one-directional backup: B is ready to announce C's public IP and mirrors C's connection state, but the reverse is not true. C does not back up B, and does not back up anyone.</li>
+        </ul>
+        <p>Every node in the pool ends up with at least one live backup this way — nobody is left fully exposed just because the pool's node count happens to be odd.</p>
+
+        <div class="diagram-frame">
+          <pre class="mermaid">
+flowchart LR
+  subgraph PAIR["2-node pool: ordinary pair"]
+    A1(("A")) <-->|"mutual: sync + IP backup"| B1(("B"))
+  end
+  subgraph TRI["3-node pool: the triangle"]
+    A2(("A")) <-->|"mutual pair"| B2(("B · hub"))
+    B2 -.->|"one-directional backup"| C2(("C"))
+  end
+          </pre>
+          <div class="diagram-cap">Fig. 3 — the ordinary buddy pair, and the odd-count triangle with its directional hub relationship</div>
+        </div>
+
+        <h3>Why the hub relationship is directional for IP failover, but not for state sync</h3>
+        <p>These are two different underlying constraints, and the triangle handles them differently on purpose:</p>
+        <ul>
+          <li><strong>IP failover</strong> is governed by the cloud provider's own IP-sharing rule: two different nodes may never both claim to be the secondary announcer for the <em>same</em> primary address — but nothing stops a single node from being the secondary for two <em>different</em> primaries at once. The triangle exploits exactly that: B can legitimately back up both A's and C's addresses simultaneously, while C backs up no one. This relationship stays directional by design.</li>
+          <li><strong>Connection-state sync</strong> needs a real, two-way relationship on both ends — each side runs its own sync process pointed at the other, and either side may need the other's mirrored state at any moment. So for state sync specifically, the same underlying triangle shape is symmetrized: C also gets a real, live sync relationship pointed back at B. The hub node ends up running two completely independent, simultaneous sync processes — one per peer, each with its own configuration, lock, and control socket — while the odd node out ends up with exactly one real peer instead of none at all.</li>
+        </ul>
+
+        <h3>What happens as the pool scales</h3>
+        <p>Pairings are recomputed from the current healthy node set on every single pass — deliberately simple rather than sticky or consistent-hashed, since a buddy resync only costs a few seconds of state-sync freshness for the affected nodes, not a routing disruption for every in-flight flow the way a client-facing membership change would.</p>
+      </section>
+
+      <section class="chapter" id="c4-3">
+        <h2><span class="chno">4.3</span> Connection-State Sync</h2>
+        <p class="lede">A daemon runs on every node, watching the roster for buddy reassignment and reconciling both the BGP announcer's secondary-route configuration and the connection-tracking sync process's peer configuration whenever a pairing changes.</p>
+        <p>While active, it continuously mirrors the node's live kernel connection-tracking table to its current peer or peers — usually one, two for a triangle's hub node running two independent sync processes at once.</p>
+
+        <h3>What happens if it stops</h3>
+        <p>A node with no active sync peer is still completely healthy and still fully participating in ECMP rotation — this is a session-continuity mitigation, not a health signal, and should never be treated as equivalent to a node being down. The only practical consequence of losing sync is that a <em>future</em> failure of that specific node will reset in-flight connections outright instead of possibly continuing through a buddy that had a mirrored copy of the state.</p>
+
+        <h3>How to restart it</h3>
+        <p>Simply restart the service. It carries no state of its own worth preserving — on restart, it re-derives its current peer assignment fresh from the roster on its very next pass and re-establishes sync from there. There is nothing to migrate and no manual reconciliation step.</p>
+
+        <h3>What it stores</h3>
+        <p>Only its own regenerable configuration — the BGP announcer's running configuration is rewritten on every pairing change, and a small status file exists purely for observability and is never read back by anything. The actual mirrored connection-tracking table lives only in kernel memory on both ends and is never written to disk anywhere.</p>
+      </section>
+
+      <section class="chapter" id="c4-4">
+        <h2><span class="chno">4.4</span> BGP-Based IP Failover</h2>
+        <p class="lede">A BGP routing daemon on every node, paired with the cloud provider's own IP-Sharing capability, is what actually lets a buddy take over a dead node's public IP — not just its connection state.</p>
+
+        <h3>The mechanism</h3>
+        <p>From the moment it boots, every paired node is simultaneously doing two things: announcing its own public IP as the primary route, and — once buddy-paired — announcing its buddy's/buddies' public IP(s) as a secondary backup route. This is fully bidirectional and active from boot, not something that only activates once a failure is detected.</p>
+        <p>A short activation delay is deliberately built into forming a brand-new pairing before the cloud provider's IP-sharing API is actually called — this guarantees the announcing side is genuinely up and its BGP session already established before the share takes effect, which is the mechanism that actually protects against a real outage during pairing formation rather than a bare hope that timing works out.</p>
+
+        <h3>What happens when a node dies</h3>
+        <p>Its buddy's already-standing secondary announcement is what lets traffic addressed to the dead node's public IP keep reaching a live host — typically within a single BGP convergence cycle, with proven zero packet loss in both directions during a live failover exercise. Any TCP connection that was actively open through the dead node at the moment it died still resets; that is connection-state loss, a separate concern that only connection-state sync (previous chapter) addresses.</p>
+
+        <h3>How to restart it</h3>
+        <p>Stopping and starting the BGP daemon on a node is enough — its own self-announcement resumes automatically at boot with no manual step, and its buddy assignment is entirely independent of the daemon's own lifecycle, since that assignment is recomputed by the control plane, not stored locally.</p>
+
+        <div class="callout warn">
+          <span class="co-label">Operational caution</span>
+          Changing a node's BGP router identity while sessions are already established forces a full session reset on every peer. The router identity is set once, at boot, and is never touched again during normal operation — there is no supported reason to change it live.
+        </div>
+      </section>
+
+      <section class="chapter" id="c4-5">
+        <h2><span class="chno">4.5</span> Anti-Affinity Placement</h2>
+        <p>Buddy sync and BGP failover both assume the two members of a pair can actually fail independently. If both happen to land on the same underlying physical host, that assumption breaks — a single physical-host failure takes out an entire buddy relationship at once, with nothing left to fail over to.</p>
+        <p>Placement groups spread a pool's nodes across separate physical hosts to close exactly this gap. This is safe to turn on for an already-running pool without replacing a single node — existing nodes are simply updated in place to join a group. A pool larger than one group's node cap is split into multiple contiguous groups; this leaves one honest, structural residual gap: a buddy pair that happens to straddle the boundary between two groups gets no anti-affinity protection from each other, since group boundaries are drawn by creation order, not by buddy-pairing awareness. This is a deliberate trade-off that minimizes rather than eliminates that specific exposure, not an oversight.</p>
+      </section>
+
+      <section class="chapter" id="c4-6">
+        <h2><span class="chno">4.6</span> Reserved (Sticky) Public IPs</h2>
+        <p>By default, a replaced node comes back with a brand-new, ephemeral public address. For a deployment whose downstream partners whitelist specific IPs, that churn is unacceptable — reserved IPs fix a node's primary public address to one that survives instance replacement.</p>
+        <p>When a node backed by elastic (automatically provisioned) capacity is removed, its reserved address is deliberately not released — it stays reserved but idle, and the next node the pool provisions reuses it instead of minting a fresh one. Over a pool's lifetime this settles into a small, stable address set bounded by the pool's maximum elastic size, not by however many replacements have happened — exactly the stability a downstream whitelist needs. A durable per-pool ownership record is what makes reuse provably safe rather than a guess based on "currently unattached," since an unattached address elsewhere on the same account could easily belong to something unrelated.</p>
+      </section>
+
+      <section class="chapter" id="c4-7">
+        <h2><span class="chno">4.7</span> Handling a Persistently Unhealthy Node</h2>
+        <p>The count that actually matters against a pool's minimum node requirement is the number of currently <em>healthy</em> nodes, never the raw node count — a node that exists but is failing its own health check does not count toward satisfying the floor.</p>
+        <p>An elastic node that stays unhealthy past a configured threshold is drained and replaced automatically, with no human intervention required. A Terraform-managed floor node is treated completely differently and deliberately never auto-replaced under any circumstance — instead, the system compensates by provisioning additional elastic capacity to make up for the lost floor capacity, while leaving the actual broken floor node for an operator to investigate and fix by hand. This is a hard safety boundary, not an inconsistency: an automated system should never delete infrastructure a human explicitly declared should always exist.</p>
+      </section>
+
+      <!-- ============ PART V ============ -->
+      <div class="part-open" id="part-5">
+        <div class="part-num">Part V</div>
+        <h2 class="part-title">Scaling</h2>
+        <p class="part-dek">How the pool grows and shrinks automatically, the exact formula behind every scaling decision, and how to right-size a pool from real, calculable numbers instead of guesswork.</p>
+        <div class="part-rule"></div>
+      </div>
+
+      <section class="chapter" id="c5-1">
+        <h2><span class="chno">5.1</span> Two Tiers of Capacity</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Tier</th><th>Managed by</th><th>Behavior</th></tr></thead>
+          <tbody>
+            <tr><td>Floor</td><td>Infrastructure-as-code, an operator</td><td>Fixed baseline capacity. Never auto-scaled, never auto-replaced — always exactly what was declared.</td></tr>
+            <tr><td>Elastic</td><td>The fleet controller, automatically</td><td>Grows and shrinks within a configured minimum and maximum, in direct response to real load.</td></tr>
+          </tbody>
+        </table></div>
+        <p>Start the floor minimal — a single node is a perfectly reasonable starting point — and let real, observed demand justify raising it. Elastic capacity exists precisely so the floor doesn't need to be sized for a burst that may never come.</p>
+      </section>
+
+      <section class="chapter" id="c5-2">
+        <h2><span class="chno">5.2</span> The Autoscaling Algorithm</h2>
+        <p class="lede">Every reconcile pass, three independent capacity signals are checked. Any single one crossing its line is enough to trigger a scaling evaluation — a single exhausted resource degrades real traffic regardless of what the other two look like.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Signal</th><th>Scale-out trigger</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td>Connection-tracking utilization</td><td>≥ 70%</td><td>The node's fixed-size connection table is nearly full — past 100%, new connections start failing outright.</td></tr>
+            <tr><td>Port headroom</td><td>≤ 15%</td><td>Fewer than 15% of usable source ports per destination remain free. Note the direction — low is the bad reading here, the mirror image of the other two.</td></tr>
+            <tr><td>Throughput ratio</td><td>≥ 85%</td><td>The node is using 85% of its real, measured network bandwidth ceiling for its specific instance plan.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>The sizing formula</h3>
+        <div class="formula">Required Capacity&nbsp; =&nbsp; Current Capacity &nbsp;×&nbsp; (Current Metric ÷ Target Metric)</div>
+        <p>The <em>whether-to-trigger</em> decision uses the single worst node in the pool. The <em>how-big-an-action</em> decision, once triggered, uses the pool-wide aggregate instead — sizing off one hot node alone would over-provision for what might really be an uneven distribution problem on a single node rather than a genuine pool-wide shortfall.</p>
+
+        <h3>Two guards against an overcorrection</h3>
+        <ul>
+          <li><strong>Sustained-breach window.</strong> A metric has to stay past its threshold across two consecutive passes before it's trusted enough to size an action on — one noisy reading only starts a counter, it never triggers an action by itself.</li>
+          <li><strong>Maximum step size.</strong> Even once trusted, a single scale-out action is capped at doubling current capacity, and a single scale-in action is capped at removing half of current elastic capacity — deliberately more conservative in the remove-capacity direction, since draining a node that turns out to still be needed is a worse mistake than a slightly slow scale-out. A formula result larger than the cap is fulfilled gradually, over more than one cycle, instead of taken in a single uncontrolled jump.</li>
+        </ul>
+        <p>A cooldown period after every scaling action, independent of both guards above, blocks re-evaluation entirely for a while — giving freshly added capacity real time to start absorbing load before the next decision is made.</p>
+
+        <h3>Configuration</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Setting</th><th>Default</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td>Target utilization (each signal)</td><td>50%</td><td>How far below its trigger line a scale-out action aims to land</td></tr>
+            <tr><td>Sustained-breach passes</td><td>2</td><td>Consecutive breached passes required before a reading is trusted for sizing</td></tr>
+            <tr><td>Max scale-out step</td><td>100% of current size</td><td>Never more than doubling in a single action</td></tr>
+            <tr><td>Max scale-in step</td><td>50% of elastic capacity</td><td>Never removes more than half the current elastic node count at once</td></tr>
+            <tr><td>Cooldown</td><td>300 seconds</td><td>Minimum time between any two scaling actions</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>A scale-out, start to finish</h3>
+        <p>A pool at two nodes sees connection-tracking utilization spike to 90% on its hottest node. That single reading isn't enough on its own — the sustained-breach counter only reaches one. The load persists on the next pass; the counter is now satisfied, and the pool-wide aggregate works out to 85%. Against a 50% target, the formula computes <code>2 × (0.85 ÷ 0.50) = 3.4</code>, rounded up to 4 nodes — a delta of two, which the doubling cap comfortably allows in one action. Two new nodes are provisioned in that single decision rather than two separate five-minute cycles of one node each. Cooldown then blocks any further evaluation while the new capacity boots, passes its own health checks, and starts absorbing real traffic.</p>
+
+        <h3>Real capacity, not an assumption</h3>
+        <p>The throughput signal is measured against the real, published network capacity of whichever instance plan the pool actually runs — looked up directly from the cloud provider rather than hardcoded, and cached since a plan's specification is effectively static. If that lookup itself ever fails, the fallback assumes a conservative, lower capacity figure rather than a generous one — a failure here makes the system slightly more eager to scale out, never blind to a real shortage.</p>
+      </section>
+
+      <section class="chapter" id="c5-3">
+        <h2><span class="chno">5.3</span> Right-Sizing: Instance Types and Node Count</h2>
+        <p class="lede">When in doubt, prefer more nodes over bigger ones. The active-active model makes horizontal growth genuinely cheap — there's no coordination overhead the way there would be with a fixed pair, where adding capacity meant standing up a whole new pair.</p>
+
+        <h3>Sizing the connection-tracking table</h3>
+        <div class="formula">nf_conntrack_max &nbsp;≥&nbsp; 1.3 × expected peak concurrent connections per node</div>
+        <p>The 30% headroom above the expected peak is what keeps a normal traffic spike from ever reaching the hard connection-tracking ceiling before the autoscaler has a chance to react.</p>
+
+        <h3>Sizing for port exhaustion</h3>
+        <p>Every public IP supports roughly 55,000 simultaneous connections to any single destination — the same structural ceiling AWS documents for its own NAT Gateway. A node can hold more than one public egress IP specifically to multiply this ceiling; only a node's primary address participates in IP failover, so additional addresses are a straightforward per-node allocation with no shared-failover behavior of their own.</p>
+
+        <h3>Estimating the node count you actually need</h3>
+        <p>Calculate two independent numbers and take the larger one as your floor:</p>
+        <ul>
+          <li><strong>Throughput-bound:</strong> peak aggregate expected traffic, divided by one node's real, published network-out capacity for the instance plan you intend to run.</li>
+          <li><strong>Connection-bound:</strong> peak aggregate expected concurrent connections, divided by <code>(per-node conntrack ceiling × 0.70)</code> — the trigger threshold, not the raw maximum, since you want headroom before the alarm fires, not right up against it.</li>
+        </ul>
+        <p>Add at least one extra node beyond that calculated minimum so that a single node's failure doesn't itself immediately push the pool over its own scale-out trigger.</p>
+
+        <h3>Choosing an instance plan</h3>
+        <p>Dedicated-CPU compute plans on Akamai Cloud scale up to roughly 40 Gbps inbound and 12 Gbps outbound per instance at the top end — a mid-tier dedicated-CPU plan is a reasonable, realistic default for a genuine production NAT node rather than the smallest available size, since a NAT gateway is fundamentally a networking-bound workload, not a compute-bound one. The system itself never guesses at a plan's real capacity — it queries the provider's own instance-type data directly, so whatever plan is actually chosen is what the autoscaling formula sizes against, not an assumption baked in ahead of time.</p>
+      </section>
+
+      <section class="chapter" id="c5-4">
+        <h2><span class="chno">5.4</span> Vertical Scaling</h2>
+        <p>Changing a node's instance plan — up or down — is always a deliberate, operator-initiated action naming one or more specific nodes by identifier; nothing in the system ever decides on its own that a node's size, as opposed to the pool's node count, should change.</p>
+
+        <h3>What happens, step by step</h3>
+        <ol>
+          <li><strong>A disk-fit check runs first,</strong> before ever calling the resize API — comparing the target plan's disk allowance against the node's actual allocated disk. If it won't fit, nothing risky is attempted: the operator gets the exact manual remediation steps instead of a surprise mid-resize failure.</li>
+          <li><strong>The node is drained</strong> — excluded from the roster immediately, with existing connections given time to empty out naturally.</li>
+          <li><strong>A warm resize is attempted first</strong> (the instance stays up during migration, then reboots once complete) — automatically falling back to a cold resize if the provider rejects the warm attempt.</li>
+          <li><strong>The controller polls until the instance is confirmed running again,</strong> then un-drains it — it rejoins the roster once its own health checks pass, exactly like any node recovering from a transient failure.</li>
+        </ol>
+        <p>Multiple named nodes are always processed one at a time, never in parallel, and the whole operation stops at the first node that fails rather than continuing to remove capacity from an already-short pool. A resized floor node needs a matching, explicit override recorded in the infrastructure-as-code configuration so a future apply doesn't silently revert the resize; an elastic node needs no such step, since it was never declared there to begin with.</p>
+      </section>
+
+      <section class="chapter" id="c5-5">
+        <h2><span class="chno">5.5</span> Multi-Tenant Pools</h2>
+        <p>A pool is the unit of both scaling and isolation. A tenant that needs guaranteed, isolated capacity — rather than sharing the default pool with everyone else — gets its own dedicated pool: its own VLAN, its own independent minimum/maximum bounds, completely isolated traffic, built from exactly the same mechanism as the shared pool, just under a different name.</p>
+      </section>
+
+      <!-- ============ PART VI ============ -->
+      <div class="part-open" id="part-6">
+        <div class="part-num">Part VI</div>
+        <h2 class="part-title">Object Storage</h2>
+        <p class="part-dek">Every durable, non-kernel, non-in-memory piece of state this system needs lives in one place — and why it's needed at all.</p>
+        <div class="part-rule"></div>
+      </div>
+
+      <section class="chapter" id="c6-1">
+        <h2><span class="chno">6.1</span> What Object Storage Backs</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>What's stored</th><th>Why it needs durable storage</th></tr></thead>
+          <tbody>
+            <tr><td>Agent and control-plane source packages, fetched at boot</td><td>Boot-time configuration payloads have a hard size ceiling this project's own source comfortably exceeds once any real feature is on</td></tr>
+            <tr><td>Per-node firewall configuration</td><td>Differs per node (its own address), so each node's own copy is uploaded individually rather than shared</td></tr>
+            <tr><td>Leader-election lease record</td><td>A shared, readable bulletin board every controller instance can check for the current leader</td></tr>
+            <tr><td>Reserved-IP ownership manifest</td><td>Proves an address is genuinely this pool's to reuse, rather than guessing from "currently unattached"</td></tr>
+            <tr><td>Live fleet-wide operational settings</td><td>Lets an operator change a setting across the whole fleet instantly, durably, with zero restarts anywhere</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="chapter" id="c6-2">
+        <h2><span class="chno">6.2</span> Fetched-at-Boot Artifacts</h2>
+        <p class="lede">A cloud provider's own boot-time configuration payload — the data handed to a fresh instance the moment it boots — has a hard, fixed size ceiling. This project's own agent source code, on its own, already exceeds a meaningful fraction of that ceiling before a single optional feature is even turned on.</p>
+        <p>The fix: every file that's identical across every node — the metrics exporter, the connection-sync daemon, and the control-plane package itself — is uploaded to object storage exactly once per deployment, as a plain, public-read object, and re-uploaded automatically only when its actual content changes. Every node then fetches its copy over a plain HTTP request at boot, instead of having that content embedded directly in its boot payload.</p>
+
+        <h3>Public, not signed — a deliberate choice</h3>
+        <p>None of these fetched files contain secrets. Actual secrets are always injected separately, as small, per-node files with narrow permissions — this design never changes that. A plain public-read object plus a plain HTTP fetch avoids the need for a cloud-signing client to be preinstalled on a completely bare image just to pull this project's own non-secret source code.</p>
+
+        <h3>What's compressed instead of uploaded separately</h3>
+        <p>Everything that must stay embedded directly in a node's own boot payload — because it's genuinely unique to that one node, like its firewall ruleset, or because it carries a secret and therefore can never be public — is compressed before being embedded, which by itself comfortably closes most of the remaining size gap for a typical configuration.</p>
+      </section>
+
+      <section class="chapter" id="c6-3">
+        <h2><span class="chno">6.3</span> The Leader-Election Lease</h2>
+        <p>Only relevant when the control plane runs on every node: a small record naming the current leader, its term, and an expiry, readable by every controller instance. As covered in Part II, this record is a best-effort coordination hint, never the actual safety mechanism — that role belongs entirely to fencing. Losing this record costs, at most, one election cycle; it never represents a safety violation on its own.</p>
+      </section>
+
+      <section class="chapter" id="c6-4">
+        <h2><span class="chno">6.4</span> Reserved-IP and Live Configuration Manifests</h2>
+        <p>A pool's reserved-IP ownership manifest is a durable, per-pool list of every address that pool has ever reserved — the only thing that makes address reuse across node replacements provably safe rather than a guess, since an address being merely "unattached" says nothing about whether it actually belongs to this pool or to something completely unrelated sitting idle on the same account.</p>
+        <p>A separate, small live-configuration object lets an operator change certain fleet-wide operational behavior — for example, whether client instances should also independently double-check node health rather than trusting the control plane's computed view alone — instantly and durably, with every connected client and every controller instance picking up the change within one round trip and with zero restarts required anywhere in the fleet.</p>
+      </section>
+
+      <!-- ============ PART VII ============ -->
+      <div class="part-open" id="part-7">
+        <div class="part-num">Part VII</div>
+        <h2 class="part-title">Observability</h2>
+        <p class="part-dek">Every metric the system exposes, what each dashboard panel actually shows and how to read it, every alert rule, and what the health check behind it all is actually verifying.</p>
+        <div class="part-rule"></div>
+      </div>
+
+      <section class="chapter" id="c7-1">
+        <h2><span class="chno">7.1</span> The Metrics Pipeline</h2>
+        <div class="diagram-frame">
+          <pre class="mermaid">
+flowchart LR
+  node["NAT Node — nftables, conntrack, interfaces, BGP, health checks"]
+  exp["Metrics Exporter\n:9200/metrics · :9200/healthz"]
+  prom[("Prometheus")]
+  graf["Grafana Dashboard"]
+  alert["Alertmanager"]
+  node --> exp --> prom
+  prom --> graf
+  prom --> alert
+          </pre>
+          <div class="diagram-cap">Fig. 4 — the metrics pipeline, one exporter per node</div>
+        </div>
+        <p>The scrape target list tracks the fleet automatically as it grows and shrinks — a node added by autoscaling is picked up on the very next scrape cycle with no manual reconfiguration and no restart of the metrics database required.</p>
+      </section>
+
+      <section class="chapter" id="c7-2">
+        <h2><span class="chno">7.2</span> Every Metric, Explained</h2>
+        <h3>Per-node capacity and traffic</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Metric</th><th>What it tells you</th></tr></thead>
+          <tbody>
+            <tr><td><code>conntrack_entries</code> / <code>conntrack_max</code></td><td>Current and configured size of this node's connection-tracking table</td></tr>
+            <tr><td><code>conntrack_utilization_ratio</code></td><td>The headline capacity signal — entries divided by max — and the primary autoscaling input</td></tr>
+            <tr><td><code>port_allocated_total</code> / <code>port_available_total</code></td><td>Ephemeral ports currently bound, and remaining, per public IP per protocol</td></tr>
+            <tr><td><code>interface_bytes_total</code> / <code>packets_total</code></td><td>Cumulative counters — rate these over time for real throughput and packets-per-second</td></tr>
+            <tr><td><code>nftables_drops_total</code></td><td>Packets dropped by the ruleset, labeled with the specific reason</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Health</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Metric</th><th>What it tells you</th></tr></thead>
+          <tbody>
+            <tr><td><code>node_healthy</code></td><td>This node's overall synthetic end-to-end health result</td></tr>
+            <tr><td><code>node_health_check</code></td><td>The individual result of each underlying check, so a failure can be diagnosed without logging into the node at all</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Buddy sync and BGP failover</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Metric</th><th>What it tells you</th></tr></thead>
+          <tbody>
+            <tr><td><code>conntrack_buddy_paired</code></td><td>Whether this node currently has a live sync buddy — deliberately separate from overall health, since an unpaired node is still fully healthy and fully in rotation</td></tr>
+            <tr><td><code>conntrack_stat_total</code></td><td>Raw kernel connection-tracking accounting (inserts, drops, errors) — the same category of numbers AWS and GCP expose for their own NAT services</td></tr>
+            <tr><td><code>bgp_peers_total</code> / <code>bgp_peers_established_total</code></td><td>How many BGP peers this node has configured, and how many sessions are actually up</td></tr>
+            <tr><td><code>bgp_peer_state</code></td><td>Per-peer session state — established or not</td></tr>
+            <tr><td><code>ip_failover_self_announced</code></td><td>Whether this node is correctly announcing its own address — should read true on every healthy node; false means this node's own shared IP is not currently reachable via BGP at all</td></tr>
+            <tr><td><code>ip_failover_buddy_count</code></td><td>How many other nodes' addresses this one is currently backing up — two on a triangle's hub, one on an ordinary pair member, zero if IP failover isn't in use</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Fleet-wide, from the control plane itself</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Metric</th><th>What it tells you</th></tr></thead>
+          <tbody>
+            <tr><td><code>pool_nodes_total</code> / <code>pool_nodes_healthy</code></td><td>Total and healthy node count per pool</td></tr>
+            <tr><td><code>pool_floor_nodes</code> / <code>pool_elastic_nodes</code></td><td>How the current node count splits between fixed floor and automatic elastic capacity</td></tr>
+            <tr><td><code>pool_autoscale_current</code></td><td>The current value of each autoscale-evaluated signal, exactly as of the most recent decision pass</td></tr>
+            <tr><td><code>pool_autoscale_high_watermark</code> / <code>low_watermark</code></td><td>The configured trigger threshold for each signal</td></tr>
+            <tr><td><code>pool_autoscale_breach_streak</code></td><td>How many consecutive passes a given signal has been breached — a scale-out only fires once this reaches the sustained-breach requirement</td></tr>
+            <tr><td><code>pool_last_scale_event_timestamp</code> / <code>_delta</code></td><td>When the pool last scaled, and by how many nodes (positive = out, negative = in)</td></tr>
+            <tr><td><code>pool_last_scale_event_info</code></td><td>The full explanation of the last scaling decision, carried as labels — which watermark triggered it, which signal was sustained, and the exact node count the formula computed as required</td></tr>
+          </tbody>
+        </table></div>
+        <p>Between the current-value, watermark, breach-streak, and last-event metrics together, the answer to "why did the pool just scale" is always fully reconstructable from the metrics themselves — never something that requires reading through raw logs.</p>
+      </section>
+
+      <section class="chapter" id="c7-3">
+        <h2><span class="chno">7.3</span> Reading the Dashboard</h2>
+        <div class="card-grid">
+          <div class="card"><span class="tag">Fleet Summary</span><h4>Total nodes, throughput, utilization</h4><p>The single glance-and-go view — total node count, total throughput, and total connection-tracking utilization across every pool at once.</p></div>
+          <div class="card"><span class="tag">Per-Pool</span><h4>Node count, capacity, drops</h4><p>Node count, connection-tracking percentage, port headroom per public IP, throughput, packets per second, and drop rate — everything the autoscaler itself is watching, per pool.</p></div>
+          <div class="card"><span class="tag">Node Health Grid</span><h4>Every node, every check</h4><p>The overall health result and each individual underlying check, across the whole fleet at once — the fastest way to see which specific check is failing on which node.</p></div>
+          <div class="card"><span class="tag">Buddy Coverage</span><h4>Who's paired with whom</h4><p>How many nodes currently have a live sync buddy, and a timeline of pairing changes per node over time.</p></div>
+          <div class="card"><span class="tag">BGP &amp; Failover</span><h4>Sessions and roles</h4><p>Peers established vs. configured, per-node session-state timeline, and which role — self-announcer, buddy backup, or both — each node currently holds.</p></div>
+          <div class="card"><span class="tag">Kernel Accounting</span><h4>conntrack, straight from the source</h4><p>Insert rate and failure/error/drop rates by node, read directly from the kernel's own connection-tracking statistics.</p></div>
+          <div class="card"><span class="tag">Autoscale Explainability</span><h4>Why the pool is the size it is</h4><p>Floor/elastic/min/max counts, current value vs. watermark for every signal, breach streak per signal, and a panel that renders the exact reason, sustained signal, and computed required count of the most recent scaling decision.</p></div>
+        </div>
+      </section>
+
+      <section class="chapter" id="c7-4">
+        <h2><span class="chno">7.4</span> Alert Rules</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Alert</th><th>Condition</th><th>Severity</th></tr></thead>
+          <tbody>
+            <tr><td>Connection table near full</td><td>Utilization above 80% for 5 minutes</td><td><span class="badge warn">Warning</span></td></tr>
+            <tr><td>Connection table critical</td><td>Utilization above 95% for 2 minutes</td><td><span class="badge crit">Critical</span></td></tr>
+            <tr><td>Port exhaustion imminent</td><td>Available ports on any public IP below 10% for 5 minutes</td><td><span class="badge warn">Warning</span></td></tr>
+            <tr><td>Node down</td><td>Metrics scrape fails for 1 minute</td><td><span class="badge crit">Critical</span></td></tr>
+            <tr><td>Node unhealthy</td><td>Node answers, but its own health check fails, for 1 minute</td><td><span class="badge crit">Critical</span></td></tr>
+            <tr><td>Pool below floor</td><td>Healthy node count under the configured minimum for 2 minutes</td><td><span class="badge crit">Critical</span></td></tr>
+            <tr><td>High drop rate</td><td>Firewall/NAT drop rate exceeds a configured threshold</td><td><span class="badge warn">Warning</span></td></tr>
+            <tr><td>Throughput near pool limit</td><td>Pool throughput exceeds 85% of aggregate node capacity</td><td><span class="badge warn">Warning</span></td></tr>
+            <tr><td>Buddy unpaired</td><td>A node has no sync buddy for 10 minutes</td><td><span class="badge info">Info</span></td></tr>
+            <tr><td>BGP session not established</td><td>A configured peer session is down for 3 minutes</td><td><span class="badge crit">Critical</span></td></tr>
+            <tr><td>Self-announce missing</td><td>A healthy node isn't announcing its own address for 5 minutes</td><td><span class="badge crit">Critical</span></td></tr>
+            <tr><td>Connection insert failures high</td><td>Kernel insert-failure rate exceeds a threshold for 5 minutes</td><td><span class="badge warn">Warning</span></td></tr>
+            <tr><td>Autoscale ceiling reached</td><td>A signal is breaching while the pool is already at its configured maximum, for 5 minutes</td><td><span class="badge warn">Warning</span></td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="chapter" id="c7-5">
+        <h2><span class="chno">7.5</span> What the Health Check Actually Verifies</h2>
+        <p>Every node's own health endpoint runs a genuine end-to-end check every single time it's called, not a cached result: IP forwarding is confirmed enabled, the NAT ruleset is confirmed loaded — and, the check that actually matters most, a real outbound request is sent out through the node's own public interface and its success is confirmed.</p>
+        <p>That last check is what makes both client routing decisions and the fleet's roster genuinely trustworthy. A node can be perfectly reachable on the network while its NAT path is quietly broken underneath — a plain reachability check would completely miss that; only an actual end-to-end request catches it. The per-check breakdown metric exposes exactly which individual check failed, so a diagnosis never requires logging into the node itself.</p>
+      </section>
+
+      <!-- ============ PART VIII ============ -->
+      <div class="part-open" id="part-8">
+        <div class="part-num">Part VIII</div>
+        <h2 class="part-title">Security</h2>
+        <p class="part-dek">The firewall boundary on every interface, and exactly what credential scope every moving part actually needs.</p>
+        <div class="part-rule"></div>
+      </div>
+
+      <section class="chapter" id="c8-1">
+        <h2><span class="chno">8.1</span> The Firewall Model</h2>
+        <p>Every node's public and VPC interfaces sit behind a default-deny cloud firewall — nothing is reachable that isn't explicitly listed. Nodes never accept an inbound connection initiated from the internet at all; NAT and forwarding are unidirectional by construction, not merely by firewall policy.</p>
+        <p>The VLAN interface is handled completely differently, because the cloud provider's own firewall layer never inspects VLAN traffic at all — it simply isn't in that path. The node's own local packet-filter ruleset is the entire security boundary for VLAN traffic, and it is written accordingly: it keeps the metrics port open there (client instances need to reach it) while explicitly excluding administrative access from that interface.</p>
+        <p>The control plane's own host — wherever it runs — exposes its administrative and dashboard ports only to an explicitly configured administrator address range, never to the open internet by default, and exposes its roster API only to the private network the fleet actually lives on.</p>
+      </section>
+
+      <section class="chapter" id="c8-2">
+        <h2><span class="chno">8.2</span> Credential Scope</h2>
+        <p>The control plane's own cloud API token needs exactly three scopes — read/write on instances, read/write on VPC, and read/write on networking — and nothing broader. The networking scope specifically is what allows both BGP IP-sharing calls and the fencing mechanism's instance power-management calls; no additional scope beyond it is required for fencing.</p>
+        <p>The client routing agent needs one elevated local capability on the instance it runs on — the ability to manage the kernel's own routing table — and nothing else; it never needs any cloud API credential of its own at all.</p>
+      </section>
+
+      <!-- ============ PART IX ============ -->
+      <div class="part-open" id="part-9">
+        <div class="part-num">Part IX</div>
+        <h2 class="part-title">Deployment</h2>
+        <p class="part-dek">What's required before the first deploy, the deployment sequence itself, and how a real customer instance gets connected once the fleet exists.</p>
+        <div class="part-rule"></div>
+      </div>
+
+      <section class="chapter" id="c9-1">
+        <h2><span class="chno">9.1</span> Prerequisites</h2>
+        <ul>
+          <li>A cloud account with API access, and a token scoped exactly as described in the Security part above.</li>
+          <li>An existing VPC and at least one subnet, sized with headroom for every pool's own address range — this project intentionally never creates the VPC itself, only reads it back.</li>
+          <li>An object storage bucket, created ahead of time — required for every deployment, since fetched-at-boot artifacts (Part VI) depend on it unconditionally, not only in the every-node control-plane placement.</li>
+          <li>An SSH key pair for administrative access, and an explicit administrator address range for the control-plane host's dashboard and SSH access.</li>
+        </ul>
+      </section>
+
+      <section class="chapter" id="c9-2">
+        <h2><span class="chno">9.2</span> Deployment Sequence</h2>
+        <ol>
+          <li>Provision the fleet: the floor nodes for each pool, the control-plane host (or, if the every-node placement is chosen, nothing dedicated at all), and the two firewalls covering the node and control-plane traffic.</li>
+          <li>Confirm the fleet is healthy: every floor node passes its own health check and appears in the roster with a healthy status.</li>
+          <li>Install the routing agent on every private-subnet instance that needs egress, pointed at the pool's roster URL.</li>
+          <li>Open the monitoring dashboard and confirm every node is reporting metrics and showing healthy.</li>
+        </ol>
+      </section>
+
+      <section class="chapter" id="c9-3">
+        <h2><span class="chno">9.3</span> Onboarding a Client Instance</h2>
+        <p>Once a private instance exists and has its VLAN interface attached at the account level, a single configuration step against that instance finishes the job: it applies the operator-supplied static VLAN address (after the duplicate-address safety probe described in Part III), installs and starts the routing agent only if the instance genuinely needs one, and points it at the correct pool's roster URL. The instance is now a fully participating client, spreading its egress traffic across every currently healthy node in that pool.</p>
+      </section>
+
+      <!-- ============ PART X ============ -->
+      <div class="part-open" id="part-10">
+        <div class="part-num">Part X</div>
+        <h2 class="part-title">Day-2 Operations</h2>
+        <p class="part-dek">The checklist worth reviewing before calling a deployment production-ready, the procedures for the operational tasks that come up routinely, and where to look first when something looks wrong.</p>
+        <div class="part-rule"></div>
+      </div>
+
+      <section class="chapter" id="c10-1">
+        <h2><span class="chno">10.1</span> Pre-Production Checklist</h2>
+        <ul>
+          <li>Metrics are being scraped from every node, the dashboard is loaded, and alert rules are active.</li>
+          <li>The control plane is running with a valid, correctly scoped API token.</li>
+          <li>Every private-subnet instance that needs egress has a healthy routing agent installed.</li>
+          <li>Minimum/maximum node bounds are reviewed per pool — these are the real safety limits on automatic scaling, not defaults to leave unexamined.</li>
+          <li>The connection-tracking table size is sized against expected peak concurrent connections per node.</li>
+          <li>Firewall rules are reviewed: default-deny confirmed, only documented ports open — remembering the cloud firewall never covers VLAN traffic, only the node's own local ruleset does.</li>
+          <li>If buddy sync is wanted, the roster URL configuration matches consistently everywhere it's referenced; if it isn't wanted, it's left empty everywhere so the sync daemon is never installed at all.</li>
+          <li>The unhealthy-node replacement threshold is reviewed per pool — the default is a reasonable starting point, not something to leave unexamined for a workload sensitive to brief capacity dips.</li>
+          <li>If BGP IP failover is enabled, the correct BGP data-center identifier is confirmed for the region, and automatic IP-share configuration is left on unless there's a specific reason to run the first pairing by hand.</li>
+          <li>Every manually assigned client address falls inside its pool's reserved window and was applied through the configuration script's duplicate-address safety check, never picked and applied blind.</li>
+          <li>Anti-affinity placement is considered for any pool where a correlated physical-host failure taking out a whole buddy pair is a real, meaningful concern.</li>
+          <li>If reserved IPs are in use and addresses already exist from a prior deployment, they're handed to the pool explicitly rather than letting it mint entirely new ones.</li>
+        </ul>
+      </section>
+
+      <section class="chapter" id="c10-2">
+        <h2><span class="chno">10.2</span> Common Procedures</h2>
+
+        <h3>Raise the floor</h3>
+        <p>Increase the declared floor node count and re-apply the infrastructure configuration. Every connected client picks up the new node automatically on its next roster refresh — no other action is needed anywhere.</p>
+
+        <h3>Adjust elastic bounds</h3>
+        <p>Change the minimum/maximum node bounds or any autoscaling setting for the pool and restart the control plane — the new bounds take effect on its very next reconcile pass.</p>
+
+        <h3>Manually drain and remove an elastic node</h3>
+        <p>A specific elastic node can be told to drain directly — it's immediately excluded from the roster and deleted once its live connection count empties out, or once a configured drain timeout elapses, whichever comes first. A floor node can never be drained this way by design; reduce the floor's declared count instead.</p>
+
+        <h3>Resize a node's instance plan</h3>
+        <p>Name the node (or nodes) and the target plan — see the full mechanics in Part V. Nodes are always processed one at a time, and the operation stops at the very first failure rather than continuing against a pool that's already short a node.</p>
+
+        <h3>Add an extra egress IP to a running node</h3>
+        <p>Extra IPs multiply a node's available port ceiling. This is currently available for floor nodes only — elastic nodes are provisioned single-IP.</p>
+
+        <h3>Enable BGP IP failover for a pool</h3>
+        <p>This is the one procedure in day-2 operations that carries real reachability risk if rushed. Confirm buddy sync is already active for the pool, set the correct region's BGP identifier, and enable the feature. Automatic IP-share configuration then handles registering the actual failover relationship as pairings form — verify by watching the BGP daemon's own session state move from connecting to established shortly after a pairing forms, and by testing an actual failover from an external host in both directions before trusting it in production.</p>
+
+        <h3>Enable the every-node control-plane placement</h3>
+        <p>Confirm the API token's scope, enable the setting, and re-apply. Confirm exactly one node's logs show it actively claiming leadership and every other node logging that it's a follower — every node should still answer read-only roster and status requests regardless of which one holds leadership.</p>
+      </section>
+
+      <section class="chapter" id="c10-3">
+        <h2><span class="chno">10.3</span> Troubleshooting Playbook</h2>
+
+        <h3>A port-exhaustion alert fires</h3>
+        <p>Check the dashboard's port-headroom panel to identify the specific saturated node and IP. If the whole pool is under pressure, the autoscaler should be scaling out on its own — check whether it's blocked by cooldown or an already-reached maximum. If only one node is hot while others have headroom, that's expected at low connection counts and self-corrects as volume grows; if it persists, consider giving that node an extra egress IP.</p>
+
+        <h3>A pool-below-floor alert fires</h3>
+        <p>Check how many nodes are actually healthy, not just present — the floor check is against healthy count specifically. A missing or unhealthy elastic node should self-heal automatically past its configured threshold; if it isn't, check the control plane's own logs and its API token's scope. A floor node that's unhealthy is never auto-replaced by design — the pool instead runs with extra elastic capacity compensating for it, which is expected behavior, not an error condition; the floor node itself still needs a human to fix it.</p>
+
+        <h3>A node has no sync buddy</h3>
+        <p>Confirm the pool actually has buddy sync enabled and its roster URL configuration is consistent. On the node itself, confirm the sync daemon is actively running and logging roster polls. Remember this is a mitigation, not a health signal — an unpaired node is still fully healthy and fully in rotation; it should never be treated as equivalent to a down node.</p>
+
+        <h3>A client isn't picking up a fleet change</h3>
+        <p>Confirm the client can actually reach the roster URL at all. Check the routing agent's own logs for roster refreshes and healthy-set changes. Remember that membership and health can refresh on different cadences depending on configuration — a node present in the roster but failing its own health check is excluded from routing regardless of how fresh the membership list itself is.</p>
+
+        <h3>Rolling a security patch across the fleet</h3>
+        <p>Patch elastic nodes first via drain-and-replace — the pool naturally provisions fresh replacement capacity. For floor nodes, patch one at a time: drain it manually, patch and reboot it, confirm its health check passes again, then move to the next node — there is no automatic drain for floor nodes, since the system never touches them on its own.</p>
+      </section>
+
+      <section class="chapter" id="c10-4">
+        <h2><span class="chno">10.4</span> Where to Look First</h2>
+        <p>In rough order of likelihood: a private-subnet instance's routing agent isn't running or can't reach the roster URL; the control plane's API token has expired or lost a scope; or the minimum/maximum bounds are misconfigured for actual current load. The architecture and this book describe exactly how the system is supposed to behave — when real behavior diverges from that, that gap is always the right starting point for debugging, not a sign the design itself is wrong.</p>
+      </section>
+
+      <!-- ============ APPENDIX ============ -->
+      <div class="part-open" id="part-11">
+        <div class="part-num">Appendix</div>
+        <h2 class="part-title">Compared to AWS NAT Gateway and GCP Cloud NAT</h2>
+        <p class="part-dek">An honest, side-by-side look at where a self-operated fleet wins, where the hyperscalers still win, and the one trade-off inherent to the active-active design itself.</p>
+        <div class="part-rule"></div>
+      </div>
+
+      <section class="chapter" id="c11-1">
+        <h2><span class="chno">A.1</span> Head-to-Head</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th></th><th>AWS NAT Gateway</th><th>GCP Cloud NAT</th><th>This system</th></tr></thead>
+          <tbody>
+            <tr><td>Management model</td><td>Fully managed, opaque</td><td>Fully managed, opaque</td><td>Self-operated — every configuration file is yours to read and audit</td></tr>
+            <tr><td>HA model</td><td>Managed redundancy within an availability zone</td><td>Managed, distributed</td><td>Active-active pool — a node failure loses only its own fraction of flows, no failover cliff</td></tr>
+            <tr><td>Scale-out for one heavy tenant</td><td>Automatic, one gateway per subnet/zone</td><td>Automatic</td><td>Spreads across the entire pool via ECMP, not capped at one pair</td></tr>
+            <tr><td>Simultaneous connections</td><td>55,000 per IP per destination</td><td>Dynamic allocation, roughly 64,500 per IP</td><td>55,000 per IP per destination, multiplied by however many egress IPs a node holds</td></tr>
+            <tr><td>Metrics granularity</td><td>Around 8 built-in metrics</td><td>Built-in monitoring plus optional connection logging</td><td>Full per-pool, per-node, per-IP, per-protocol metric label space</td></tr>
+            <tr><td>Cost model</td><td>Per-hour plus per-gigabyte processed</td><td>Per-hour plus per-gigabyte processed</td><td>Pure compute cost of the NAT instances — no per-gigabyte NAT surcharge</td></tr>
+            <tr><td>Custom firewall rules on the gateway itself</td><td>Not possible</td><td>Not possible</td><td>A full local packet-filter ruleset on every node</td></tr>
+            <tr><td>Multi-tenancy</td><td>One gateway per subnet/zone</td><td>One per VPC</td><td>Shared pool by default, dedicated pools on demand</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="chapter" id="c11-2">
+        <h2><span class="chno">A.2</span> Where the Hyperscalers Still Win</h2>
+        <p>Being candid: a fully managed NAT service is genuinely zero-ops. No operating-system patching, no capacity-planning judgment calls, no failover drills to run, no on-call for a kernel panic on a NAT node. Operating this system instead means operating real compute instances — the trade being made is control, cost, and observability depth in exchange for taking on real operational ownership. That ownership is made as low-friction as realistically possible, but it is never nothing.</p>
+      </section>
+
+      <section class="chapter" id="c11-3">
+        <h2><span class="chno">A.3</span> The Trade-Off Inside the Design Itself</h2>
+        <p>Separate from the comparison against the hyperscalers, there's a trade-off internal to the active-active model itself, worth stating plainly rather than glossing over: it trades away the simplicity of a fixed master/standby pair — where one continuously mirrored relationship gives genuinely zero session loss on failover — in exchange for horizontal scaling and full utilization, with no idle standby capacity sitting around unused.</p>
+        <p>Buddy connection-state sync combined with bidirectional BGP IP failover narrows that gap substantially — a buddy takes over both a dead node's connection state and its public identity, in both directions of every pairing. It remains, honestly, a mitigation rather than an absolute guarantee: propagation carries real if small lag, and a genuinely correlated failure of both members of a pair at once has nothing left to fail over to unless anti-affinity placement is also in use. A workload that truly cannot tolerate any connection reset under any circumstance at all has a real reason to weigh a simpler, pair-based model's stronger session-loss guarantee against this design's better scaling and utilization — they are optimized for different priorities, and that trade-off deserves to be made deliberately rather than assumed away.</p>
+      </section>
+
+      <div class="book-footer">
+        <div class="footer-mascot">
+          <div class="footer-otto-badge" aria-hidden="true">
+            <svg viewBox="0 0 240 240">
+              <g fill="none" stroke="#5b4b9e" stroke-width="14" stroke-linecap="round">
+                <path d="M92,150 C60,175 40,190 34,214"/>
+                <path d="M104,162 C86,192 76,205 68,224"/>
+                <path d="M120,168 C118,198 116,210 116,228"/>
+                <path d="M136,162 C154,192 164,205 172,224"/>
+                <path d="M148,150 C180,175 200,190 206,214"/>
+              </g>
+              <g fill="#3c4bc9">
+                <circle cx="34" cy="214" r="8"/><circle cx="68" cy="224" r="8"/><circle cx="116" cy="228" r="8"/>
+                <circle cx="172" cy="224" r="8"/><circle cx="206" cy="214" r="8"/>
+              </g>
+              <ellipse cx="120" cy="115" rx="66" ry="62" fill="#6a5aad"/>
+              <circle cx="98" cy="105" r="19" fill="#fbf6ea"/><circle cx="142" cy="105" r="19" fill="#fbf6ea"/>
+              <circle cx="101" cy="108" r="9" fill="#221a2e"/><circle cx="145" cy="108" r="9" fill="#221a2e"/>
+              <path d="M104,132 C112,140 128,140 136,132" fill="none" stroke="#221a2e" stroke-width="4" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="footer-mascot-text">
+            <span class="footer-otto-name">Otto the Octopus</span>
+            <span class="footer-otto-role">The Multiplexer — one arm per healthy node, all of them live at once</span>
+          </div>
+        </div>
+        <div class="footer-desc">NAT Gateway: The Definitive Guide — a complete reference for deploying, scaling, and operating a self-hosted, highly available NAT gateway on Akamai Cloud.</div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<script>
+(function(){
+  var parts = [
+    {label:"Part I", title:"Architecture & Design", chapters:[
+      ["c1-1","1.1 What This Is"],["c1-2","1.2 The Core Constraint"],
+      ["c1-3","1.3 The Three-Interface Node"],["c1-4","1.4 Active-Active & Pools"]
+    ]},
+    {label:"Part II", title:"The Control Plane", chapters:[
+      ["c2-1","2.1 The Fleet Controller"],["c2-2","2.2 The Roster URL"],
+      ["c2-3","2.3 Where It Runs"],["c2-4","2.4 Leader Election & Fencing"],
+      ["c2-5","2.5 Credentials"]
+    ]},
+    {label:"Part III", title:"The Data Plane", chapters:[
+      ["c3-1","3.1 NAT Nodes"],["c3-2","3.2 Client Routing Agent"],
+      ["c3-3","3.3 Connecting a Client"],["c3-4","3.4 Static VLAN Addressing"]
+    ]},
+    {label:"Part IV", title:"High Availability", chapters:[
+      ["c4-1","4.1 Four Layers"],["c4-2","4.2 Pair & Triangle"],
+      ["c4-3","4.3 Connection-State Sync"],["c4-4","4.4 BGP IP Failover"],
+      ["c4-5","4.5 Anti-Affinity Placement"],["c4-6","4.6 Reserved IPs"],
+      ["c4-7","4.7 Unhealthy Node Handling"]
+    ]},
+    {label:"Part V", title:"Scaling", chapters:[
+      ["c5-1","5.1 Two Tiers of Capacity"],["c5-2","5.2 The Autoscaling Algorithm"],
+      ["c5-3","5.3 Right-Sizing"],["c5-4","5.4 Vertical Scaling"],
+      ["c5-5","5.5 Multi-Tenant Pools"]
+    ]},
+    {label:"Part VI", title:"Object Storage", chapters:[
+      ["c6-1","6.1 What's Stored"],["c6-2","6.2 Fetched-at-Boot Artifacts"],
+      ["c6-3","6.3 The Leader Lease"],["c6-4","6.4 Manifests & Live Config"]
+    ]},
+    {label:"Part VII", title:"Observability", chapters:[
+      ["c7-1","7.1 The Metrics Pipeline"],["c7-2","7.2 Every Metric"],
+      ["c7-3","7.3 Reading the Dashboard"],["c7-4","7.4 Alert Rules"],
+      ["c7-5","7.5 The Health Check"]
+    ]},
+    {label:"Part VIII", title:"Security", chapters:[
+      ["c8-1","8.1 The Firewall Model"],["c8-2","8.2 Credential Scope"]
+    ]},
+    {label:"Part IX", title:"Deployment", chapters:[
+      ["c9-1","9.1 Prerequisites"],["c9-2","9.2 Deployment Sequence"],
+      ["c9-3","9.3 Onboarding a Client"]
+    ]},
+    {label:"Part X", title:"Day-2 Operations", chapters:[
+      ["c10-1","10.1 Pre-Production Checklist"],["c10-2","10.2 Common Procedures"],
+      ["c10-3","10.3 Troubleshooting Playbook"],["c10-4","10.4 Where to Look First"]
+    ]},
+    {label:"Appendix", title:"vs. AWS & GCP", chapters:[
+      ["c11-1","A.1 Head-to-Head"],["c11-2","A.2 Where They Still Win"],
+      ["c11-3","A.3 The Internal Trade-Off"]
+    ]}
+  ];
+
+  var root = document.getElementById('tocRoot');
+  var frag = document.createDocumentFragment();
+  parts.forEach(function(p){
+    var div = document.createElement('div');
+    div.className = 'toc-part';
+    var lbl = document.createElement('div');
+    lbl.className = 'toc-part-label';
+    lbl.innerHTML = '<b>'+p.label+'</b><span>'+p.title+'</span>';
+    div.appendChild(lbl);
+    var ul = document.createElement('ul');
+    ul.className = 'toc-list';
+    p.chapters.forEach(function(c){
+      var li = document.createElement('li');
+      var a = document.createElement('a');
+      a.href = '#'+c[0];
+      a.textContent = c[1];
+      a.dataset.target = c[0];
+      li.appendChild(a);
+      ul.appendChild(li);
+    });
+    div.appendChild(ul);
+    frag.appendChild(div);
+  });
+  root.appendChild(frag);
+
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc-list a'));
+  var sections = links.map(function(a){ return document.getElementById(a.dataset.target); }).filter(Boolean);
+
+  function setActive(id){
+    links.forEach(function(a){ a.classList.toggle('active', a.dataset.target === id); });
+  }
+
+  try{
+    var io = new IntersectionObserver(function(entries){
+      var best = null, bestTop = Infinity;
+      entries.forEach(function(e){
+        if(e.isIntersecting){
+          var top = e.boundingClientRect.top;
+          if(top >= 0 && top < bestTop){ bestTop = top; best = e.target.id; }
+        }
+      });
+      if(best) setActive(best);
+    }, {rootMargin: "-10% 0px -70% 0px", threshold: [0, 1]});
+    sections.forEach(function(s){ io.observe(s); });
+  }catch(e){}
+
+  var menuBtn = document.getElementById('menuBtn');
+  var sidebar = document.getElementById('sidebar');
+  if(menuBtn){
+    menuBtn.addEventListener('click', function(){
+      sidebar.classList.toggle('open');
+    });
+    links.forEach(function(a){
+      a.addEventListener('click', function(){ sidebar.classList.remove('open'); });
+    });
+  }
+})();
+</script>
