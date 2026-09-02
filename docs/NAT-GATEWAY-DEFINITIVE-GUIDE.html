@@ -383,12 +383,12 @@ flowchart LR
     n2e1["eth1 · VPC"]
     n2e0["eth0 · Public IP"]
   end
-  C1 -- "ECMP" --> n1e2
-  C2 -- "ECMP" --> n1e2
-  C3 -- "ECMP" --> n2e2
-  n1e1 <-- "conntrack sync + BGP" --> n2e1
-  n1e0 -- "internet egress" --> INTERNET(("Internet"))
-  n2e0 -- "internet egress" --> INTERNET
+  C1 -->|"ECMP"| n1e2
+  C2 -->|"ECMP"| n1e2
+  C3 -->|"ECMP"| n2e2
+  n1e1 <-->|"conntrack sync + BGP"| n2e1
+  n1e0 -->|"internet egress"| INTERNET(("Internet"))
+  n2e0 -->|"internet egress"| INTERNET
           </pre>
           <div class="diagram-cap">Fig. 1 — the three-interface node, active-active across the pool, buddy-paired for HA</div>
         </div>
@@ -466,9 +466,9 @@ flowchart TB
     mon["Prometheus · Grafana · Alertmanager"]
     ctl --- mon
   end
-  A -.->|"roster reads/writes"| n1a["NAT Node"]
-  A -.-> n2a["NAT Node"]
-  A -.-> n3a["NAT Node"]
+  ctl -.->|"roster reads/writes"| n1a["NAT Node"]
+  ctl -.->|"roster reads/writes"| n2a["NAT Node"]
+  ctl -.->|"roster reads/writes"| n3a["NAT Node"]
 
   subgraph B["Every node runs its own controller"]
     direction LR
@@ -476,7 +476,7 @@ flowchart TB
     b2["Node B — Controller (follower)"]
     b3["Node C — Controller (follower)"]
   end
-  b1 == "read/write, fencing-protected" ==> LinodeAPI[("Cloud API")]
+  b1 ==>|"read/write, fencing-protected"| LinodeAPI[("Cloud API")]
   b2 -.->|"read-only"| LinodeAPI
   b3 -.->|"read-only"| LinodeAPI
           </pre>
@@ -850,12 +850,12 @@ flowchart LR
         <div class="diagram-frame">
           <pre class="mermaid">
 flowchart LR
-  node["NAT Node — nftables, conntrack, interfaces, BGP, health checks"]
-  exp["Metrics Exporter\n:9200/metrics · :9200/healthz"]
+  natnode["NAT Node — nftables, conntrack, interfaces, BGP, health checks"]
+  exp["Metrics Exporter — :9200/metrics · :9200/healthz"]
   prom[("Prometheus")]
   graf["Grafana Dashboard"]
   alert["Alertmanager"]
-  node --> exp --> prom
+  natnode --> exp --> prom
   prom --> graf
   prom --> alert
           </pre>
