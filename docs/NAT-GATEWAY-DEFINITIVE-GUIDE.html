@@ -1,3 +1,8 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NAT Gateway: The Definitive Guide</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,900&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
@@ -254,6 +259,8 @@ pre.code .m{color:var(--code-mut)}
   .cover{min-height:60vh}
 }
 </style>
+</head>
+<body>
 
 <div class="shell">
   <button class="menu-btn" id="menuBtn">☰ Contents</button>
@@ -1155,6 +1162,22 @@ flowchart LR
   </main>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"></script>
+<script>
+(function(){
+  try{
+    var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    var explicit = document.documentElement.getAttribute('data-theme');
+    var isDark = explicit ? explicit === 'dark' : dark;
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: isDark ? 'dark' : 'default',
+      securityLevel: 'loose',
+      flowchart: { htmlLabels: true, curve: 'basis' }
+    });
+  }catch(e){}
+})();
+</script>
 <script>
 (function(){
   var parts = [
@@ -1266,3 +1289,5 @@ flowchart LR
   }
 })();
 </script>
+</body>
+</html>
