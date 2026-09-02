@@ -40,7 +40,7 @@ A pool of independently-active NAT nodes per zone, each owning its own public eg
 - **Multi-tenant isolation, when you want it**: default shared pool for cost efficiency, or dedicated pools with reserved capacity for tenants that need isolation — both are the same Terraform module, just a different `pool_name`.
 - **Vertical scale**: swap instance plans, up to Akamai Cloud's 40 Gbps in / 12 Gbps out dedicated-CPU plans.
 - **Multi-IP egress**: each node can hold multiple public egress IPs to multiply available ephemeral ports (55K connections per IP per destination, same ceiling AWS documents).
-- **Static VLAN addressing for the client fleet**: since Linode VLANs carry no address-assignment mechanism of their own, every client instance gets a permanent, Terraform-assigned VLAN address, isolated per client group. See OPERATIONS.md "Onboarding a new client group".
+- **Static VLAN addressing for the client fleet**: since Linode VLANs carry no address-assignment mechanism of their own, a client instance's VLAN address is applied by `scripts/install-nat-client.sh` (run against an instance your own automation already created), with a live ARP-probe preflight guarding against reusing an address already in use. See OPERATIONS.md "Onboarding a client instance".
 - **Security**: default-deny Cloud Firewall templates on public/VPC interfaces, egress-only posture, minimal node-side attack surface, node-level flood/rate-limiting.
 - **Rich observability**: Prometheus metrics for NAT (conntrack utilization, port exhaustion, PPS, throughput, drop counters, node health) — plus fleet-aware scraping that tracks autoscaling automatically, pre-built Grafana dashboards, and alert rules.
 - **Infrastructure as code**: full Terraform module set for Akamai Cloud; reproducible, auditable, GitOps-friendly, and fully owned by you.
@@ -52,7 +52,6 @@ terraform/                 Terraform modules & example environment (Linode provi
   modules/vpc/               VPC + subnets + firewall rules (NAT-node + control-plane)
   modules/nat-fleet/         One pool of N independently-active, 3-interface NAT nodes (public/VPC/VLAN)
   modules/observability/     Prometheus + Grafana + natctl, all on one instance
-  modules/client-fleet/      Client-side instances with client-agent auto-installed
   modules/artifacts/         Uploads compiled binaries + config to Object Storage
   environments/example/      Wired-up example: shared pool + a dedicated-tenant pool
 ansible/cloud-init/        Cloud-init user-data rendered by Terraform
@@ -82,13 +81,12 @@ cp terraform.tfvars.example terraform.tfvars   # fill in your Linode API token, 
 terraform init
 terraform apply
 
-# 2. Install client-agent on every private-subnet instance that needs NAT egress
-#    (the client_groups Terraform variable does this automatically -- see
-#    OPERATIONS.md "Onboarding a new client group" -- this manual path is
-#    for an instance outside Terraform's management):
-terraform output natctl_roster_url_shared
-cd ../../../client-agent
-./install.sh --natctl-url "$(terraform -chdir=../terraform/environments/example output -raw natctl_roster_url_shared)"
+# 2. Configure a client instance you already created (through your own
+#    automation -- this project doesn't create client instances, see
+#    OPERATIONS.md "Onboarding a client instance"): apply its static
+#    VLAN address and install client-agent, in one step.
+./scripts/install-nat-client.sh --vlan-iface eth0 --vlan-ip <address>/<prefix> \
+  --natctl-url "$(terraform -chdir=terraform/environments/example output -raw natctl_roster_url_shared)"
 
 # 3. Open Grafana
 terraform -chdir=terraform/environments/example output grafana_url

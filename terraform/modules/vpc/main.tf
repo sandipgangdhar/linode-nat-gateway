@@ -33,11 +33,15 @@
 #                                   the roster API (8099), Grafana/
 #                                   Prometheus/Alertmanager UI ports
 #                                   (3000/9090/9093), and SSH.
-# 3) linode_firewall.client        - v14: Default-deny Cloud Firewall
-#                                   attached to every client-fleet instance
-#                                   (terraform/modules/client-fleet): SSH
-#                                   only -- client-agent needs no inbound
-#                                   port at all.
+# 3) linode_firewall.client        - v14: Default-deny Cloud Firewall for
+#                                   client instances. As of M20
+#                                   (2026-09-02) this project no longer
+#                                   creates those instances itself -- a
+#                                   customer attaches this firewall (its
+#                                   id is a Terraform output) to whatever
+#                                   they create via their own automation.
+#                                   SSH only -- client-agent needs no
+#                                   inbound port at all.
 #
 # Data sources (not resources -- nothing here is created or destroyed by
 # Terraform):
@@ -109,6 +113,58 @@ terraform {
       source  = "linode/linode"
       version = "~> 2.9"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
+  }
+}
+
+# roadmap/M18-firewall-label-collision.md: Akamai enforces Cloud Firewall
+# labels as unique ACCOUNT-WIDE, not scoped to this Terraform state -- so
+# if state is ever lost or reset while these three firewalls survive on
+# the account, the next `apply` hard-fails with
+# `[400] Label must be unique among your Cloud Firewalls` (live-hit,
+# 2026-09-01). One random suffix, shared across all three labels below,
+# fixes this by construction rather than just detecting it: losing state
+# also loses THIS resource, so the next `apply` after a state loss mints
+# a NEW suffix and the freshly-created firewalls can never collide with
+# whatever orphaned ones the lost-state run left behind. No `keepers` --
+# deliberately generated once and left stable across every normal
+# `apply`, exactly like any other resource that lives in state.
+#
+# byte_length=1 (2 hex chars), not 2 -- Akamai's firewall label cap is 32
+# characters (the same limit hit for real once before, M9), and with the
+# longest fixed suffix ("-control-plane-fw", 17 chars) plus the default
+# var.label ("lng-example", 11 chars) already at 28, there's only 4
+# characters of budget left including the separator. byte_length=2 (4
+# hex chars + separator = 5) would have exceeded 32 immediately even for
+# TODAY'S live label, with no state loss needed to trigger it -- confirmed
+# by hand before implementing, not discovered live. 1 byte (256 possible
+# suffixes) is a much smaller space than 2 bytes (65536), but the
+# property that matters is only "the NEW suffix differs from the ONE
+# specific orphaned suffix a lost-state rebuild left behind" -- a 1-in-256
+# accidental re-collision is a rare, retry-able edge case, not a
+# systemic problem. The precondition below is the safety net for anyone
+# using a longer custom var.label than fits this budget.
+resource "random_id" "fw_suffix" {
+  byte_length = 1
+}
+
+# Fails loudly and clearly at plan time if var.label is too long to fit
+# Akamai's 32-character firewall label cap once the fixed suffix words
+# and the random suffix above are accounted for -- rather than a
+# cryptic raw `[400] Attribute label string length must be between 3
+# and 32` from the API (the exact class of confusing failure this whole
+# milestone exists to move away from). "-control-plane-fw-XX" (the
+# longest of the three fixed suffixes, plus a hyphen and the 2-hex-char
+# random suffix) is 20 characters, so var.label can be at most 12.
+resource "terraform_data" "label_length_check" {
+  lifecycle {
+    precondition {
+      condition     = length(var.label) <= 12
+      error_message = "var.label (\"${var.label}\", ${length(var.label)} chars) is too long -- with the fixed \"-control-plane-fw-\" suffix and this module's 2-character random suffix, Akamai's 32-character Cloud Firewall label cap allows var.label up to 12 characters. Shorten var.label."
+    }
   }
 }
 
@@ -140,7 +196,7 @@ data "linode_vpc_subnet" "private" {
 # (tenant-level restriction, if needed, is enforced in nftables on the
 # node, not here).
 resource "linode_firewall" "nat_node" {
-  label = "${var.label}-nat-node-fw"
+  label = "${var.label}-nat-node-fw-${random_id.fw_suffix.hex}"
 
   inbound_policy  = "DROP"
   outbound_policy = "ACCEPT"
@@ -233,7 +289,7 @@ resource "linode_firewall" "nat_node" {
 # rule too (it scrapes every node) plus its own API port for client-agents
 # to poll the fleet roster, and the Grafana/Prometheus UI ports.
 resource "linode_firewall" "control_plane" {
-  label = "${var.label}-control-plane-fw"
+  label = "${var.label}-control-plane-fw-${random_id.fw_suffix.hex}"
 
   inbound_policy  = "DROP"
   outbound_policy = "ACCEPT"
@@ -263,16 +319,18 @@ resource "linode_firewall" "control_plane" {
   }
 }
 
-# v14: minimal firewall for client instances (terraform/modules/client-fleet)
-# -- SSH only. Deliberately its own firewall, not a reuse of nat_node's:
-# client instances aren't NAT nodes and need none of nat_node's ports (the
-# exporter) open at all -- client-agent is outbound-only, no inbound port
-# needed. One firewall shared across every client-fleet group (not one
-# per group) -- same "coarse-grained, shared" reasoning as nat_node/
-# control_plane above; fine-grained restriction, if ever needed, belongs on
-# the instance itself, not duplicated per group here.
+# v14: minimal firewall for client instances -- SSH only. Deliberately its
+# own firewall, not a reuse of nat_node's: client instances aren't NAT
+# nodes and need none of nat_node's ports (the exporter) open at all --
+# client-agent is outbound-only, no inbound port needed. As of M20
+# (2026-09-02) this project doesn't create client instances anymore, but
+# still creates and exposes this firewall (client_firewall_id output) for
+# a customer to attach to instances their own automation creates -- same
+# "coarse-grained, shared" reasoning as nat_node/control_plane above;
+# fine-grained restriction, if ever needed, belongs on the instance
+# itself.
 resource "linode_firewall" "client" {
-  label = "${var.label}-client-fw"
+  label = "${var.label}-client-fw-${random_id.fw_suffix.hex}"
 
   inbound_policy  = "DROP"
   outbound_policy = "ACCEPT"

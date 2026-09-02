@@ -16,11 +16,14 @@
 #    metrics and dashboards.
 # 4) vpc_id / private_subnet_ids   - Reference for wiring up additional
 #    workloads into this same VPC.
-# 5) client_instance_ids / client_public_ips / client_static_vlan_addresses -
-#    client_groups details, including (v18) the exact VLAN address(es)
-#    assigned to each static_vlan_slot group -- feed straight into
-#    `natctl_cli release-static-addresses`, no cidrhost() math needed.
+# 5) shared_pool_placement_group_ids / dedicated_acme_pool_placement_group_ids -
+#    M16: this pool's Placement Group IDs when placement_group_enabled is
+#    true; empty otherwise.
 #
+# roadmap/M20-remove-terraform-client-creation.md: this environment no
+# longer creates client instances, so there are no client-related
+# outputs here anymore -- see scripts/install-nat-client.sh and
+# docs/RUNBOOK.md's "Onboard a client instance" section instead.
 # -----------------------------------------------------
 # Author:
 # - Sandip Gangdhar
@@ -36,6 +39,16 @@ output "shared_pool_node_private_ips" {
 
 output "dedicated_acme_pool_node_private_ips" {
   value = var.enable_dedicated_pool_example ? module.nat_fleet_dedicated_acme[0].node_private_ips : {}
+}
+
+output "shared_pool_placement_group_ids" {
+  description = "M16: this pool's Placement Group IDs when placement_group_enabled is true; empty list otherwise."
+  value       = module.nat_fleet_shared.placement_group_ids
+}
+
+output "dedicated_acme_pool_placement_group_ids" {
+  description = "M16: this pool's Placement Group IDs when placement_group_enabled is true; empty list otherwise (or if the dedicated pool itself is disabled)."
+  value       = var.enable_dedicated_pool_example ? module.nat_fleet_dedicated_acme[0].placement_group_ids : []
 }
 
 output "natctl_roster_url_shared" {
@@ -65,29 +78,9 @@ output "private_subnet_ids" {
   value = module.vpc.private_subnet_ids
 }
 
-# v14: client instances -- empty {} when var.client_groups is left at its
-# default. See terraform/modules/client-fleet's own outputs.tf for what
-# each value means.
-output "client_instance_ids" {
-  description = "Map of group name -> (instance label -> Linode instance id)."
-  value       = { for name, m in module.client_fleet : name => m.instance_ids }
-}
-
-output "client_public_ips" {
-  description = "Map of group name -> (instance label -> public IPv4, empty string for \"vlan_only\"/\"vpc_vlan\" interface_mode groups -- see terraform/modules/client-fleet/outputs.tf's own public_ips description for the \"public_vpc_vlan\" caveat)."
-  value       = { for name, m in module.client_fleet : name => m.public_ips }
-}
-
-# v18: for every client_groups entry, the exact VLAN addresses Terraform
-# will assign to its instances -- one per client_count, in order. Exists
-# so an operator never has to compute cidrhost() by hand (see main.tf's
-# local.static_client_offsets). See docs/RUNBOOK.md's "Static VLAN IPs
-# for client groups" section.
-output "client_static_vlan_addresses" {
-  description = "Map of client_groups group name -> ordered list of its actual VLAN addresses."
-  value = {
-    for name, g in local.static_client_groups : name => [
-      for i in range(g.client_count) : cidrhost(local.pool_vlan_cidrs[g.pool_name], local.static_client_offsets[name] + i)
-    ]
-  }
-}
+# roadmap/M20-remove-terraform-client-creation.md (2026-09-02):
+# client_instance_ids/client_public_ips/client_static_vlan_addresses
+# outputs (v14/v18, fed by module.client_fleet/var.client_groups) are
+# removed alongside that mechanism -- this environment no longer creates
+# client instances, so there's nothing left to report here. See
+# docs/RUNBOOK.md's "Onboard a client instance" section.

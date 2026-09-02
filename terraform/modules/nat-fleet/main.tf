@@ -87,6 +87,16 @@ locals {
 
   node_ids = [for i in range(var.node_count) : "${var.fleet_label}-${i + 1}"]
 
+  # M16: node_id -> its 0-based creation-order index, the same index
+  # node_ids[i] used to derive that id in the first place. linode_instance.node
+  # below is for_each-keyed by node_id (a set of strings), not count, so
+  # this is how its dynamic "placement_group" block recovers "which
+  # position is this node" to compute a contiguous placement-group block
+  # assignment (floor(index / 5), see linode_placement_group.nodes below).
+  node_index = {
+    for i, id in local.node_ids : id => i
+  }
+
   # Deterministic static IPs for both private-side interfaces, one per
   # node. Computed directly from the caller-supplied CIDR + offset rather
   # than looked up post-creation, for the same reason described in the
@@ -114,6 +124,19 @@ locals {
     for node_id in local.node_ids :
     node_id => lookup(var.node_instance_type_overrides, node_id, var.instance_type)
   }
+
+  # M17 (roadmap/M17-reserved-ip-pool-and-prereservation.md): the first
+  # length(var.reserved_ip_pool) node_ids (by creation order) are covered
+  # by operator-supplied addresses the operator already owns; every
+  # node_id past that still needs a FRESH linode_networking_ip.reserved
+  # resource, same as before this variable existed. An empty
+  # reserved_ip_pool (the default) makes this identical to every
+  # node_id needing a new reservation -- fully backward compatible.
+  node_ids_needing_new_reservation = slice(
+    local.node_ids,
+    min(length(var.reserved_ip_pool), length(local.node_ids)),
+    length(local.node_ids),
+  )
 }
 
 # Reserved public IPv4s (opt-in, reserved_ip_enabled) -- allocated UP
@@ -131,12 +154,66 @@ locals {
 # resource, computed independently, that linode_instance.node merely
 # depends on (a normal forward reference).
 resource "linode_networking_ip" "reserved" {
-  for_each = var.reserved_ip_enabled ? toset(local.node_ids) : toset([])
+  for_each = var.reserved_ip_enabled ? toset(local.node_ids_needing_new_reservation) : toset([])
 
   type     = "ipv4"
   public   = true
   reserved = true
   region   = var.region
+}
+
+# M17: every floor node's reserved address, regardless of whether it came
+# from the operator-supplied reserved_ip_pool (by creation-order position)
+# or a freshly-created linode_networking_ip.reserved resource above. This
+# is what linode_instance.node's ipv4 argument below actually reads --
+# neither source is referenced directly there, so a node never needs to
+# know or care which one it got. Empty map when reserved_ip_enabled is
+# false, matching the feature's existing all-or-nothing gating.
+locals {
+  node_reserved_ips = var.reserved_ip_enabled ? merge(
+    {
+      for i, node_id in local.node_ids : node_id => var.reserved_ip_pool[i]
+      if i < length(var.reserved_ip_pool)
+    },
+    {
+      for node_id in local.node_ids_needing_new_reservation :
+      node_id => linode_networking_ip.reserved[node_id].address
+    },
+  ) : {}
+}
+
+# A supplied reserved_ip_pool longer than node_count would leave its
+# excess addresses permanently unused by this pool -- caught loudly at
+# plan time with the exact counts needed to fix it, rather than the
+# operator discovering the mistake by noticing an address never gets
+# assigned to anything.
+check "reserved_ip_pool_fits_node_count" {
+  assert {
+    condition     = !var.reserved_ip_enabled || length(var.reserved_ip_pool) <= var.node_count
+    error_message = "reserved_ip_pool has ${length(var.reserved_ip_pool)} address(es) but node_count is only ${var.node_count} -- ${length(var.reserved_ip_pool) - var.node_count} of the supplied address(es) would never be assigned to any node in this pool. Either trim reserved_ip_pool to at most node_count entries, or raise node_count."
+  }
+}
+
+# M16 (roadmap/M16-anti-affinity-placement-groups.md, opt-in
+# placement_group_enabled): spreads this pool's floor nodes across
+# separate physical Akamai hosts, closing the gap docs/COMPARISON.md
+# documents (a correlated physical-host failure taking out both buddy
+# pair members with nothing to fail over to). Akamai caps a group at 5
+# Linodes, so a pool bigger than 5 nodes gets ceil(node_count / 5)
+# groups instead of failing to apply -- linode_instance.node's dynamic
+# "placement_group" block below assigns node index i to group
+# floor(i / 5), a CONTIGUOUS block assignment (not round-robin) chosen
+# because buddy.py pairs healthy nodes in roughly creation order, so
+# most pairs land inside one group and stay protected -- see this
+# milestone's roadmap file "Residual gap" section for what this does and
+# doesn't guarantee once a pool spans more than one group.
+resource "linode_placement_group" "nodes" {
+  count = var.placement_group_enabled ? ceil(var.node_count / 5) : 0
+
+  label                  = "${var.fleet_label}-pg-${count.index}"
+  region                 = var.region
+  placement_group_type   = "anti_affinity:local"
+  placement_group_policy = var.placement_group_policy
 }
 
 resource "linode_instance" "node" {
@@ -150,11 +227,29 @@ resource "linode_instance" "node" {
   root_pass       = var.root_pass
   firewall_id     = var.firewall_id
   tags            = concat(var.tags, ["lng", "lng-fleet", "lng-pool-${var.pool_name}"])
-  # Assigns the pre-reserved address above as this node's public IPv4 on
-  # creation, instead of Linode's usual auto-assigned ephemeral one. null
-  # (the argument's own default/unset state) when reserved_ip_enabled is
-  # false, preserving the original ephemeral-IP behavior exactly.
-  ipv4 = var.reserved_ip_enabled ? [linode_networking_ip.reserved[each.key].address] : null
+  # Assigns this node's reserved address (operator-supplied via M17's
+  # reserved_ip_pool, or freshly created above -- see node_reserved_ips)
+  # as its public IPv4 on creation, instead of Linode's usual
+  # auto-assigned ephemeral one. null (the argument's own default/unset
+  # state) when reserved_ip_enabled is false, preserving the original
+  # ephemeral-IP behavior exactly.
+  ipv4 = var.reserved_ip_enabled ? [local.node_reserved_ips[each.key]] : null
+
+  # M16 (opt-in placement_group_enabled): assigns this node to its
+  # contiguous-block placement group -- floor(index / 5) matches
+  # linode_placement_group.nodes' own count-based indexing above. A
+  # dynamic block with zero-or-one iterations (rather than a plain
+  # nested block) so the "off" case produces the exact same resource
+  # shape as before this feature existed -- an empty for_each list
+  # emits zero placement_group blocks. The provider's id argument here
+  # is numeric, unlike linode_placement_group's own string .id output,
+  # hence tonumber().
+  dynamic "placement_group" {
+    for_each = var.placement_group_enabled ? [1] : []
+    content {
+      id = tonumber(linode_placement_group.nodes[floor(local.node_index[each.key] / 5)].id)
+    }
+  }
 
   # eth0 — a REAL, direct public IP (NOT VPC's 1:1 NAT). This is deliberate:
   # Linode's VPC IPs cannot use the IP Sharing/failover feature at all
@@ -253,7 +348,7 @@ resource "linode_object_storage_object" "nftables_conf" {
     vpc_iface            = "eth1"
     vlan_iface           = "eth2"
     private_subnet_cidrs = var.private_subnet_cidrs
-    reserved_public_ip   = var.reserved_ip_enabled ? linode_networking_ip.reserved[each.key].address : ""
+    reserved_public_ip   = var.reserved_ip_enabled ? local.node_reserved_ips[each.key] : ""
     pool_subnet_cidr     = var.natctl_roster_url != "" ? var.public_subnet_cidr : ""
     # BUG FIX (found live, 2026-08-02): this local nftables ruleset never
     # opened 8099 for natctl_on_node_enabled -- see that rule's own
@@ -266,7 +361,7 @@ resource "linode_object_storage_object" "nftables_conf" {
     vpc_iface              = "eth1"
     vlan_iface             = "eth2"
     private_subnet_cidrs   = var.private_subnet_cidrs
-    reserved_public_ip     = var.reserved_ip_enabled ? linode_networking_ip.reserved[each.key].address : ""
+    reserved_public_ip     = var.reserved_ip_enabled ? local.node_reserved_ips[each.key] : ""
     pool_subnet_cidr       = var.natctl_roster_url != "" ? var.public_subnet_cidr : ""
     natctl_on_node_enabled = var.natctl_on_node_enabled
   }))
@@ -302,7 +397,7 @@ locals {
       # eth0's IP at boot, exactly as before this feature existed" -- see
       # nftables.conf.tftpl and nat-node.yaml.tftpl's own comments on
       # reserved_public_ip for what changes when this is non-empty.
-      reserved_public_ip = var.reserved_ip_enabled ? linode_networking_ip.reserved[node_id].address : ""
+      reserved_public_ip = var.reserved_ip_enabled ? local.node_reserved_ips[node_id] : ""
       # v10: nftables.conf is now fetched at boot from the per-node Object
       # Storage object uploaded above, not embedded as content: here --
       # see this file's top-of-file v10 comment and

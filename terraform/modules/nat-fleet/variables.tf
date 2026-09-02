@@ -140,6 +140,24 @@ variable "reserved_ip_enabled" {
   default     = false
 }
 
+variable "reserved_ip_pool" {
+  description = "roadmap/M17-reserved-ip-pool-and-prereservation.md: reserved IPv4 addresses the operator ALREADY OWNS (reused from a prior deployment on this same account, or reserved out-of-band ahead of time), to hand to floor nodes instead of always minting a brand-new linode_networking_ip.reserved for every node. Assigned by POSITION: reserved_ip_pool[0] goes to local.node_ids[0] (this pool's first floor node by creation order), reserved_ip_pool[1] to the second, and so on -- any node_id beyond length(reserved_ip_pool) still gets a freshly-created reservation, exactly as before this variable existed. Only meaningful when reserved_ip_enabled is true; harmless (ignored) otherwise. Default [] (fully backward compatible -- identical behavior to before this variable existed). Must not exceed node_count in length -- see this module's reserved_ip_pool_fits_node_count check block, which fails plan loudly rather than silently leaving excess addresses unused. Every supplied address must actually be a Reserved IP you already own on this account and region; Terraform will fail the apply if it isn't (Linode rejects assigning a non-reserved or already-attached address this way)."
+  type        = list(string)
+  default     = []
+}
+
+variable "placement_group_enabled" {
+  description = "roadmap/M16-anti-affinity-placement-groups.md: whether this pool's floor nodes are spread across Linode Placement Groups (placement_group_type = \"anti_affinity:local\") so Akamai avoids co-locating them on the same physical host -- closes the gap docs/COMPARISON.md documents (\"a correlated failure of both [buddy] pair members has nothing to fail over to\"). Off by default -- same opt-in pattern as reserved_ip_enabled. Akamai caps a placement group at 5 Linodes, so a pool with more than 5 floor nodes gets ceil(node_count / 5) groups in contiguous index blocks (node 0-4 in group 0, 5-9 in group 1, ...) rather than failing to apply -- see docs/ARCHITECTURE.md §3.6.2's \"Residual gap\" for what multi-group chunking does and doesn't protect against. Elastic (natctl-provisioned) nodes are NOT covered -- see this milestone's roadmap file for why that's deliberately out of scope."
+  type        = bool
+  default     = false
+}
+
+variable "placement_group_policy" {
+  description = "Linode's placement_group_policy for every placement group this module creates when placement_group_enabled is true: \"strict\" (the default -- Linode refuses to violate anti-affinity, an instance create/move fails outright rather than co-locating) or \"flexible\" (best-effort -- Linode allows a co-located placement if it has no other choice, rather than failing the operation). \"strict\" is the safer default for a NAT fleet where the whole point is guaranteeing separation; only relax to \"flexible\" if you've hit real capacity-constrained placement failures and would rather degrade gracefully than block a scale-out."
+  type        = string
+  default     = "strict"
+}
+
 variable "conntrack_max" {
   type    = number
   default = 1048576

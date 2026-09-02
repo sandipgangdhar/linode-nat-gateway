@@ -18,6 +18,10 @@
 # 5) node_linode_ids     - Linode numeric IDs per node, useful for
 #                          linode-cli / IP-Sharing calls (docs/RUNBOOK.md
 #                          "Enable buddy IP failover for a pool").
+# 6) placement_group_ids - M16 (roadmap/M16-anti-affinity-placement-groups.md):
+#                          this pool's placement group IDs when
+#                          placement_group_enabled is true; empty list
+#                          otherwise.
 #
 # -----------------------------------------------------
 # Author:
@@ -64,4 +68,9 @@ output "node_public_ips" {
 
 output "node_linode_ids" {
   value = { for k, v in linode_instance.node : k => v.id }
+}
+
+output "placement_group_ids" {
+  description = "M16: this pool's Placement Group IDs (one per up-to-5-node contiguous block) when placement_group_enabled is true; an empty list when it's false. See linode_placement_group.nodes in main.tf."
+  value       = linode_placement_group.nodes[*].id
 }

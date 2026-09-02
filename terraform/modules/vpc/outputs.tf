@@ -67,6 +67,6 @@ output "control_plane_firewall_id" {
 }
 
 output "client_firewall_id" {
-  description = "Attach to every client-fleet instance (terraform/modules/client-fleet) -- SSH only, shared across every client group."
+  description = "Attach to any client instance -- SSH only. As of M20 (2026-09-02) this project doesn't create client instances itself; a customer attaches this firewall to whatever they create via their own automation."
   value       = linode_firewall.client.id
 }

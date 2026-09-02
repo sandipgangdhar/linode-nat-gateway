@@ -132,7 +132,7 @@ python -m natctl.natctl_cli drain --config natctl.yaml --pool shared --node-id s
 ```
 Refuses to drain a Terraform floor node — lower the floor via Terraform instead.
 
-**Onboarding a new client group**: add an entry to `client_groups` in your `.tfvars` with a new, never-reused `static_vlan_slot`, then `terraform plan`/`apply`. Get the exact addresses a group will use with `terraform output client_static_vlan_addresses`.
+**Onboarding a client instance**: this project doesn't create client instances -- create yours through your own automation (Terraform, an autoscaling group, hand-provisioned, whatever you already use), attach its VLAN interface, then run `scripts/install-nat-client.sh --vlan-iface <iface> --vlan-ip <address>/<prefix> --natctl-url <roster-url>` against it. The script applies the address (after a live ARP-probe check that it isn't already in use by a NAT node or another client) and installs/starts client-agent if the instance has no internet path of its own. Pick the address from inside your pool's reserved window (`client_static_vlan_reserved` in `.tfvars`) so it can never collide with a future elastic node.
 
 **Rolling security patches**: patch elastic nodes first via drain-and-replace. For floor nodes, patch one at a time — drain it manually (there's no automatic drain for a floor node), patch/reboot, confirm `/healthz` passes again, move to the next. Never patch every node in a pool simultaneously.
 

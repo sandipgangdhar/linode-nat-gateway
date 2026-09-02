@@ -94,13 +94,29 @@ pools:
     # buddy-sync/ and docs/ARCHITECTURE.md §5.
     conntrack_buddy_sync_enabled: true
     natctl_roster_base_url: "http://10.0.0.5:8099"
-    # Address marking the top of this pool's Terraform-managed static
-    # VLAN reservation window (client_static_vlan_reserved's
-    # static_vlan_slot window) — see terraform/environments/example/
-    # main.tf's vlan_reserved_ceiling_shared and fleet.py's _provision(),
-    # which refuses to hand a new elastic node an address at or past this
-    # ceiling.
+    # Address marking the top of this pool's Terraform-managed reservation
+    # window for manually-assigned client addresses (client_static_vlan_reserved)
+    # — see terraform/environments/example/main.tf's vlan_reserved_ceiling_shared
+    # and fleet.py's _provision(), which refuses to hand a new elastic node
+    # an address at or past this ceiling.
     vlan_static_ceiling: "192.168.100.100"
+    # M17 (roadmap/M17-reserved-ip-pool-and-prereservation.md): addresses
+    # the operator already owns (reused from a prior deployment on this
+    # account, or reserved out-of-band ahead of time) -- _provision()
+    # prefers these over always minting a brand-new reservation. Only
+    # meaningful when reserved_ip_enabled is true; harmless otherwise.
+    # Verified against the account's actual unattached reserved IPs
+    # before ever being trusted -- see PoolConfig.reserved_ip_pool.
+    # Empty by default; example values here for illustration only, not
+    # real addresses to reuse as-is.
+    reserved_ip_pool: []
+    # Opt-in (default false) -- proactively reserves this pool's full
+    # max_nodes-sized reserved-IP footprint up front instead of one
+    # address at a time as real scale-out happens. See
+    # PoolConfig.reserved_ip_prereserve_to_max and fleet.py's
+    # prereserve_ips_to_max(). No cost guardrail beyond this flag itself
+    # -- reserving ahead of need costs real money whether used or not.
+    reserved_ip_prereserve_to_max: false
     # Bidirectional buddy IP failover (FRR, v5 — replaces lelastic, which
     # was architecturally locked to one direction per pair) — see
     # docs/ARCHITECTURE.md §3.6/§3.6.1. Requires conntrack_buddy_sync_enabled

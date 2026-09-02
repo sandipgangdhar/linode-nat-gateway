@@ -32,11 +32,14 @@
 #    knows about both pools.
 # 6) module.observability        - The natctl + Prometheus + Grafana
 #    instance, given the composed natctl_config_yaml above.
-# 7) module.client_fleet         - v14: optional client (downstream
-#    application/VPN server) instances, one module call per var.client_groups
-#    entry -- creates nothing when that map is left at its default ({}). See
-#    terraform/modules/client-fleet's own header comment and docs/RUNBOOK.md
-#    "Onboard a client instance (automated)".
+#
+# roadmap/M20-remove-terraform-client-creation.md: this environment no
+# longer creates client instances at all (removed the v14
+# module.client_fleet/var.client_groups mechanism, 2026-09-02) -- a
+# customer's own automation creates their client instances, and
+# scripts/install-nat-client.sh configures an already-existing instance
+# to become a working client. See docs/RUNBOOK.md "Onboard a client
+# instance".
 #
 # -----------------------------------------------------
 # Usage:
@@ -117,26 +120,6 @@ locals {
     ? "http://${cidrhost(module.vpc.public_subnet_cidr, 20)}:8099"
     : "http://${local.natctl_private_ip}:8099"
   )
-
-  # v20 (found live, 2026-08-02/03): natctl_roster_base_url above is
-  # always VPC-addressed, unreachable for a true "vlan_only" client-fleet
-  # group (no VPC interface at all) -- see client-fleet/variables.tf's
-  # natctl_roster_vlan_url description for the full story. Unlike
-  # natctl_roster_base_url (one address works for every pool, because
-  # every pool's NAT nodes share this environment's one VPC subnet),
-  # VLANs are pool-scoped and non-routable to each other -- a pool's
-  # vlan_only clients can only ever reach a node on THEIR OWN pool's
-  # VLAN. So this is a map, one entry per pool (see pool_vlan_cidrs
-  # below), each pointing at that pool's own first floor node's VLAN IP
-  # -- offset 20, the same vlan_ip_offset convention nat-fleet's own
-  # locals.node_vlan_ips uses, so this is always that pool's
-  # lng-<pool>-1 node. Empty map when natctl_on_node_enabled is false:
-  # that offset-20 node isn't running natctl either way then, same
-  # caveat natctl_roster_base_url above already has.
-  natctl_roster_vlan_urls = var.natctl_on_node_enabled ? {
-    for pool_name, cidr in local.pool_vlan_cidrs :
-    pool_name => "http://${cidrhost(cidr, 20)}:8099"
-  } : {}
 
   # VLAN CIDRs for the private client fleet — v4 moved client traffic off
   # VPC and onto VLAN (VPC can't transit-route to non-VPC destinations,
@@ -257,9 +240,13 @@ locals {
   # v17: + var.client_static_vlan_reserved shifts the reserved window's start
   # out by exactly that many addresses, opening up a window
   # [shared_pool_own_ceiling_offset, shared_pool_own_ceiling_offset +
-  # client_static_vlan_reserved - 1] for client_groups' opt-in
-  # static_vlan_ip_offset use (see variables.tf's client_static_vlan_reserved
-  # and docs/RUNBOOK.md's "Static VLAN IPs for client groups" section).
+  # client_static_vlan_reserved - 1] for manually-assigned client instance
+  # addresses (see variables.tf's client_static_vlan_reserved and
+  # docs/RUNBOOK.md's "Onboard a client instance" section --
+  # roadmap/M20-remove-terraform-client-creation.md removed the
+  # Terraform-computed static_vlan_ip_offset mechanism this window used
+  # to feed automatically; an operator now picks an address from this
+  # window by hand).
   # var.client_static_vlan_reserved defaults to 0, so this is a no-op
   # (identical address layout to pre-v17) unless an operator deliberately
   # raises it.
@@ -417,10 +404,11 @@ check "vlan_reserved_ceiling_dedicated_acme_range_valid" {
 # 2) vlan_cidr_dedicated_acme's block must start AFTER
 #    shared_pool_own_ceiling_offset (+ v17: client_static_vlan_reserved) --
 #    otherwise it would collide with the shared pool's OWN floor/elastic
-#    node static IPs, or with the shared pool's client_groups static
-#    reservation window, both of which live at the LOW end of
-#    vlan_cidr_shared and are never excluded by anything else (only the
-#    reserved-window ceiling gets carved around the dedicated block).
+#    node static IPs, or with the shared pool's manually-assigned-client
+#    reservation window (roadmap/M20-remove-terraform-client-creation.md),
+#    both of which live at the LOW end of vlan_cidr_shared and are never
+#    excluded by anything else (only the reserved-window ceiling gets
+#    carved around the dedicated block).
 #
 # When same_vlan_mode is false (the default -- separate VLANs), this check
 # is always true and does nothing, matching this environment's existing,
@@ -432,7 +420,7 @@ check "same_vlan_dedicated_acme_reservation_valid" {
       local.vlan_dedicated_bcast_int <= local.vlan_shared_bcast_int &&
       local.vlan_dedicated_net_int > local.vlan_shared_net_int + local.shared_pool_own_ceiling_offset + var.client_static_vlan_reserved
     )
-    error_message = "vlan_label_shared == vlan_label_dedicated_acme (same-VLAN mode), but vlan_cidr_dedicated_acme is not safely nested inside vlan_cidr_shared. It must (1) fall entirely within vlan_cidr_shared's address range, and (2) start after offset ${local.shared_pool_own_ceiling_offset + var.client_static_vlan_reserved} within vlan_cidr_shared (vlan_ip_offset + elastic_ip_offset_start_shared + shared_pool_max_nodes + vlan_elastic_headroom_margin + client_static_vlan_reserved), so it doesn't collide with the shared pool's own floor/elastic node static IPs or its client_groups static reservation window. See docs/RUNBOOK.md's \"Same-VLAN mode\" and \"Static VLAN IPs for client groups\" sections."
+    error_message = "vlan_label_shared == vlan_label_dedicated_acme (same-VLAN mode), but vlan_cidr_dedicated_acme is not safely nested inside vlan_cidr_shared. It must (1) fall entirely within vlan_cidr_shared's address range, and (2) start after offset ${local.shared_pool_own_ceiling_offset + var.client_static_vlan_reserved} within vlan_cidr_shared (vlan_ip_offset + elastic_ip_offset_start_shared + shared_pool_max_nodes + vlan_elastic_headroom_margin + client_static_vlan_reserved), so it doesn't collide with the shared pool's own floor/elastic node static IPs or its manually-assigned-client reservation window. See docs/RUNBOOK.md's \"Same-VLAN mode\" and \"Onboard a client instance\" sections."
   }
 }
 
@@ -466,116 +454,22 @@ check "dedicated_acme_pool_floor_nodes_below_elastic_offset" {
   }
 }
 
-# v17.2: fixed, isolated per-group STATIC VLAN SLOTS. v17.1's design fully
-# automated address picking by tightly packing every static group's
-# addresses back-to-back in name-sort order -- but that meant deleting or
-# shrinking ONE static group could shift, and force recreation of, every
-# OTHER static group that happened to sort after it on the same pool. As
-# of v17.2, client_groups exposes an explicit `static_vlan_slot` integer
-# (0, 1, 2, ...) per group instead -- a group's address is computed
-# SOLELY from its own pool_name + static_vlan_slot + the pool-wide
-# client_static_vlan_slot_size constant, never from any other group's
-# client_count, existence, or slot. Nothing about group B's config or
-# lifecycle can ever change group A's address, full stop -- the
-# isolation is structural, not just usually-true.
-locals {
-  # Each pool's reserved-window START offset (within that pool's own VLAN
-  # CIDR) -- the same shared_pool_own_ceiling_offset/
-  # dedicated_acme_pool_own_ceiling_offset values vlan_reserved_ceiling_shared/
-  # vlan_reserved_ceiling_dedicated_acme above already use to shift the reserved-window
-  # pool's start out by var.client_static_vlan_reserved.
-  pool_static_reserved_start = merge(
-    { "shared" = local.shared_pool_own_ceiling_offset },
-    var.enable_dedicated_pool_example ? { "dedicated-acme-corp" = local.dedicated_acme_pool_own_ceiling_offset } : {},
-  )
-
-  # Every client_groups entry now requires static_vlan_slot -- this local
-  # exists mainly so static_client_offsets/static_client_ranges below
-  # have a stable name to iterate, unchanged from the shape this had when
-  # static addressing was still opt-in.
-  static_client_groups = {
-    for name, g in var.client_groups : name => g
-  }
-
-  # Each static group's own starting offset: its pool's reserved-window
-  # start, plus (its own slot number * the pool-wide slot width). Compare
-  # to v17.1's cumulative-sum-over-every-earlier-group formula -- this one
-  # references ONLY local values that belong to the group itself (g.pool_name,
-  # g.static_vlan_slot) plus one GLOBAL constant (var.client_static_vlan_slot_size)
-  # that's the same for every group on a pool. No other group's data ever
-  # enters this expression, which is exactly what makes the isolation
-  # guarantee true rather than aspirational.
-  static_client_offsets = {
-    for name, g in local.static_client_groups : name =>
-    local.pool_static_reserved_start[g.pool_name] + g.static_vlan_slot * var.client_static_vlan_slot_size
-  }
-
-  # Each static group's own [start, end] computed range (end inclusive) --
-  # end uses this group's ACTUAL client_count (which may be less than the
-  # full slot width; the unused remainder of the slot simply sits idle,
-  # reserved but unclaimed by anyone, same trade-off as any fixed-size
-  # bucket allocation). Feeds both check blocks below and
-  # module.client_fleet's static_vlan_ip_offset argument further down.
-  static_client_ranges = {
-    for name, g in local.static_client_groups : name => {
-      pool_name = g.pool_name
-      slot      = g.static_vlan_slot
-      start     = local.static_client_offsets[name]
-      end       = local.static_client_offsets[name] + g.client_count - 1
-    }
-  }
-}
-
-# A static group's client_count must never exceed the fixed slot width --
-# otherwise its LAST instance(s) would land past its own slot boundary and
-# straight into the NEXT slot number's territory (which may well be
-# claimed by a different group). This is the one thing slot-based
-# isolation does NOT prevent by construction, since client_count is the
-# group's own free-to-change value, not something this design fixes.
-check "client_static_vlan_slot_capacity" {
-  assert {
-    condition = alltrue([
-      for name, g in local.static_client_groups :
-      g.client_count <= var.client_static_vlan_slot_size
-    ])
-    error_message = "One or more static_vlan_slot client_groups entries has client_count greater than var.client_static_vlan_slot_size (currently ${var.client_static_vlan_slot_size}) -- that group's last instance(s) would overflow past its own slot and into the next slot number's address range. Either lower that group's client_count, or raise client_static_vlan_slot_size (a per-pool, pool-wide change -- see that variable's own description for what else it affects)."
-  }
-}
-
-# Two static groups on the SAME pool must never claim the same
-# static_vlan_slot number -- a plain equality check, not a range-overlap
-# one, since every slot is the same fixed width by construction (given
-# the capacity check above holds, distinct slot numbers on the same pool
-# can never produce overlapping address ranges).
-check "client_static_vlan_slots_unique_per_pool" {
-  assert {
-    condition = alltrue([
-      for pair in setproduct(keys(local.static_client_ranges), keys(local.static_client_ranges)) :
-      pair[0] == pair[1] ||
-      local.static_client_ranges[pair[0]].pool_name != local.static_client_ranges[pair[1]].pool_name ||
-      local.static_client_ranges[pair[0]].slot != local.static_client_ranges[pair[1]].slot
-    ])
-    error_message = "Two or more client_groups entries claim the SAME static_vlan_slot number on the SAME pool -- every static group on a pool needs its own unique slot number (0, 1, 2, ...). Check each static group's static_vlan_slot against every other static group targeting the same pool_name."
-  }
-}
-
-# The one thing fixed slots do NOT make impossible: running out of room in
-# the reserved window itself. If a group's slot number is high enough
-# that (slot + 1) * client_static_vlan_slot_size exceeds
-# client_static_vlan_reserved, that group's addresses land PAST the
-# reserved window -- straight into the next unreserved range. This check catches
-# that at `terraform plan` time, with the exact numbers needed to fix it,
-# instead of letting it apply and silently create a real address
-# address collision.
-check "client_static_vlan_offsets_within_pool_reservation" {
-  assert {
-    condition = alltrue([
-      for name, r in local.static_client_ranges :
-      r.end <= local.pool_static_reserved_start[r.pool_name] + var.client_static_vlan_reserved - 1
-    ])
-    error_message = "One or more client_groups' static_vlan_slot no longer fits inside client_static_vlan_reserved (currently ${var.client_static_vlan_reserved}) -- that group's slot would be packed past the reserved window and collide with unreserved address space. Raise var.client_static_vlan_reserved to at least (highest static_vlan_slot used on that pool + 1) * client_static_vlan_slot_size, then re-plan."
-  }
-}
+# roadmap/M20-remove-terraform-client-creation.md (2026-09-02): the
+# v17.2 fixed-slot client_groups static-addressing mechanism that used
+# to live here (pool_static_reserved_start/static_client_groups/
+# static_client_offsets/static_client_ranges + three check blocks) is
+# removed along with module.client_fleet/var.client_groups themselves --
+# this project no longer allocates addresses for client instances it
+# doesn't create. shared_pool_own_ceiling_offset/
+# dedicated_acme_pool_own_ceiling_offset and
+# vlan_reserved_ceiling_shared/dedicated_acme (above) are UNCHANGED and
+# still meaningful: they still mark where each pool's reserved-for-manual-
+# use VLAN window begins, via var.client_static_vlan_reserved (also
+# unchanged) -- an operator manually assigning a customer's client
+# instance a VLAN address should still pick one at or past that ceiling,
+# same as before, just without Terraform computing or validating the
+# exact address for them anymore. See docs/RUNBOOK.md's "Onboard a
+# client instance" section.
 
 locals {
   # v9: terraform/modules/artifacts needs the Object Storage S3 region/
@@ -676,6 +570,10 @@ module "nat_fleet_shared" {
   linode_bgp_dcid     = var.linode_bgp_dcid
 
   reserved_ip_enabled = var.reserved_ip_enabled
+  reserved_ip_pool    = var.shared_pool_reserved_ip_pool
+
+  placement_group_enabled = var.placement_group_enabled
+  placement_group_policy  = var.placement_group_policy
 
   natctl_roster_url = local.natctl_roster_base_url # buddy-sync + IP-failover opt-in — see docs/ARCHITECTURE.md §5
 
@@ -753,6 +651,10 @@ module "nat_fleet_dedicated_acme" {
   linode_bgp_dcid     = var.linode_bgp_dcid
 
   reserved_ip_enabled = var.reserved_ip_enabled
+  reserved_ip_pool    = var.dedicated_acme_pool_reserved_ip_pool
+
+  placement_group_enabled = var.placement_group_enabled
+  placement_group_policy  = var.placement_group_policy
 
   natctl_roster_url = local.natctl_roster_base_url
 
@@ -833,11 +735,13 @@ locals {
     # fix, since every OTHER numeric field pulled from this module (vpc_id,
     # public_subnet_id) already comes through as a real number and this is
     # the one exception.
-    firewall_id                  = tonumber(module.vpc.firewall_id)
-    authorized_keys              = var.authorized_keys
-    root_pass                    = var.root_pass
-    min_nodes                    = var.shared_pool_floor_nodes
-    max_nodes                    = var.shared_pool_max_nodes
+    firewall_id     = tonumber(module.vpc.firewall_id)
+    authorized_keys = var.authorized_keys
+    root_pass       = var.root_pass
+    # roadmap/M25-decouple-pool-scaling-from-user-data.md: min_nodes/
+    # max_nodes deliberately not set here anymore -- refreshed from
+    # Object Storage every reconcile pass instead (see
+    # linode_object_storage_object.pool_scaling_shared below).
     instance_type                = var.nat_instance_type
     elastic_ip_offset_start      = local.elastic_ip_offset_start_shared
     conntrack_buddy_sync_enabled = true
@@ -921,11 +825,11 @@ locals {
     # fix, since every OTHER numeric field pulled from this module (vpc_id,
     # public_subnet_id) already comes through as a real number and this is
     # the one exception.
-    firewall_id                  = tonumber(module.vpc.firewall_id)
-    authorized_keys              = var.authorized_keys
-    root_pass                    = var.root_pass
-    min_nodes                    = local.dedicated_acme_pool_floor_nodes
-    max_nodes                    = local.dedicated_acme_pool_max_nodes
+    firewall_id     = tonumber(module.vpc.firewall_id)
+    authorized_keys = var.authorized_keys
+    root_pass       = var.root_pass
+    # roadmap/M25-decouple-pool-scaling-from-user-data.md: see
+    # natctl_pool_shared's identical comment above.
     instance_type                = "g6-dedicated-8"
     elastic_ip_offset_start      = local.elastic_ip_offset_start_dedicated_acme
     conntrack_buddy_sync_enabled = true
@@ -1061,6 +965,52 @@ locals {
   create_observability_instance = !var.natctl_on_node_enabled || var.run_monitoring_stack
 }
 
+# roadmap/M25-decouple-pool-scaling-from-user-data.md: min_nodes/max_nodes
+# live here instead of inside natctl_config_yaml -- a plain, separate
+# resource whose content changing is a harmless in-place Object Storage
+# PUT, with zero relationship to any linode_instance's own user_data.
+# PRIVATE (no acl argument), read via natctl's own authenticated boto3
+# client, never curl'd at boot.
+resource "linode_object_storage_object" "pool_scaling_shared" {
+  bucket     = var.natctl_object_storage_bucket
+  region     = local.natctl_object_storage_region
+  access_key = var.natctl_object_storage_access_key
+  secret_key = var.natctl_object_storage_secret_key
+
+  key = "natctl/pool-scaling/shared.json"
+  content = jsonencode({
+    min_nodes = var.shared_pool_floor_nodes
+    max_nodes = var.shared_pool_max_nodes
+    source    = "terraform"
+  })
+  etag = md5(jsonencode({
+    min_nodes = var.shared_pool_floor_nodes
+    max_nodes = var.shared_pool_max_nodes
+    source    = "terraform"
+  }))
+}
+
+resource "linode_object_storage_object" "pool_scaling_dedicated_acme" {
+  count = var.enable_dedicated_pool_example ? 1 : 0
+
+  bucket     = var.natctl_object_storage_bucket
+  region     = local.natctl_object_storage_region
+  access_key = var.natctl_object_storage_access_key
+  secret_key = var.natctl_object_storage_secret_key
+
+  key = "natctl/pool-scaling/dedicated-acme-corp.json"
+  content = jsonencode({
+    min_nodes = local.dedicated_acme_pool_floor_nodes
+    max_nodes = local.dedicated_acme_pool_max_nodes
+    source    = "terraform"
+  })
+  etag = md5(jsonencode({
+    min_nodes = local.dedicated_acme_pool_floor_nodes
+    max_nodes = local.dedicated_acme_pool_max_nodes
+    source    = "terraform"
+  }))
+}
+
 module "observability" {
   source = "../../modules/observability"
   count  = local.create_observability_instance ? 1 : 0
@@ -1126,94 +1076,13 @@ module "observability" {
   prometheus_remote_write_password = var.customer_prometheus_remote_write_password
 }
 
-# v14: client instances -- see terraform/modules/client-fleet's own main.tf
-# header comment for the full design. Empty var.client_groups (the default)
-# means this creates nothing at all, same SAME state/terraform.tfvars as
-# the NAT fleet itself (deliberately -- see the discussion in this
-# project's own history for why a separate root module/state was
-# considered and rejected).
-locals {
-  # Resolves each group's pool_name (a plain string, e.g. "shared" or
-  # "dedicated-acme-corp") to that pool's actual vlan_label. v20: no longer
-  # the only per-pool value client-fleet groups need -- natctl_roster_vlan_urls
-  # below is also keyed by pool_name now, for "vlan_only" groups (the VPC-
-  # addressed natctl_roster_base_url IS still the same for every pool; only
-  # the /fleet/<pool> path suffix differs there, appended by client-fleet's
-  # own module using pool_name directly). Extend this map if you add a
-  # third pool.
-  pool_vlan_labels = merge(
-    { "shared" = local.vlan_label_shared },
-    var.enable_dedicated_pool_example ? { "dedicated-acme-corp" = local.vlan_label_dedicated_acme } : {},
-  )
-
-  # v17: same resolve-by-pool_name pattern as pool_vlan_labels above, but
-  # for each pool's VLAN CIDR -- only actually read by client-fleet when a
-  # group sets static_vlan_ip_offset (see that module's own vlan_cidr
-  # variable description: "harmless to leave at its default otherwise").
-  # Extend alongside pool_vlan_labels if you add a third pool.
-  pool_vlan_cidrs = merge(
-    { "shared" = local.vlan_cidr_shared },
-    var.enable_dedicated_pool_example ? { "dedicated-acme-corp" = local.vlan_cidr_dedicated_acme } : {},
-  )
-}
-
-module "client_fleet" {
-  source   = "../../modules/client-fleet"
-  for_each = var.client_groups
-
-  group_name = each.key
-  pool_name  = each.value.pool_name
-  # Deliberately NOT wrapped in a lookup()/try() with a friendly fallback --
-  # an unknown pool_name (a typo, or a dedicated-pool group left in
-  # client_groups after setting enable_dedicated_pool_example back to
-  # false) should fail terraform plan loudly with Terraform's own "Invalid
-  # index" error citing the exact bad key, not silently attach to the
-  # wrong VLAN.
-  vlan_label = local.pool_vlan_labels[each.value.pool_name]
-
-  # v17.2: opt-in static VLAN addressing via a fixed, isolated slot -- the
-  # operator only picks a small static_vlan_slot integer on the group; the
-  # actual address passed down to the module is COMPUTED from that slot
-  # number + client_static_vlan_slot_size, by local.static_client_offsets
-  # above, never derived from any other group's config. vlan_cidr is only
-  # actually dereferenced by the module when that computed offset is
-  # non-null (same "deliberately NOT wrapped in a friendly fallback"
-  # reasoning as vlan_label above applies here too, via pool_vlan_cidrs).
-  # Non-collision against this pool's floor/elastic ranges, reserved windows, and
-  # every OTHER static group is enforced by this file's own
-  # client_static_vlan_slot_capacity/client_static_vlan_slots_unique_per_pool/
-  # client_static_vlan_offsets_within_pool_reservation check blocks -- see
-  # that module's own static_vlan_ip_offset description for why the
-  # module itself can't do this validation (no visibility beyond its own
-  # group).
-  vlan_cidr             = local.pool_vlan_cidrs[each.value.pool_name]
-  static_vlan_ip_offset = local.static_client_offsets[each.key]
-
-  client_count   = each.value.client_count
-  interface_mode = each.value.interface_mode
-  instance_type  = each.value.instance_type
-
-  region          = var.region
-  authorized_keys = var.authorized_keys
-  root_pass       = var.root_pass
-  firewall_id     = module.vpc.client_firewall_id
-
-  # v15: only actually consumed by client-fleet when interface_mode is
-  # "vpc_vlan"/"public_vpc_vlan" -- harmless to always pass.
-  vpc_id           = module.vpc.vpc_id
-  public_subnet_id = module.vpc.public_subnet_id
-
-  natctl_roster_base_url = local.natctl_roster_base_url
-  # v20: per-pool, only actually used when this group's interface_mode is
-  # "vlan_only" -- see client-fleet/variables.tf's natctl_roster_vlan_url
-  # and this file's natctl_roster_vlan_urls local for the full story.
-  natctl_roster_vlan_url = lookup(local.natctl_roster_vlan_urls, each.value.pool_name, "")
-
-  # BUG FIX (found live, 2026-08-02): client-fleet no longer fetches
-  # client-agent from Object Storage at boot -- it embeds it directly
-  # now (see that module's variables.tf/main.tf). Nothing to pass here
-  # anymore. module.artifacts.client_agent_py_url etc. still exist and
-  # still upload that file (harmless, just unused by this module now) --
-  # a stable public URL for external automation, see that module's
-  # outputs.tf.
-}
+# roadmap/M20-remove-terraform-client-creation.md (2026-09-02):
+# module.client_fleet/var.client_groups, and the pool_vlan_labels/
+# pool_vlan_cidrs locals that only existed to feed it, are removed. This
+# environment no longer creates client instances -- see
+# docs/RUNBOOK.md's "Onboard a client instance" for the replacement
+# (scripts/install-nat-client.sh, run against an instance the customer's
+# own automation already created). module.vpc.client_firewall_id and
+# module.artifacts.client_agent_py_url/client_agent_bin_url still exist
+# and are still meaningful on their own -- see those modules' own
+# comments for why they weren't removed alongside this.

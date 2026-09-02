@@ -188,6 +188,38 @@ grafana_admin_password = "REPLACE_ME"
 # reserved_ip_enabled = true
 
 # --------------------------------------------------------------------------
+# Bring-your-own reserved IPs -- see docs/ARCHITECTURE.md §3.8.1 /
+# roadmap/M17-reserved-ip-pool-and-prereservation.md. Opt-in, only
+# meaningful when reserved_ip_enabled above is true. Addresses you
+# ALREADY OWN (reused from a prior deployment on this account, or
+# reserved out-of-band ahead of time) -- assigned BY POSITION to this
+# pool's floor nodes (first entry -> first floor node by creation
+# order, and so on). Any floor node beyond the length of this list
+# still gets a freshly-created reservation, exactly as if this variable
+# were left at its default []. Must not exceed the pool's floor node
+# count -- Terraform fails plan loudly if it does, rather than silently
+# leaving excess addresses unused. Every supplied address must actually
+# be a Reserved IP you already own on this account/region.
+# --------------------------------------------------------------------------
+# shared_pool_reserved_ip_pool         = ["203.0.113.10", "203.0.113.11"]
+# dedicated_acme_pool_reserved_ip_pool = ["203.0.113.20"]
+
+# --------------------------------------------------------------------------
+# Anti-affinity placement groups -- see docs/ARCHITECTURE.md §3.6.2 /
+# roadmap/M16-anti-affinity-placement-groups.md. Opt-in (default false).
+# When true, floor nodes are spread across Linode Placement Groups
+# (anti_affinity:local) so Akamai avoids co-locating them on the same
+# physical host -- closes the "correlated physical-host failure takes out
+# both buddy pair members" gap docs/COMPARISON.md documents. Floor nodes
+# only -- natctl-provisioned elastic nodes are not covered. A pool over 5
+# floor nodes gets multiple groups (Akamai's 5-Linode-per-group cap) in
+# contiguous creation-order blocks, which only fully protects pairs that
+# land inside the same block -- see the roadmap file's "Residual gap".
+# --------------------------------------------------------------------------
+# placement_group_enabled = true
+# placement_group_policy  = "strict" # or "flexible" -- see variables.tf
+
+# --------------------------------------------------------------------------
 # Object Storage -- REQUIRED (not opt-in), regardless of natctl_on_node_enabled
 # below. terraform/modules/artifacts uploads exporter.py/buddy_sync.py/the
 # natctl package here ONCE per apply, and every NAT node fetches them at
@@ -233,122 +265,27 @@ natctl_object_storage_secret_key = "REPLACE_ME"
 # customer_prometheus_remote_write_password = "REPLACE_ME"
 
 # --------------------------------------------------------------------------
-# v14/v15: client instances (terraform/modules/client-fleet) -- optional,
-# empty {} (the default) creates nothing. One map entry per GROUP of
-# client instances sharing the same pool + interface layout + egress-method
-# settings -- see variables.tf's client_groups description for every
-# field, and terraform/modules/client-fleet/variables.tf's own
-# interface_mode description for the full four-mode menu.
+# roadmap/M20-remove-terraform-client-creation.md (2026-09-02): this
+# environment no longer creates client instances via Terraform -- the
+# v14/v15/v17.2 client_groups mechanism that used to be documented here
+# is removed. A customer's own automation creates their client
+# instances (their own Terraform, an autoscaling group, hand-provisioned
+# -- this project has no opinion); scripts/install-nat-client.sh
+# configures an already-existing instance to become a working client.
+# See docs/RUNBOOK.md's "Onboard a client instance" section for the full
+# walkthrough, including the four interface_mode equivalents and how
+# client-agent gets installed.
 #
-# All 4 interface_mode values, at a glance (see docs/RUNBOOK.md's "Interface
-# modes and routing behavior, in detail" table for the full routing story):
-#   - "vlan_only"        : VLAN interface only, no public IP, no VPC. Needs
-#                           client-agent for its default route (egress via
-#                           the pool's NAT nodes).
-#   - "public_vlan"       : public interface + VLAN. Has its own default
-#                           route already -- no client-agent needed.
-#   - "vpc_vlan"          : VPC interface (no NAT) + VLAN. VPC alone can't
-#                           reach the internet, so this also needs
-#                           client-agent for its default route.
-#   - "public_vpc_vlan"   : VPC interface with 1:1 NAT (nat_1_1 = "any") +
-#                           VLAN -- public reachability without a separate
-#                           public interface. No client-agent needed.
-# Every mode other than "public_vlan" requires client-agent to actually
-# be installed (see above), and every group -- regardless of mode --
-# requires a static_vlan_slot, since Linode VLANs carry no
-# address-assignment mechanism of their own.
-#
-# Three worked examples below:
-#
-# - "web-tier" (interface_mode = "public_vlan"): has its own public IP, so
-#   client-agent is NOT installed -- these instances already have their
-#   own path to the internet.
-# - "worker-tier" (interface_mode = "vlan_only"): no public IP and no VPC
-#   membership at all -- client-agent IS installed and manages the default
-#   route via ECMP across the target pool's healthy nodes.
-#   ** NOT CURRENTLY USABLE (confirmed live, 2026-08-03): Linode's
-#   Metadata Service does not deliver user-data to an instance with only
-#   a VLAN interface at all -- cloud-init reaches "status: done" with 0
-#   bytes of user-data, so client-agent never installs and the VLAN
-#   interface's own static-address config never gets written either. This
-#   is a platform-level gap, not something fixable in this project's own
-#   Terraform/cloud-init -- see client-fleet/variables.tf's
-#   interface_mode/natctl_roster_vlan_url descriptions and
-#   docs/RUNBOOK.md's onboarding section for the full story. Use
-#   "vpc_vlan" instead below -- same "no internet path of its own,
-#   client-agent takes the default route" behavior, confirmed working
-#   end to end. **
-# - "db-tier" (interface_mode = "public_vpc_vlan"): VPC membership (to
-#   reach other VPC-resident workloads directly) WITH 1:1 NAT for its own
-#   public reachability, on ONE interface -- Linode's own recommended
-#   pattern over a separate public + VPC pair. client-agent is NOT
-#   installed, same reasoning as "web-tier".
-# - "billing-whitelisted" (v17.2, static_vlan_slot = 3): for the narrow
-#   case where some other system has been told to trust traffic from one
-#   fixed address (a downstream service's IP allowlist, etc.) -- no
-#   different from the other three groups' own slots in mechanics, just
-#   called out here because whitelist-safety is the whole point of this
-#   group. You pick a small SLOT NUMBER (0, 1, 2, ...), not an actual
-#   address -- Terraform computes the real address from that slot number,
-#   and that group's address can never be affected by any other group's
-#   config (see client_static_vlan_slot_size below). Requires
-#   client_static_vlan_reserved to be raised above 0 first -- see
-#   docs/RUNBOOK.md's "Static VLAN IPs for client groups" section for the
-#   full picture, including the check blocks in main.tf that fail
-#   `terraform plan` on a slot collision or a reserved-window overflow.
+# client_static_vlan_reserved (below) still exists -- it's still
+# meaningful as "how much VLAN address space to leave alone for
+# manually-assigned client instances", so natctl's elastic-node
+# allocator never wanders into an address you plan to hand-assign.
 # --------------------------------------------------------------------------
-# client_groups = {
-#   "web-tier" = {
-#     pool_name          = "shared"
-#     client_count       = 3
-#     interface_mode     = "public_vlan"
-#     instance_type      = "g6-standard-2"
-#     static_vlan_slot   = 0
-#   }
-#   "worker-tier" = {
-#     pool_name          = "shared"
-#     client_count       = 2
-#     interface_mode     = "vlan_only" # NOT CURRENTLY USABLE -- see the note
-#                                        # above this block; use "vpc_vlan" instead
-#     instance_type      = "g6-standard-1"
-#     static_vlan_slot   = 1
-#   }
-#   "db-tier" = {
-#     pool_name          = "shared"
-#     client_count       = 1
-#     interface_mode     = "public_vpc_vlan"
-#     instance_type      = "g6-standard-2"
-#     static_vlan_slot   = 2
-#   }
-#   "billing-whitelisted" = {
-#     pool_name          = "shared"
-#     client_count       = 2
-#     interface_mode     = "public_vlan"
-#     instance_type      = "g6-standard-1"
-#     static_vlan_slot   = 3   # claims a fixed, isolated address block -- see below
-#   }
-# }
 
-# v17.2: width, in addresses, of EVERY static_vlan_slot on a pool -- also
-# the max client_count any one static group can have. Default 10 is
-# generous for a "predictable/whitelisted" use case (usually a handful of
-# instances). This is a per-pool, pool-wide setting -- raising it widens
-# every slot on that pool, including already-claimed ones, which is safe
-# for THOSE slots' addresses (they only depend on their own slot number
-# and this constant, not on each other) but shifts where the NEXT unused
-# slot number begins. See docs/RUNBOOK.md's "Static VLAN IPs for client
-# groups" section.
-# client_static_vlan_slot_size = 10
-
-# v17.1/v17.2: reserves this many VLAN addresses per pool for
-# client_groups' static_vlan_slot entries above, immediately after that
-# pool's own floor+elastic node ceiling and immediately before the pool's
-# unreserved address space. Set it to at least (highest static_vlan_slot
-# used on a pool + 1) * client_static_vlan_slot_size -- 40 below covers
-# slots 0-3 at the default slot size of 10 (matching the four example
-# groups above, with room to add one more static group at slot 4 without
-# re-raising this). See docs/RUNBOOK.md's "Static VLAN IPs for client
-# groups" section. Default 0 (fully backward compatible -- unchanged
-# pre-v17 address layout); only raise this if you actually use
-# static_vlan_slot above.
+# Number of VLAN addresses, per pool, to reserve for manually-assigned
+# client instances -- see docs/RUNBOOK.md's "Onboard a client instance"
+# section. Default 0 reserves nothing (identical to the layout before
+# this variable existed); raise it if you want a guaranteed-safe window
+# for hand-assigning client addresses without racing natctl's own
+# elastic-node allocator for the same space.
 # client_static_vlan_reserved = 40

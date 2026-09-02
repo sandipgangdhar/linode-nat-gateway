@@ -18,7 +18,13 @@
 #    failover for a pool").
 # 5) reserved_ip_enabled - Fixed/whitelist-safe public IPs for every node,
 #    floor and elastic (account-gated by Linode, off by default).
-# 6) grafana_admin_password         - Change before any real deployment.
+# 6) shared_pool_reserved_ip_pool/dedicated_acme_pool_reserved_ip_pool -
+#    Bring-your-own reserved IPs for floor nodes, by position (M17, off
+#    by default -- see roadmap/M17-reserved-ip-pool-and-prereservation.md).
+# 7) placement_group_enabled/placement_group_policy - Spread floor nodes
+#    across separate physical hosts (M16, off by default; floor nodes
+#    only -- see roadmap/M16-anti-affinity-placement-groups.md).
+# 8) grafana_admin_password         - Change before any real deployment.
 #
 # -----------------------------------------------------
 # Author:
@@ -171,6 +177,30 @@ variable "reserved_ip_enabled" {
   default     = false
 }
 
+variable "shared_pool_reserved_ip_pool" {
+  description = "roadmap/M17-reserved-ip-pool-and-prereservation.md: reserved IPv4 addresses you ALREADY OWN (reused from a prior deployment on this account, or reserved out-of-band ahead of time), for the shared pool's floor nodes to use instead of always minting a brand-new reservation. Assigned by position -- the first entry goes to this pool's first floor node by creation order, and so on; any floor node beyond the length of this list still gets a freshly-created reservation. Only meaningful when reserved_ip_enabled is true. Must not exceed shared_pool_floor_nodes in length -- see terraform/modules/nat-fleet's reserved_ip_pool_fits_node_count check block. Default [] (fully backward compatible)."
+  type        = list(string)
+  default     = []
+}
+
+variable "dedicated_acme_pool_reserved_ip_pool" {
+  description = "Same as shared_pool_reserved_ip_pool above, but for the dedicated-acme-corp pool's floor nodes (only meaningful when enable_dedicated_pool_example is true). Kept as a separate variable, not shared with the shared pool's list, since the two pools' floor node counts/positions are entirely independent -- see terraform/modules/nat-fleet's reserved_ip_pool for the full design."
+  type        = list(string)
+  default     = []
+}
+
+variable "placement_group_enabled" {
+  description = "roadmap/M16-anti-affinity-placement-groups.md: whether floor nodes (shared and, if enabled, dedicated-acme-corp pools) are spread across Linode Placement Groups (anti_affinity:local) so Akamai avoids co-locating them on the same physical host — closes the correlated-physical-host-failure gap docs/COMPARISON.md documents. Off by default — same opt-in pattern as reserved_ip_enabled. Floor nodes only; natctl-provisioned elastic nodes are NOT covered (deliberately out of scope, see the roadmap file). See terraform/modules/nat-fleet/variables.tf's placement_group_enabled and docs/ARCHITECTURE.md §3.6.2 for the full design, including the multi-group chunking behavior for pools over 5 nodes."
+  type        = bool
+  default     = false
+}
+
+variable "placement_group_policy" {
+  description = "Linode's placement_group_policy for every placement group this environment creates when placement_group_enabled is true: \"strict\" (default — refuses to violate anti-affinity, fails the operation rather than co-locating) or \"flexible\" (best-effort). See terraform/modules/nat-fleet/variables.tf's placement_group_policy for the full trade-off."
+  type        = string
+  default     = "strict"
+}
+
 # ---------------------------------------------------------------------------
 # v12: Reserved static-IP ranges are now COMPUTED (see main.tf's
 # vlan_reserved_ceiling_shared/vlan_usable_ceiling_shared locals), not
@@ -264,92 +294,21 @@ variable "customer_prometheus_remote_write_password" {
 }
 
 # ---------------------------------------------------------------------------
-# v14: client instances -- terraform/modules/client-fleet, wired into THIS
-# same environment/state (deliberately -- see this project's own history
-# for why a separate root module/state for clients was considered and
-# rejected in favor of the simpler single-state approach). Each map key is
-# a group name (e.g. "web-tier") -- one linode_instance per client_count,
-# one Terraform module call per group, so different groups can point at
-# different pools or have different interface_mode settings. Empty {}
-# (the default) creates nothing.
-#
-# v15: assign_public_ip (bool) replaced by interface_mode (string enum) --
-# see terraform/modules/client-fleet/variables.tf's own interface_mode
-# description for the full menu (vlan_only / public_vlan / vpc_vlan /
-# public_vpc_vlan) and main.tf's v15 header note for why. If you already
-# have a client_groups entry using the old assign_public_ip field, migrate
-# it: assign_public_ip = true -> interface_mode = "public_vlan",
-# assign_public_ip = false -> interface_mode = "vlan_only" -- both produce
-# the IDENTICAL interface layout the old field did, so this is a
-# variable-shape change only, not a behavior change; existing instances
-# are not destroyed/recreated by making this edit.
+# roadmap/M20-remove-terraform-client-creation.md (2026-09-02): the v14
+# client_groups variable and module.client_fleet that used to live here
+# are removed. This environment no longer creates client instances --
+# see docs/RUNBOOK.md's "Onboard a client instance" section for the
+# replacement (scripts/install-nat-client.sh, run against an instance
+# the customer's own automation already created).
 # ---------------------------------------------------------------------------
-
-variable "client_groups" {
-  description = "Map of client-instance group name -> its config. pool_name must be \"shared\" or (only if enable_dedicated_pool_example is true) \"dedicated-acme-corp\" -- see main.tf's local.pool_vlan_labels. interface_mode picks this group's interface layout -- see terraform/modules/client-fleet/variables.tf's own interface_mode description for the full menu (vlan_only/public_vlan/vpc_vlan/public_vpc_vlan); \"vlan_only\"/\"vpc_vlan\" install client-agent (no internet path of their own), \"public_vlan\"/\"public_vpc_vlan\" don't (already have one). static_vlan_slot (v17.2) is REQUIRED -- a small integer (0, 1, 2, ...), unique among groups on the SAME pool_name, giving every instance in this group a permanent VLAN IP (Linode VLANs carry no address-assignment mechanism of their own, so every group needs one). Each slot is a FIXED-SIZE, ISOLATED block of client_static_vlan_slot_size addresses (below) -- a group's address depends ONLY on its own pool_name + static_vlan_slot, never on any other group's client_count or existence, so scaling, deleting, or renaming one static group never moves another static group's address. See docs/RUNBOOK.md's \"Static VLAN IPs for client groups\" section for the full picture. Example:\n\n  client_groups = {\n    \"web-tier\" = {\n      pool_name          = \"shared\"\n      client_count       = 3\n      interface_mode     = \"public_vlan\"\n      instance_type      = \"g6-standard-2\"\n      static_vlan_slot   = 0\n    }\n    \"worker-tier\" = {\n      pool_name          = \"dedicated-acme-corp\"\n      client_count       = 2\n      interface_mode     = \"vlan_only\"\n      instance_type      = \"g6-standard-1\"\n      static_vlan_slot   = 0\n    }\n    \"billing-whitelisted\" = {\n      pool_name          = \"shared\"\n      client_count       = 2\n      interface_mode     = \"public_vlan\"\n      instance_type      = \"g6-standard-1\"\n      static_vlan_slot   = 1  # claims slot 1 -- fixed, isolated from every other group\n    }\n  }"
-  type = map(object({
-    pool_name        = string
-    client_count     = optional(number, 1)
-    interface_mode   = optional(string, "public_vlan")
-    instance_type    = optional(string, "g6-standard-1")
-    static_vlan_slot = number
-  }))
-  default = {}
-}
-
-# v17.2: fixed-size, per-group STATIC VLAN SLOTS -- replaces v17.1's
-# tightly-packed, order-dependent allocation. Real feedback on v17.1: it
-# fully automated address picking, but a side effect was that
-# deleting/shrinking one static client group could force OTHER, unrelated
-# static groups on the same pool to be recreated (their computed address
-# shifted to fill the gap). v17.2 trades a small amount of that automation
-# back for complete isolation: every static group now claims an explicit
-# `static_vlan_slot` integer (0, 1, 2, ...) in client_groups above, and
-# its address is `pool_static_reserved_start + static_vlan_slot *
-# client_static_vlan_slot_size` -- a formula that references ONLY that
-# group's own slot number and this one pool-wide constant, never any
-# other group's client_count, existence, or slot. Deleting group A, or
-# changing its client_count, can now NEVER change group B's address,
-# full stop.
-#
-# client_static_vlan_slot_size is the width of EVERY slot on a pool, in
-# addresses -- also the hard ceiling on client_count for any one static
-# group (a group whose client_count exceeds this would overflow into the
-# next slot; caught by a check block, not silently allowed). Default 10
-# is deliberately generous for a "whitelisted/predictable" use case, which
-# in practice tends to be a handful of instances, not dozens -- raise it
-# if a real static group needs more headroom (this is a per-pool,
-# pool-wide setting, so raising it for one group's sake widens every
-# slot on that pool, including already-claimed ones -- see
-# docs/RUNBOOK.md for why that's still safe for EXISTING slots but
-# shifts where the next unclaimed slot number starts).
-variable "client_static_vlan_slot_size" {
-  description = "Fixed address-width of every static_vlan_slot on a pool (also the max client_count for any one static group) -- see the header comment just above. Only relevant if you use static_vlan_slot in client_groups."
-  type        = number
-  default     = 10
-}
-
-# v17.1 (kept as-is in v17.2): how many VLAN addresses (per pool) to hold
-# in reserve for client_groups' static_vlan_slot entries above, between
-# the last floor/elastic-offset address and the start of the pool's
-# unreserved address space. 0 (the default) preserves the exact pre-v17
-# address layout -- meaning this must be raised to at least
-# (highest static_vlan_slot used on that pool + 1) * client_static_vlan_slot_size,
-# or one of this file's own check blocks will fail `terraform plan`
-# rather than risk a silent collision. Raise it once, deliberately, when
-# a real client group actually needs static addressing -- leave headroom
-# for slot numbers you expect to claim later, since raising this is
-# always safe for every ALREADY-claimed slot (a slot's address only
-# depends on its own slot number and client_static_vlan_slot_size, never
-# on this variable's value -- raising it only moves where the pool's
-# unreserved address space starts, never anything already assigned to an
-# existing static group). See main.tf's
-# vlan_reserved_ceiling_shared/vlan_reserved_ceiling_dedicated_acme for
-# how this shifts that boundary's own start address out to make room
-# (shrinking the pool by exactly this many addresses, never growing the
-# VLAN CIDR itself).
+# client_static_vlan_slot_size (per-slot address width) is removed
+# alongside client_groups -- it only ever existed to size a Terraform-
+# computed slot, which no longer exists. client_static_vlan_reserved
+# stays: it's still meaningful as "how much VLAN address space to leave
+# alone for manually-assigned client instances", independent of whether
+# Terraform ever subdivided that window into named slots.
 variable "client_static_vlan_reserved" {
-  description = "Number of VLAN addresses, per pool, reserved for client_groups' static_vlan_slot use -- see the header comment just above. Backward compatible: 0 changes nothing about today's address layout."
+  description = "Number of VLAN addresses, per pool, reserved for manually-assigned client instances -- see docs/RUNBOOK.md's \"Onboard a client instance\" section. natctl's elastic-node allocator (fleet.py's _provision()) never hands out an address at or past this reservation's ceiling (main.tf's vlan_reserved_ceiling_shared/vlan_reserved_ceiling_dedicated_acme), so an operator can safely hand-assign an address anywhere in this window without racing natctl for it. Backward compatible: 0 (the default) reserves nothing, identical to the address layout before this variable existed."
   type        = number
   default     = 0
 }
