@@ -94,6 +94,8 @@ terraform -chdir=terraform/environments/example output grafana_url
 
 See OPERATIONS.md for the full day-2 reference: how autoscaling works and how to tune it, changing instance types, HA health checks, and troubleshooting. `acceptance-tests/` is a ready-to-run suite that validates your deployment end to end after you apply — see `acceptance-tests/README.md`.
 
+**Want the whole system in one document?** [`docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html`](docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html) is a single, self-contained reference covering architecture, the control plane and roster URL, every HA mechanism (including exactly how buddy pairing and the odd-node triangle work), autoscaling, Object Storage usage, observability, and day-2 operations — open it directly in a browser.
+
 ## Requirements
 
 - An Akamai Cloud (Linode) account with API access (Personal Access Token — see `docs/API-TOKEN-SETUP.md` for exactly which scopes to grant)
