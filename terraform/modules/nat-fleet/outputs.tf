@@ -49,6 +49,11 @@ output "node_private_ips" {
   value = local.node_vlan_ips
 }
 
+output "node_vpc_ips" {
+  description = "Each node's VPC (eth1) address -- what natctl itself listens on (:8099) and what natctl-api's firewall rule scopes to. Distinct from node_private_ips above (VLAN, for client-agent's ECMP nexthops) -- found needed live, 2026-09-02, while fixing a natctl_on_node_enabled deployment's Prometheus service-discovery gap (see terraform/environments/example/main.tf's natctl_http_sd_target local / roadmap/M2-security.md's regression note)."
+  value       = local.node_vpc_ips
+}
+
 output "node_public_ips" {
   description = "Primary public IP per node, plus any extra egress IPs. Safe to compute here (unlike inside main.tf's cloud-init rendering) since outputs aren't fed back into the resources that produced them — see the cycle note in main.tf."
   value = {

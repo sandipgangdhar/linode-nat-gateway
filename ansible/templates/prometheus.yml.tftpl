@@ -7,10 +7,26 @@
 # -----------------------------------------------------
 # Usage:
 #
-# - Scrapes every NAT node's exporter (:9200/metrics) via a Prometheus
-#   file_sd target file that natctl regenerates after every reconcile
-#   pass, so newly-provisioned or removed nodes are picked up
-#   automatically -- no static target list, no Prometheus restart needed.
+# - Scrapes every NAT node's exporter (:9200/metrics) via Prometheus
+#   service discovery covering the whole fleet, refreshed automatically
+#   as natctl autoscales -- no static target list, no Prometheus restart
+#   needed. Two mechanisms, chosen by whether THIS host runs natctl
+#   itself (run_natctl):
+#     - run_natctl=true (single-dedicated-host, the default): a local
+#       file_sd target file THIS host's own natctl regenerates after
+#       every reconcile pass (natctl/main.py's write_file_sd()).
+#     - run_natctl=false (natctl_on_node_enabled -- natctl runs on every
+#       NAT node instead, nobody on THIS host ever writes that file):
+#       http_sd_configs polling one natctl instance's own
+#       GET /file_sd HTTP endpoint instead (controller/natctl/api.py's
+#       build_file_sd_groups()) -- the same target-group JSON shape
+#       either way, so this is a clean swap, not a different data
+#       format. REAL BUG, found live 2026-09-02 (roadmap/M2-security.md's
+#       regression note): before this fix, a natctl_on_node_enabled
+#       deployment's nat_exporter job silently had ZERO scrape targets,
+#       forever -- every autoscale metric, dashboard panel, and alert
+#       backed by this job had no data the entire time that mode was in
+#       use, with no error surfaced anywhere.
 #   See docs/OBSERVABILITY.md "Fleet-aware scraping".
 # - Also scrapes natctl's OWN :8099/metrics (fleet-wide node counts, see
 #   controller/natctl/api.py's render_natctl_metrics()) -- a single
@@ -18,12 +34,11 @@
 #   docker-compose.yml.tftpl's extra_hosts), gated on scrape_natctl_metrics
 #   being true (only when THIS host actually runs natctl -- see
 #   terraform/modules/observability/variables.tf's run_natctl). KNOWN
-#   LIMITATION: when natctl instead runs on every NAT node
-#   (natctl_on_node_enabled, run_natctl=false here), there is currently no
-#   scrape target for those natctl instances' /metrics at all -- doing
-#   that properly needs the same file_sd treatment nat_exporter already
-#   gets, not a static target. Deferred; raise this if you're running in
-#   natctl-on-node mode and want fleet-wide node-count metrics.
+#   LIMITATION, still open: when natctl instead runs on every NAT node,
+#   there is still no scrape target for THOSE natctl instances' own
+#   /metrics specifically (as opposed to nat_exporter's per-node metrics,
+#   now fixed above) -- natctl's fleet-wide node-count gauges specifically
+#   are what's still missing in that mode, not autoscale/exporter data.
 # - Alert rules live in alerts/nat-alerts.yml, mounted separately and
 #   referenced via rule_files below; Alertmanager receives firing alerts
 #   on :9093.
@@ -73,12 +88,27 @@ remote_write:
 
 scrape_configs:
   # v2 (active-active fleet): the node population changes as natctl
-  # autoscales, so static_configs would go stale. natctl writes a
-  # Prometheus file_sd target file after every reconcile pass
+  # autoscales, so static_configs would go stale — Prometheus picks up
+  # additions/removals on its own, no natctl restart or Prometheus
+  # reload needed. See docs/OBSERVABILITY.md "Fleet-aware scraping".
+%{ if natctl_http_sd_target != "" ~}
+  # M2-security.md regression fix (2026-09-02): natctl_on_node_enabled
+  # -- THIS host doesn't run natctl, so nobody writes a local file_sd
+  # file. Poll natctl's own GET /file_sd HTTP endpoint instead (any one
+  # instance answers for the whole fleet, every pool -- see this file's
+  # header comment for the single-target trade-off).
+  - job_name: nat_exporter
+    http_sd_configs:
+      - url: http://${natctl_http_sd_target}/file_sd
+        refresh_interval: 30s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+%{ else ~}
+  # run_natctl=true (single-dedicated-host, the default): natctl writes
+  # a Prometheus file_sd target file after every reconcile pass
   # (natctl/main.py's write_file_sd) covering every currently-discovered
-  # node across every pool — Prometheus picks up additions/removals on its
-  # own via this file, no natctl restart or Prometheus reload needed. See
-  # docs/OBSERVABILITY.md "Fleet-aware scraping".
+  # node across every pool.
   - job_name: nat_exporter
     file_sd_configs:
       - files:
@@ -87,6 +117,7 @@ scrape_configs:
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance
+%{ endif ~}
 
 %{ if scrape_natctl_metrics ~}
   # v19: natctl's own fleet-wide /metrics -- see this file's header

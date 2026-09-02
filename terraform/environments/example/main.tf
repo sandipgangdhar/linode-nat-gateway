@@ -1067,6 +1067,25 @@ module "observability" {
   # See docs/RUNBOOK.md's natctl-on-node section.
   run_natctl = !var.natctl_on_node_enabled
 
+  # Real bug found live, 2026-09-02 (roadmap/M2-security.md's regression
+  # note): when natctl_on_node_enabled, run_natctl above is false, so
+  # this host never runs write_file_sd() -- Prometheus's
+  # file_sd_configs-based nat_exporter job then has zero targets,
+  # permanently (confirmed live: an already-running natctl_on_node_enabled
+  # deployment had never scraped a single node's exporter). Point
+  # Prometheus at natctl's own GET /file_sd HTTP endpoint instead in
+  # that case -- ANY one natctl instance answers it identically for the
+  # WHOLE fleet (every pool), since every instance is built from the
+  # same composed natctl.yaml (local.natctl_pools covers every pool, not
+  # just the one this particular node happens to belong to). A single
+  # target is a real, accepted trade-off, not solved here: if that one
+  # node's natctl is down, Prometheus stops discovering NEW/removed
+  # nodes until it recovers, though it keeps scraping whatever targets
+  # it already knew about (Prometheus's normal target-caching
+  # behavior) -- multiple http_sd_configs entries for redundancy is a
+  # reasonable future improvement.
+  natctl_http_sd_target = var.natctl_on_node_enabled ? "${values(module.nat_fleet_shared.node_vpc_ips)[0]}:8099" : ""
+
   # v6: reuse an existing Prometheus/Grafana instead of standing up a
   # second one -- see variables.tf's run_monitoring_stack and
   # docs/OBSERVABILITY.md "Bring your own monitoring".

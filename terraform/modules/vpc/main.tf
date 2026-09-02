@@ -310,6 +310,33 @@ resource "linode_firewall" "control_plane" {
     ipv4     = var.admin_cidrs # roadmap/M2-security.md -- was 0.0.0.0/0
   }
 
+  # Real bug found live, 2026-09-02, verifying M24 against the live
+  # customer-repo deployment: with natctl_on_node_enabled, EVERY NAT
+  # node runs its own natctl instance, which queries THIS host's
+  # Prometheus directly for autoscale metrics (prometheus_client.py's
+  # PrometheusClient, used by fleet.py's evaluate_autoscale()) -- VPC
+  # -sourced traffic, not admin-sourced. The grafana-prometheus rule
+  # above only ever allowed var.admin_cidrs, so every natctl-on-node
+  # instance's Prometheus query has been timing out on every single
+  # reconcile pass since natctl_on_node_enabled was turned on --
+  # confirmed via a real natctl journalctl log on a live node
+  # (`HTTPConnectionPool(host='10.60.32.5', port=9090): ... Connection
+  # ... timed out`). PrometheusClient.scalar()'s fail-soft default
+  # (0.0) silently masked this: every autoscale metric has been reading
+  # a stuck 0.0 the entire time, meaning a real scale-out-worthy load
+  # spike would never have been detected, and a low-watermark scale-in
+  # metric misreading 0.0 as "very low utilization" could trigger an
+  # inappropriate scale-in. Only port 9090 (the query API) needs
+  # VPC-internal access -- 3000 (Grafana UI)/9093 (Alertmanager UI) are
+  # human-facing and correctly stay admin_cidrs-only.
+  inbound {
+    label    = "prometheus-vpc-internal"
+    action   = "ACCEPT"
+    protocol = "TCP"
+    ports    = "9090"
+    ipv4     = concat([data.linode_vpc_subnet.public.ipv4], [for s in data.linode_vpc_subnet.private : s.ipv4])
+  }
+
   inbound {
     label    = "ssh"
     action   = "ACCEPT"

@@ -178,8 +178,17 @@
 #      one with any DNS config on a private-only client, so it should
 #      also be the one systemd-resolved routes lookups through)
 #
-# 8) --poll-interval <seconds> / LNG_ROSTER_POLL_INTERVAL (optional, default 30)
-# 9) --health-probe-interval <seconds> / LNG_HEALTH_PROBE_INTERVAL (optional, default 3)
+# 8) --fallback-probe-enabled true|false / LNG_FALLBACK_PROBE_ENABLED
+#      (optional, default false) -- roadmap/M24-scalable-roster-health-distribution.md:
+#      this client trusts natctl's own computed node health by default
+#      (zero direct probing of NAT nodes). Set true for the extra
+#      insurance of also independently probing each node directly,
+#      ANDed with natctl's own view -- can also be set/overridden
+#      fleet-wide, live, via `natctl_cli set-client-config` (see
+#      docs/RUNBOOK.md), no restart needed either way.
+# 9) --fallback-probe-interval <3-60 seconds> / LNG_FALLBACK_PROBE_INTERVAL
+#      (optional, default 30) -- only meaningful when the fallback probe
+#      above is enabled.
 # 10) --health-probe-timeout <seconds> / LNG_HEALTH_PROBE_TIMEOUT (optional, default 1.5)
 #      Match client-agent/lng-client-agent.env.example's own defaults --
 #      only override if you've tuned these elsewhere in your fleet.
@@ -221,8 +230,8 @@ while [[ $# -gt 0 ]]; do
     --dns-search-domain) LNG_DNS_SEARCH_DOMAIN="$2"; shift 2 ;;
     --dns-default-route) LNG_DNS_DEFAULT_ROUTE="$2"; shift 2 ;;
     --linode-api-token) LNG_LINODE_API_TOKEN="$2"; shift 2 ;;
-    --poll-interval) LNG_ROSTER_POLL_INTERVAL="$2"; shift 2 ;;
-    --health-probe-interval) LNG_HEALTH_PROBE_INTERVAL="$2"; shift 2 ;;
+    --fallback-probe-enabled) LNG_FALLBACK_PROBE_ENABLED="$2"; shift 2 ;;
+    --fallback-probe-interval) LNG_FALLBACK_PROBE_INTERVAL="$2"; shift 2 ;;
     --health-probe-timeout) LNG_HEALTH_PROBE_TIMEOUT="$2"; shift 2 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
@@ -239,8 +248,8 @@ done
 # on DNS resolution, exactly as expected for a host with no route out).
 LNG_DNS_SEARCH_DOMAIN="${LNG_DNS_SEARCH_DOMAIN:-members.linode.com}"
 LNG_DNS_DEFAULT_ROUTE="${LNG_DNS_DEFAULT_ROUTE:-true}"
-LNG_ROSTER_POLL_INTERVAL="${LNG_ROSTER_POLL_INTERVAL:-30}"
-LNG_HEALTH_PROBE_INTERVAL="${LNG_HEALTH_PROBE_INTERVAL:-3}"
+LNG_FALLBACK_PROBE_ENABLED="${LNG_FALLBACK_PROBE_ENABLED:-false}"
+LNG_FALLBACK_PROBE_INTERVAL="${LNG_FALLBACK_PROBE_INTERVAL:-30}"
 LNG_HEALTH_PROBE_TIMEOUT="${LNG_HEALTH_PROBE_TIMEOUT:-1.5}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -511,10 +520,10 @@ mkdir -p /etc/lng-client-agent
 cat >/etc/lng-client-agent/env <<EOF
 NATCTL_ROSTER_URL=${LNG_ROSTER_URL}
 LNG_PRIVATE_IFACE=${LNG_VLAN_IFACE}
-LNG_ROSTER_POLL_INTERVAL=${LNG_ROSTER_POLL_INTERVAL}
-LNG_HEALTH_PROBE_INTERVAL=${LNG_HEALTH_PROBE_INTERVAL}
 LNG_HEALTH_PROBE_TIMEOUT=${LNG_HEALTH_PROBE_TIMEOUT}
 LNG_DRY_RUN=false
+LNG_FALLBACK_PROBE_ENABLED=${LNG_FALLBACK_PROBE_ENABLED}
+LNG_FALLBACK_PROBE_INTERVAL=${LNG_FALLBACK_PROBE_INTERVAL}
 EOF
 
 # 6. systemd unit -- static, non-secret content, embedded directly

@@ -99,6 +99,12 @@ variable "run_natctl" {
   default     = true
 }
 
+variable "natctl_http_sd_target" {
+  description = "roadmap/M2-security.md regression fix (found live, 2026-09-02): a <vpc-ip>:8099 address for Prometheus to poll GET /file_sd on instead of reading a local file, for the run_natctl=false (natctl_on_node_enabled) case where nobody on THIS host ever writes that file. Empty string (default) means \"use the local file_sd_configs path\" -- the original, still-correct behavior when run_natctl is true. See ansible/templates/prometheus.yml.tftpl for how this switches the nat_exporter scrape job's discovery mechanism."
+  type        = string
+  default     = ""
+}
+
 # ---------------------------------------------------------------------------
 # v6: monitoring-stack opt-out -- if your organization already runs
 # Prometheus/Grafana (or a Prometheus-remote-write-compatible backend like

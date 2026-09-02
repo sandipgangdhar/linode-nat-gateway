@@ -63,10 +63,10 @@ chmod 750 /opt/lng-client-agent/client-agent
 cat > /etc/lng-client-agent/env <<EOF
 NATCTL_ROSTER_URL=${NATCTL_URL}
 LNG_PRIVATE_IFACE=${IFACE}
-LNG_ROSTER_POLL_INTERVAL=30
-LNG_HEALTH_PROBE_INTERVAL=3
 LNG_HEALTH_PROBE_TIMEOUT=1.5
 LNG_DRY_RUN=false
+LNG_FALLBACK_PROBE_ENABLED=false
+LNG_FALLBACK_PROBE_INTERVAL=30
 EOF
 chmod 640 /etc/lng-client-agent/env
 
