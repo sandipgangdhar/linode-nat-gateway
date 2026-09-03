@@ -122,6 +122,15 @@ groups:
           summary: "Aggregate egress throughput for pool {{ $labels.pool }} is approaching the pool's total plan bandwidth"
           description: "Feeds natctl's own scale-out decision; if it hasn't already added a node, investigate why (check cooldown_seconds and max_nodes)."
 
+      - alert: NATCPUSoftirqSaturationHigh
+        expr: rate(nat_cpu_softirq_seconds_total[5m]) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Core {{ $labels.cpu }} on {{ $labels.node }} ({{ $labels.pool }}) is {{ $value | humanizePercentage }} saturated with network packet-processing (softirq) work"
+          description: "Feeds natctl's own scale-out decision (the busiest core anywhere in the pool, deliberately not an average); if it hasn't already added a node, investigate why (check cooldown_seconds and max_nodes). A packet-rate-driven bottleneck like this can precede real throughput/conntrack pressure rather than follow it -- see docs/AUTOSCALING.md."
+
       - alert: NATBGPSessionNotEstablished
         expr: nat_bgp_peer_state == 0
         for: 3m

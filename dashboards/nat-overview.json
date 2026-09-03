@@ -3,7 +3,7 @@
   "description": "nat-overview.json (dashboards). Note: JSON has no comment syntax, so this field carries the documentation a header comment would elsewhere in this repo. Provisioned automatically into Grafana's 'LNG NAT Gateway' folder by ansible/templates/grafana-dashboards.yml (see terraform/modules/observability). Panels are grouped as: fleet summary (total nodes/throughput/conntrack across every pool), per-pool detail (node count, conntrack %, port headroom per IP, throughput, PPS, drop rate), node health grid, and a capacity-forecast panel. The 'pool' template variable filters every panel. Data source: Prometheus, scraping every node's :9200/metrics via natctl's fleet-aware file_sd target file, plus natctl's own :8099/metrics for fleet-wide node-count figures -- see docs/OBSERVABILITY.md for the full metric/alert catalogue this dashboard visualizes. Author: Sandip Gangdhar (https://github.com/sandipgangdhar). (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026.",
   "uid": "lng-nat-overview",
   "schemaVersion": 39,
-  "version": 7,
+  "version": 8,
   "editable": true,
   "timezone": "browser",
   "time": {
@@ -698,6 +698,58 @@
         {
           "expr": "natctl_pool_last_scale_event_delta{pool=~\"$pool\"}",
           "legendFormat": "delta"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "title": "Autoscale Metric vs Watermark (CPU/softirq)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 84
+      },
+      "description": "Busiest-core network-softirq saturation ratio, pool-wide -- see docs/AUTOSCALING.md. Scale-out only: unlike conntrack, there is no low (scale-in) watermark for this metric.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "natctl_pool_autoscale_current{pool=~\"$pool\",metric=\"cpu_softirq_ratio\"}",
+          "legendFormat": "current"
+        },
+        {
+          "expr": "natctl_pool_autoscale_high_watermark{pool=~\"$pool\",metric=\"cpu_softirq_ratio\"}",
+          "legendFormat": "scale-out watermark"
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "title": "CPU Softirq Saturation by Node and Core",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 84
+      },
+      "description": "Raw per-core detail behind the explainability panel to the left -- the autoscale trigger takes max() across every one of these series, deliberately not an average, since a single saturated core can matter even while the rest of the fleet looks idle.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(nat_cpu_softirq_seconds_total{pool=~\"$pool\"}[1m])",
+          "legendFormat": "{{node}} cpu{{cpu}}"
         }
       ]
     }

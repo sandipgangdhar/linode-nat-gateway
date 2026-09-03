@@ -1117,7 +1117,7 @@ flowchart LR
           <div class="card"><span class="tag">Buddy Coverage</span><h4>Who's paired with whom</h4><p>How many nodes currently have a live sync buddy, and a timeline of pairing changes per node over time.</p></div>
           <div class="card"><span class="tag">BGP &amp; Failover</span><h4>Sessions and roles</h4><p>Peers established vs. configured, per-node session-state timeline, and which role — self-announcer, buddy backup, or both — each node currently holds.</p></div>
           <div class="card"><span class="tag">Kernel Accounting</span><h4>conntrack, straight from the source</h4><p>Insert rate and failure/error/drop rates by node, read directly from the kernel's own connection-tracking statistics.</p></div>
-          <div class="card"><span class="tag">Autoscale Explainability</span><h4>Why the pool is the size it is</h4><p>Floor/elastic/min/max counts, current value vs. watermark for every signal, breach streak per signal, and a panel that renders the exact reason, sustained signal, and computed required count of the most recent scaling decision.</p></div>
+          <div class="card"><span class="tag">Autoscale Explainability</span><h4>Why the pool is the size it is</h4><p>Floor/elastic/min/max counts, current value vs. watermark for every signal — including a dedicated pair of panels for the CPU/softirq trigger, one showing natctl's own aggregate decision view and one showing raw per-node, per-core detail — breach streak per signal, and a panel that renders the exact reason, sustained signal, and computed required count of the most recent scaling decision.</p></div>
         </div>
       </section>
 
@@ -1134,6 +1134,7 @@ flowchart LR
             <tr><td>Pool below floor</td><td>Healthy node count under the configured minimum for 2 minutes</td><td><span class="badge crit">Critical</span></td></tr>
             <tr><td>High drop rate</td><td>Firewall/NAT drop rate exceeds a configured threshold</td><td><span class="badge warn">Warning</span></td></tr>
             <tr><td>Throughput near pool limit</td><td>Pool throughput exceeds 85% of aggregate node capacity</td><td><span class="badge warn">Warning</span></td></tr>
+            <tr><td>CPU/softirq saturation high</td><td>Any single core's network packet-processing time exceeds 80% for 5 minutes</td><td><span class="badge warn">Warning</span></td></tr>
             <tr><td>Buddy unpaired</td><td>A node has no sync buddy for 10 minutes</td><td><span class="badge info">Info</span></td></tr>
             <tr><td>BGP session not established</td><td>A configured peer session is down for 3 minutes</td><td><span class="badge crit">Critical</span></td></tr>
             <tr><td>Self-announce missing</td><td>A healthy node isn't announcing its own address for 5 minutes</td><td><span class="badge crit">Critical</span></td></tr>
