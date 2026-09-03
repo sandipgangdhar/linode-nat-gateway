@@ -355,6 +355,30 @@ pre.code .m{color:var(--code-mut)}
       <section class="chapter" id="c1-2">
         <h2><span class="chno">1.2</span> The Constraint That Shapes Everything</h2>
         <p class="lede">A VPC fabric will not transit-route a packet through a peer VPC instance out to a non-VPC destination. A private instance sitting in the same VPC as a NAT node cannot simply add a route pointing at that node's VPC address and expect its traffic to reach the internet through it — the fabric drops it.</p>
+
+        <h3>What that looks like at the packet level</h3>
+        <p>Say a private instance, <strong>Server A</strong> — VPC address <code>10.0.1.20</code>, no public IP of its own — wants to reach <code>google.com</code>. Its default route points at a NAT node's <strong>VPC</strong> address, <code>10.0.1.5</code>, hoping that node will forward the packet out to the internet the way an ordinary router would. Server A builds the packet exactly as any router setup would expect:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Value</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr><td>Source IP</td><td><code>10.0.1.20</code></td><td>Server A's own VPC address</td></tr>
+            <tr><td>Destination IP</td><td><code>142.250.x.x</code></td><td>google.com's resolved public address</td></tr>
+            <tr><td>Source MAC</td><td>Server A's vNIC MAC</td><td>the actual sending interface</td></tr>
+            <tr><td>Destination MAC</td><td>the NAT node's VPC vNIC MAC</td><td>Server A's default route points at the node, so it addresses the frame directly to it — the same thing happens on any ordinary LAN when a host routes through a gateway</td></tr>
+            <tr><td>Source / Destination port</td><td>ephemeral / 443</td><td>an ordinary outbound HTTPS connection</td></tr>
+            <tr><td>Protocol</td><td>TCP</td><td>—</td></tr>
+          </tbody>
+        </table></div>
+        <p>That packet leaves Server A's own interface exactly as intended — Server A has no way to tell anything went wrong. It just never arrives at the NAT node's VPC interface. Not rejected, not bounced back with an error, not logged as a drop anywhere on the NAT node's side — it simply isn't delivered.</p>
+
+        <h3>Why the fabric behaves this way</h3>
+        <p>Akamai Cloud doesn't publish the exact internal mechanism, so this is the general, well-understood pattern this behavior matches rather than a confirmed internal detail: a cloud VPC is a software-defined overlay network, and the underlying fabric typically only programs a delivery path for traffic that stays consistent with what it already knows about each port — the address(es) actually assigned to that port, and destinations that are either inside the same VPC or leaving through that <em>same instance's own</em> public/NAT boundary. A packet whose destination is the public internet, but which is being handed to a <em>different</em> instance's interface to forward on its behalf, doesn't match that model, so the fabric has nothing to do with it — it's simply never delivered, the same class of behavior public documentation for AWS, GCP, and Azure VPCs describes as source/destination validation on hairpin or transit traffic.</p>
+
+        <div class="callout">
+          <span class="co-label">What was actually verified, not just assumed</span>
+          Two real instances were used to test this directly, rather than trusting a general expectation: one with a public IP and NAT/forwarding configured (playing the router), one with only a VPC address and its default route pointed at the first. Packet captures ran on <strong>both</strong> instances at the same time. The sender's own capture showed every outbound packet leaving correctly; the would-be router's capture never showed any of them arriving — and its own firewall's forward-chain counters stayed at zero the entire time, meaning it wasn't even reaching a point where something local could reject it. Akamai Cloud's VPC fabric does not forward a packet through a peer VPC instance to a non-VPC destination, confirmed directly rather than assumed from documentation.
+        </div>
+
         <p>This single fact is why the private client fleet rides a completely separate Layer-2 fabric — a Linode VLAN — instead of VPC. A VLAN has no such restriction: any device attached to it can forward traffic through any other device on the same segment, exactly the behavior a NAT gateway needs from its clients. It is also why every node in the fleet carries not one but three purpose-built interfaces, each doing exactly one job, described next.</p>
       </section>
 
@@ -415,10 +439,72 @@ flowchart LR
         <div class="part-rule"></div>
       </div>
 
+      <div class="callout">
+        <span class="co-label">Component map — control plane vs. data plane</span>
+        <p style="margin:10px 0 6px">Two groups of moving parts. The <strong>control plane</strong> makes decisions and never touches a customer packet directly; the <strong>data plane</strong> is everything that actually forwards traffic or steers a client toward whatever's forwarding it.</p>
+        <div class="table-wrap" style="margin:10px 0"><table>
+          <thead><tr><th>Control plane</th><th>Runs as</th><th>Runs where</th></tr></thead>
+          <tbody>
+            <tr><td>Fleet Controller</td><td><code>natctl.service</code> (systemd)</td><td>one dedicated host, or every NAT node — see 2.3</td></tr>
+            <tr><td>Roster / status HTTP API</td><td>same <code>natctl</code> process, port <code>8099</code></td><td>same host(s) as the Fleet Controller</td></tr>
+            <tr><td>Metrics database, dashboard, alerting</td><td>Prometheus / Grafana / Alertmanager (Docker containers)</td><td>the dedicated control-plane host — Part VII</td></tr>
+          </tbody>
+        </table></div>
+        <div class="table-wrap" style="margin:10px 0 0"><table>
+          <thead><tr><th>Data plane</th><th>Runs as</th><th>Runs where</th></tr></thead>
+          <tbody>
+            <tr><td>NAT node (nftables/masquerade)</td><td>kernel-level, no separate service</td><td>every NAT node</td></tr>
+            <tr><td>Metrics exporter + health check</td><td><code>nat-exporter.service</code>, port <code>9200</code></td><td>every NAT node</td></tr>
+            <tr><td>Connection-state sync</td><td><code>lng-buddy-sync.service</code> + one <code>conntrackd@&lt;peer&gt;.service</code> per peer</td><td>every NAT node — Part IV</td></tr>
+            <tr><td>BGP IP failover</td><td><code>frr.service</code> (FRRouting)</td><td>every NAT node — Part IV</td></tr>
+            <tr><td>Client routing agent</td><td><code>lng-client-agent.service</code></td><td>every private-subnet client instance</td></tr>
+          </tbody>
+        </table></div>
+      </div>
+
       <section class="chapter" id="c2-1">
         <h2><span class="chno">2.1</span> The Fleet Controller</h2>
-        <p class="lede">A single control-plane service is the fleet's brain. Every pass, it discovers every instance tagged as belonging to a pool, runs a real health check against each one, computes which nodes are paired as failover "buddies," provisions or removes elastic capacity within its configured bounds, and serves the roster that every routing agent, every sync daemon, and the metrics pipeline all depend on.</p>
-        <p>Nothing about the fleet controller is read back from a database. Every pass rebuilds the entire fleet's state from scratch, directly from live cloud-provider discovery and each node's own health probe. This single design choice is what makes the control plane genuinely disposable: if it restarts, or is temporarily unavailable, it has nothing to recover — the very next pass reconstructs an accurate picture of the fleet on its own.</p>
+        <p class="lede">The fleet's brain is a single service called <strong>natctl</strong>, packaged as one systemd service (<code>natctl.service</code>) that runs continuously and repeats the same fixed sequence of work — a <strong>pass</strong> — over and over on a timer.</p>
+
+        <h3>What a "pass" actually is</h3>
+        <p>A pass (also called a <em>reconcile pass</em>) is one full run through natctl's control loop, repeating every 15 seconds by default. Each pass does the same five things, always in the same order:</p>
+        <ol>
+          <li><strong>Discover</strong> — ask the cloud provider which instances currently belong to this pool (see "Discovery" below).</li>
+          <li><strong>Health-check</strong> — probe every discovered node (see "The health check" below).</li>
+          <li><strong>Compute buddy pairings</strong> — decide which healthy nodes back each other up (preview below, full detail in Part IV).</li>
+          <li><strong>Evaluate autoscaling</strong> — decide whether the pool needs to grow or shrink (Part V).</li>
+          <li><strong>Publish the roster</strong> — recompute the JSON snapshot every client reads (Part II, 2.2).</li>
+        </ol>
+        <p>Every one of those five steps is redone from scratch, every single pass — nothing about steps 2–5 depends on what happened in a previous pass beyond the live state that step 1 just re-discovered.</p>
+
+        <h3>Discovery — what the tags are, who creates them, where to see them</h3>
+        <p>Every node in a pool — whether it's a fixed floor node or one natctl provisioned itself — carries the same three cloud-provider tags: <code>lng</code>, <code>lng-fleet</code>, and <code>lng-pool-&lt;pool-name&gt;</code> (for example, <code>lng-pool-shared</code>). A node natctl provisioned itself also gets a fourth tag, <code>lng-elastic</code>, which is how the controller tells its own capacity apart from the fixed floor.</p>
+        <p>The infrastructure-as-code that creates floor nodes applies these tags at creation time; natctl applies the identical tags itself the moment it provisions an elastic node. Discovery, every pass, is one API call asking the cloud provider "give me every instance tagged <code>lng-pool-shared</code>" — a plain tag filter, not a database lookup against anything natctl owns. You can see these tags yourself the same way: in the cloud provider's own console under each instance's tag list, or from the command line with something like <code>linode-cli linodes list --tag lng-pool-shared</code>.</p>
+
+        <h3>The health check — what it actually does</h3>
+        <p>Every node runs a small metrics/health service of its own on port <code>9200</code>. Once per pass, natctl makes one plain HTTP request — <code>GET http://&lt;node's private IP&gt;:9200/healthz</code> — with a short timeout, and that endpoint runs three real checks on the node itself before answering:</p>
+        <ol>
+          <li>Is IP forwarding actually turned on in the kernel?</li>
+          <li>Is the node's own NAT firewall ruleset actually loaded?</li>
+          <li>Does a real outbound HTTPS request, sent from the node's own public interface, actually succeed?</li>
+        </ol>
+        <p><strong>All three must pass</strong> for the node to be reported healthy — any single one failing (or the request timing out at all) reports the node unhealthy immediately. The third check is the important one: a node can be perfectly reachable on the network while its actual NAT path is quietly broken underneath, and only a real end-to-end request catches that — see Part VII, 7.5 for the full detail on why this specific design choice matters.</p>
+
+        <h3>Buddies — a preview (full detail in Part IV)</h3>
+        <p>A "buddy" is another node this one continuously mirrors live connection state with, and stands ready to take over the public IP for if it dies. Buddies exist to shrink how much traffic a single node's failure actually disrupts. Every node normally has exactly one buddy — an ordinary pair — except when the pool's healthy node count is odd, in which case one extra node is folded into a three-node group instead of being left with no partner at all (Part IV, 4.2). The sync itself runs as its own process per pairing, entirely independent of natctl — natctl only computes <em>who's paired with whom</em>, every pass; it never does the actual syncing itself. If a buddy relationship breaks, the affected node is still completely healthy and still fully in rotation — it's a mitigation for connection loss on a future failure, not a health signal on its own. Exactly how sync works, what protocol/port it uses, how to check it, and how to restart it if it breaks are all covered in full in Part IV, 4.3 — this paragraph is just enough to make the rest of this chapter make sense.</p>
+
+        <h3>Provisioning and removing elastic capacity</h3>
+        <p>Within the bounds an operator configures for the pool (a minimum and a maximum), natctl decides every pass whether to add or remove elastic nodes — the exact algorithm is Part V, 5.2. A few practical questions worth answering here directly:</p>
+        <ul>
+          <li><strong>What happens when a floor node goes down, and how do you recover it?</strong> natctl never deletes or replaces a floor node under any circumstance — that's a hard boundary, not a bug. Instead, it provisions extra elastic capacity to compensate for the missing floor capacity, so the pool keeps serving traffic at full strength while the broken floor node sits there unhealthy. Recovering it is a manual step: SSH in and fix whatever's wrong, or replace the instance yourself through your infrastructure-as-code (a targeted re-apply of just that one node). Once it passes its health check again, the extra elastic capacity that was compensating for it drains back down automatically on a later pass.</li>
+          <li><strong>How does an operator raise the floor?</strong> Change the floor node count in your infrastructure configuration and re-apply it — see Part IX and Part X for the exact command. Every connected client picks up the new node automatically on its next roster read; no restart of anything is required anywhere.</li>
+          <li><strong>Does raising the floor interact with reserved IPs?</strong> Only if reserved IPs are already turned on for the pool (Part IV, 4.6) — in that case, every <em>new</em> floor node created by raising the count automatically gets its own reserved address the same way every existing floor node already has one; there's no separate "grow the reserved-IP pool first" step. The only time you'd act on the reserved-IP pool directly is if you want a <em>specific</em>, already-owned address reused for a new node instead of a fresh one being minted — that's the "bring your own reserved IPs" list, supplied ahead of raising the floor count.</li>
+        </ul>
+
+        <h3>The roster — what it is, concretely</h3>
+        <p>The roster is the JSON snapshot natctl computes as the very last step of every pass — nobody else generates it, and it isn't a separate service or a stored file anywhere durable. It lives entirely in memory and is rebuilt from scratch every 15 seconds; served over plain HTTP as plain JSON, no special protocol involved. The next chapter covers exactly what's in it, with a real example.</p>
+
+        <p>Nothing about the fleet controller is read back from a database. Every pass rebuilds the entire fleet's state from scratch, directly from live cloud-provider discovery (the tag lookup above) and each node's own health probe (the <code>/healthz</code> request above) — never from anything natctl itself wrote down earlier. This single design choice is what makes the control plane genuinely disposable: if it restarts, or is temporarily unavailable, it has nothing to recover — the very next pass reconstructs an accurate picture of the fleet on its own, the same way every other pass always has.</p>
 
         <div class="callout">
           <span class="co-label">What actually stops if the control plane goes down</span>
@@ -431,16 +517,59 @@ flowchart LR
         <p class="lede">Every routing decision in the system — which nodes a client should send traffic through, which peer a node should mirror connection state with, which target Prometheus should scrape — ultimately traces back to one HTTP endpoint: <code>GET /fleet/&lt;pool&gt;</code>, served by the fleet controller.</p>
 
         <h3>What it actually is</h3>
-        <p>It is a plain HTTP endpoint, not a separate service or a piece of infrastructure that gets "provisioned." The moment the fleet controller starts and binds its listening port, that endpoint exists — creating the roster URL is simply a byproduct of deploying and starting the control plane itself, nothing more. Its response is a JSON document: the current node list for that pool, each node's address and current health state, and an integer version number that increments any time the underlying picture actually changes.</p>
+        <p>It is a plain HTTP endpoint, not a separate service or a piece of infrastructure that gets "provisioned." The moment natctl starts and binds its listening port (<code>8099</code>), that endpoint exists — creating the roster URL is simply a byproduct of deploying and starting the control plane itself, nothing more.</p>
+
+        <h3>A concrete example</h3>
+        <p>Say the control plane is reachable at private address <code>10.60.32.5</code> (the control-plane host's own private IP in the single-host placement, or any one NAT node's private IP once natctl runs on every node — Part II, 2.3). The roster for the <code>shared</code> pool is:</p>
+        <pre class="code">GET http://10.60.32.5:8099/fleet/shared</pre>
+        <p>A real response looks like this:</p>
+        <pre class="code">{
+  "pool": "shared",
+  "roster_version": 42,
+  "client_fallback_probe_enabled": null,
+  "client_fallback_probe_interval": null,
+  "nodes": [
+    {
+      "node_id": "lng-shared-1",
+      "private_ip": "10.60.32.20",
+      "vlan_ip": "192.168.100.20",
+      "public_ips": ["172.236.173.125"],
+      "healthy": true,
+      "conntrack_peers": [],
+      "ip_failover_self_ip": null,
+      "ip_failover_buddy_ips": []
+    }
+  ]
+}</pre>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>pool</code></td><td>which pool this roster describes — matches the URL</td></tr>
+            <tr><td><code>roster_version</code></td><td>bumped only when something in this response actually changes since the last pass — the number a long-poll request (below) waits on</td></tr>
+            <tr><td><code>client_fallback_probe_enabled/_interval</code></td><td>the pool's current fleet-wide fallback-probe setting, if an operator has set one live (Part X) — <code>null</code> means "no override, use each client's own local default"</td></tr>
+            <tr><td><code>nodes[].node_id</code></td><td>this node's stable identifier</td></tr>
+            <tr><td><code>nodes[].private_ip</code> / <code>vlan_ip</code> / <code>public_ips</code></td><td>the node's three addresses — VPC, VLAN, and public (Part I, 1.3)</td></tr>
+            <tr><td><code>nodes[].healthy</code></td><td>the control plane's own computed verdict for this node — see "Health is authoritative" below</td></tr>
+            <tr><td><code>nodes[].conntrack_peers</code> / <code>ip_failover_*</code></td><td>this node's current buddy relationships — empty here because a single-node pool has nobody to pair with (Part IV)</td></tr>
+          </tbody>
+        </table></div>
+        <p>A client routing agent reads exactly this response and builds its route from the <code>vlan_ip</code> of every node where <code>healthy</code> is <code>true</code>.</p>
 
         <h3>How it's kept fresh</h3>
-        <p>Every reconcile pass — discover instances, health-check each one, recompute buddy pairings, evaluate whether the pool should scale — ends with the controller recomputing an in-memory roster snapshot and diffing it against the previous pass. Only a real change bumps the version number and wakes anyone waiting on it; a pass with nothing new to report is a no-op from the roster's point of view. There is no separate "update the roster" step to remember — publishing the roster is simply what every reconcile pass ends in.</p>
+        <p>Every reconcile pass — discover instances, health-check each one, recompute buddy pairings, evaluate whether the pool should scale — ends with the controller recomputing this exact JSON document in memory and diffing it against the previous pass. Only a real change bumps <code>roster_version</code> and wakes anyone waiting on it; a pass with nothing new to report is a no-op from the roster's point of view. There is no separate "update the roster" step to remember — publishing the roster is simply what every reconcile pass ends in.</p>
 
         <h3>Long-polling: near-instant reaction, near-zero idle traffic</h3>
-        <p>A plain <code>GET /fleet/&lt;pool&gt;</code> always returns immediately with whatever the current snapshot is — nothing about that behavior changes. Add <code>?wait=true&amp;since=&lt;version&gt;</code>, and the connection is instead held open until either something actually changes or roughly 25 seconds pass, whichever comes first. A routing agent that uses this holds one open connection and reacts within a fraction of a second of any real fleet change, while producing essentially zero request volume during a quiet period — the same blocking-query pattern used by mature service-discovery systems elsewhere in the industry.</p>
+        <p>A plain <code>GET /fleet/shared</code> always returns immediately with whatever the current snapshot is — nothing about that behavior changes. Add <code>?wait=true&amp;since=42</code> (the <code>roster_version</code> the client already has), and the request is handled completely differently: the server holds that one connection open — without answering yet — until either <code>roster_version</code> actually changes, or roughly 25 seconds pass, whichever happens first. It's still a perfectly ordinary HTTP request; the only difference is the server delays its own reply.</p>
+        <ul>
+          <li><strong>Nobody "pushes" anything.</strong> There's no separate push channel or open socket the server writes into on its own initiative — the client always makes the request first, and the server simply waits before responding instead of answering immediately. This is a long-poll, not a WebSocket or a server push.</li>
+          <li><strong>Why near-zero idle traffic.</strong> With plain polling, a client sends a brand-new request every few seconds forever, whether anything changed or not. With long-polling, a client sends one request and that single connection just sits there — no new requests, no new bytes on the wire — until there's actually something worth reporting. The "traffic" that disappears is every one of those repeated, mostly-pointless requests during a quiet period.</li>
+          <li><strong>How many connections can the control plane hold open at once?</strong> Honestly: this hasn't been load-tested to a specific number, and it's worth knowing that rather than trusting a made-up figure. Each held-open long-poll ties up one thread and one file descriptor on whichever host is answering it — so the real ceiling is that host's own thread/file-descriptor limits, not anything special in the roster logic itself. If you're planning for a genuinely large client count, load-test at that count before trusting it blindly, the same way you'd load-test any thread-per-connection HTTP service.</li>
+          <li><strong>How does a client know which IP to connect to in the first place?</strong> There's no auto-discovery — an operator sets this explicitly, once, when a client is onboarded (Part IX): the client's routing agent is configured with the control plane's private address and port (<code>NATCTL_ROSTER_URL=http://10.60.32.5:8099/fleet/shared</code>), the same way you'd configure any client to point at a known server address.</li>
+        </ul>
 
         <h3>Health is authoritative here, not advisory</h3>
-        <p>The roster response carries each node's already-computed healthy/unhealthy verdict directly, and every routing agent trusts that verdict by default rather than independently re-probing every node on its own. This is a deliberate, structural simplification, not a shortcut: every node and every client sit on the same physical VLAN Layer-2 segment, so reachability is essentially uniform across every client — there is no realistic scenario where a client's own probe would see something the control plane's own health check missed. An operator who wants the old belt-and-suspenders behavior anyway can turn on an additional local probe per client; when it's on, a node only counts as usable if <em>both</em> the control plane and the client's own check agree.</p>
+        <p>The roster's <code>healthy</code> field is the control plane's own computed verdict from its <code>/healthz</code> check (Part II, 2.1) — not a raw "is the node reachable" ping. Every routing agent trusts that verdict by default rather than independently re-probing every node on its own. This is a deliberate, structural simplification, not a shortcut: every node and every client sit on the same physical VLAN Layer-2 segment, so reachability is essentially uniform across every client — there is no realistic scenario where a client's own probe would see something the control plane's own health check missed.</p>
+        <p>An operator who wants the old <strong>belt-and-suspenders</strong> behavior anyway can turn on an additional local probe per client — "belt and suspenders" simply means using two independent safety mechanisms at once even though either one alone would normally be enough, as extra insurance against the first one being wrong. When that opt-in probe is on, a node only counts as usable if <em>both</em> the control plane's verdict and the client's own direct check agree it's healthy.</p>
 
         <h3>How the roster URL itself stays available</h3>
         <p>This depends entirely on where the control plane runs (see the next chapter). Run on a single dedicated host, there is exactly one instance answering roster requests — a control-plane single point of failure for <em>freshness</em>, not for traffic already flowing. Run on every node instead, every single node answers roster reads identically and correctly regardless of which one currently holds write authority over the fleet — at that point the roster URL is effectively as available as the fleet itself, since any surviving node can answer it.</p>
@@ -451,7 +580,7 @@ flowchart LR
 
       <section class="chapter" id="c2-3">
         <h2><span class="chno">2.3</span> Where the Control Plane Runs</h2>
-        <p>There are two supported placements for the fleet controller, and switching between them changes nothing about how any client talks to it — the roster URL's shape is identical either way.</p>
+        <p>The fleet controller — <strong>natctl</strong> — has two supported placements, and switching between them changes nothing about how any client talks to it — the roster URL's shape is identical either way.</p>
 
         <div class="table-wrap"><table>
           <thead><tr><th></th><th>Single dedicated host</th><th>Running on every node</th></tr></thead>
@@ -491,6 +620,13 @@ flowchart TB
         </div>
 
         <p>Running the controller on every node is possible because it is entirely stateless — everything it computes is derived fresh from live discovery and health checks each pass, never read back from storage. The one real problem this placement introduces is the one every active-active control plane has to solve: more than one instance could try to mutate cloud state at the same moment. That problem, and how it's solved, is the next chapter.</p>
+
+        <h3>Can you switch this on an already-live fleet?</h3>
+        <p>Yes, but treat it as a maintenance-window change, not a zero-impact toggle. This setting changes what's embedded in every floor node's own boot configuration, and the infrastructure tooling has no way to update that in place on a running instance — so applying the change destroys and recreates every floor node to pick up the new configuration. Reserved IPs and the deterministic address scheme (Part IV) mean every recreated node comes back with the exact same address it had before, so nothing downstream needs to be reconfigured — but every floor node does go through a real boot cycle to get there.</p>
+
+        <h3>The "writer" node, and how a client knows who to talk to</h3>
+        <p>In every-node mode, exactly one instance at a time is elected <strong>leader</strong> — the only one currently allowed to make cloud-mutating calls (create/delete a node, update a BGP IP-sharing assignment). Every other instance is a <strong>follower</strong>: it still runs the full read-only pipeline every pass — discovery, health checks, computing what it <em>would</em> do — but stops short of actually performing any mutating action.</p>
+        <p>From a client's point of view, there is no difference between talking to the leader or a follower at all. Every instance's roster read reflects the same underlying discovered state, since discovery and health-checking run identically everywhere — only the write path is restricted to one instance. An operator picks any one node's private address to configure into a client (Part II, 2.2) — not necessarily the current leader, since leadership can change over time and every instance answers reads identically regardless. There's no built-in load-balancing across nodes for roster reads today; every client you onboard is pointed at whichever one address you give it.</p>
       </section>
 
       <section class="chapter" id="c2-4">
@@ -498,15 +634,28 @@ flowchart TB
         <p class="lede">When the controller runs on every node, read-only work — discovery, health checks, buddy-pairing computation, serving the roster — runs on every instance all the time, regardless of leadership. Only the calls that actually change cloud state (provisioning a node, updating a BGP IP-sharing assignment) are gated to a single leader at a time.</p>
 
         <h3>The lease is a bulletin board, not the safety mechanism</h3>
-        <p>Leadership is tracked via a lease record — a small object naming the current leader, its term, and an expiry — stored durably so every instance can read the same value. That record is deliberately treated as a best-effort hint, never as the actual source of correctness: a lease alone cannot guarantee only one writer is active at a time under every possible network condition.</p>
+        <p>Leadership is tracked via a lease record — a small JSON object naming the current leader's node id, its term number, and when it was last renewed — stored durably in Object Storage so every instance can read the same value. A leader must renew this record at least once every <strong>45 seconds</strong> (its configured lease lifetime) or the lease is considered expired. That record is deliberately treated as a best-effort hint, never as the actual source of correctness: a lease alone cannot guarantee only one writer is active at a time under every possible network condition — nothing about writing it is an atomic compare-and-swap.</p>
+
+        <h3>A worked example: what happens when the leader disappears</h3>
+        <p>Node A is leader, term 5, renewing its lease every 15-second pass — comfortably inside the 45-second lifetime. Node A crashes.</p>
+        <ol>
+          <li>No renewal happens. Once 45 seconds pass since Node A's last renewal, Nodes B and C — both followers — each independently notice on their own next pass that the lease has expired.</li>
+          <li>To avoid both racing into an election at once, each first waits a random delay of up to 10 seconds (the election jitter) before doing anything else.</li>
+          <li>Say Node B's random wait happens to be shorter. It wakes first, re-reads the lease record one more time to confirm nobody else already claimed it during its wait, sees it's still expired, and begins <strong>fencing</strong>: it calls the cloud provider's power-off API against Node A, then polls — up to 60 seconds — until Node A is confirmed either genuinely offline or no longer exists.</li>
+          <li>Only once that's confirmed does Node B write itself into the lease record as the new leader, term 6.</li>
+          <li>When Node C wakes up a few seconds later, it re-reads the lease record first — this "always re-check before acting" behavior is deliberate — sees Node B already claimed term 6, and simply backs off, resuming as a follower without ever attempting its own fencing.</li>
+        </ol>
 
         <h3>The real safety mechanism: fencing</h3>
-        <p>Before a candidate ever claims leadership, it powers off the previous leader through the cloud provider's own instance power-management API and polls until that shutdown is <em>confirmed</em> — either a genuinely offline status, or a not-found response meaning the instance no longer exists. If the power-off call fails, or confirmation never arrives in time, the candidate aborts the election outright rather than proceeding — an unconfirmed fence provides no real guarantee, so the system fails closed instead of optimistically continuing.</p>
-        <p>Layered on top: randomized timing before a candidate ever attempts an election (reducing the odds of two candidates colliding at once), a write-then-reverify step immediately after claiming leadership, and a fresh leadership check immediately before <em>every individual</em> mutating call — not just once per pass — so a node that loses leadership mid-cycle stops mutating within one call's window, not one whole cycle's.</p>
+        <p>Before a candidate ever claims leadership, it powers off the previous leader through the cloud provider's own instance power-management API and polls until that shutdown is <em>confirmed</em> — either a genuinely offline status, or a not-found response meaning the instance no longer exists. If the power-off call fails, or confirmation never arrives in time, the candidate aborts the election outright rather than proceeding — an unconfirmed fence provides no real guarantee, so the system fails closed instead of optimistically continuing. A fenced node is left powered off, not automatically rebooted — an operator needs to investigate and boot it back up deliberately, the same as any other unhealthy node needing attention.</p>
+        <p>Layered on top: the randomized jitter above (reducing the odds of two candidates colliding at once), a write-then-reverify step immediately after claiming leadership, and a fresh leadership check immediately before <em>every individual</em> mutating call — not just once per pass — so a node that loses leadership mid-cycle stops mutating within one call's window, not one whole cycle's.</p>
+
+        <h3>What if two nodes really do try to write at the exact same moment?</h3>
+        <p>Since the lease record isn't an atomic compare-and-swap, two candidates could, in a narrow and short-lived window, both briefly believe they've won the same election — the design doesn't claim to make that mathematically impossible, only rare. What actually prevents both from mutating cloud state is the separate, per-call check described above: immediately before either one attempts a real mutating action (not once per pass, but freshly for that one specific call), it re-reads the lease record one more time. Only whichever one's check runs first against the current record is allowed to proceed; the other's check will already see the new leader and refuses to act.</p>
 
         <div class="callout warn">
-          <span class="co-label">Honest limit</span>
-          This is defense in depth, not mathematically perfect mutual exclusion the way a hardware-fenced active/passive pair would be. A network partition that isolates the current leader from the lease store, but not from the cloud API it's calling, is a scenario this design does not fully close.
+          <span class="co-label">Honest limit, with a concrete scenario</span>
+          This is defense in depth, not mathematically perfect mutual exclusion the way a hardware-fenced active/passive pair would be. Concretely: imagine Node A can still reach the cloud provider's API — so it's still <em>capable</em> of making real mutating calls — but has lost its network path specifically to the Object Storage bucket holding the lease record, so it can't renew its lease and can't see anyone else has claimed leadership either. From Node B's side, Node A's lease simply looks expired, so Node B fences it (powers it off) and takes over — this is exactly the scenario fencing exists to handle safely, since Node A is physically powered off before Node B ever starts mutating anything. The genuinely unclosed gap is much narrower than a full node-vs-node race: it's the brief window between Node A's own last leadership re-check (which passed) and the moment the fencing power-off command actually reaches and takes effect on Node A. If Node A happened to fire a mutating call inside that exact narrow window, both could very briefly be acting on the fleet at once. That window is measured in seconds — bounded by how often a node re-verifies its own leadership, which is immediately before every mutating call, not once per pass — not minutes, but it is real and not claimed to be zero.
         </div>
 
         <h3>The trade-off fencing accepts</h3>
@@ -547,7 +696,7 @@ flowchart TB
         <p>Getting real distribution out of that mechanism also requires the kernel to hash on enough of each packet to tell separate connections apart. The agent sets this itself at every startup — hashing on source and destination port in addition to the address pair — so that many separate connections to the very same destination spread across the whole pool instead of all landing on one node, the same five-tuple approach used by every hardware router and both hyperscalers' own NAT implementations.</p>
 
         <h3>The one thing it manages, and the one thing it never touches</h3>
-        <p>The agent manages exactly one thing: the default route. It installs one only on an instance that has no other path to the internet of its own; an instance that already has a public address or its own NAT path is left completely alone, since something else already owns that route. It never touches a VLAN or VPC interface's own connected route — those come from the kernel the instant the interface gets an address, independent of anything the agent does.</p>
+        <p>The agent manages exactly one thing: the default route. By default, it installs one only on an instance that has no other path to the internet of its own; an instance that already has a public address or its own NAT path is left completely alone, since something else already owns that route. An operator can override this with the onboarding script's <code>--force</code> option (Part III, 3.3), which installs and starts the agent — and hands it the default route — regardless of what other path the instance already has, for a deliberate dual-path egress policy where NAT-fleet routing is wanted no matter what else the instance can reach. The agent never touches a VLAN or VPC interface's own connected route either way — those come from the kernel the instant the interface gets an address, independent of anything the agent does.</p>
 
         <div class="callout good">
           <span class="co-label">Fail-safe by design</span>
@@ -570,6 +719,15 @@ flowchart TB
         </table></div>
 
         <p>Whichever shape applies, the sequence is the same: attach the required interface(s) at the account level, apply a static VLAN address to the VLAN interface, then run a short configuration step against the instance that applies the address, installs the routing agent only if the instance actually needs it, and starts it pointed at the pool's roster URL.</p>
+
+        <div class="callout">
+          <span class="co-label">Overriding the auto-detection: <code>--force</code></span>
+          By default, the configuration script skips installing the routing agent on an instance that already has its own path to the internet — "Public + VLAN" and "VPC (1:1 NAT) + VLAN" in the table above are left untouched. Pass <code>--force</code> to install and start the agent anyway, handing it the default route regardless of what other path the instance already has:
+          <pre class="code">./install-nat-client.sh --vlan-iface eth0 --vlan-ip 192.168.100.130/22 \
+  --natctl-url http://&lt;observability-private-ip&gt;:8099/fleet/shared \
+  --force</pre>
+          This is for a deliberate dual-path egress policy — a customer that wants every packet routed through the NAT fleet's pool of static IPs even though the instance technically has another way out.
+        </div>
       </section>
 
       <section class="chapter" id="c3-4">
@@ -643,14 +801,20 @@ flowchart LR
 
       <section class="chapter" id="c4-3">
         <h2><span class="chno">4.3</span> Connection-State Sync</h2>
-        <p class="lede">A daemon runs on every node, watching the roster for buddy reassignment and reconciling both the BGP announcer's secondary-route configuration and the connection-tracking sync process's peer configuration whenever a pairing changes.</p>
+        <p class="lede">A daemon called <strong>buddy-sync</strong> (<code>lng-buddy-sync.service</code>) runs on every node, watching the roster for buddy reassignment and reconciling both the BGP announcer's secondary-route configuration and the connection-tracking sync process's peer configuration whenever a pairing changes.</p>
         <p>While active, it continuously mirrors the node's live kernel connection-tracking table to its current peer or peers — usually one, two for a triangle's hub node running two independent sync processes at once.</p>
+
+        <h3>The protocol, concretely</h3>
+        <p>The actual state-mirroring is done by <code>conntrackd</code>, a standard Linux connection-tracking sync daemon — <strong>UDP</strong>, over the node's private VPC interface (<code>eth1</code>), one independent process per peer relationship (a triangle's hub runs two at once). Each relationship's exact port is derived deterministically from a base of <code>3780</code> plus a hash of the two peers' node IDs, so both ends always agree on the same port without needing to coordinate it. Each relationship runs as its own systemd instance, <code>conntrackd@&lt;peer-node-id&gt;.service</code> — <code>systemctl list-units 'conntrackd@*'</code> on any node shows every currently active relationship.</p>
+
+        <h3>Where to check buddy health</h3>
+        <p>The Grafana dashboard's buddy-pairing panel (Part VII, 7.3) shows paired-node coverage across the whole fleet at a glance. On a specific node, <code>systemctl status lng-buddy-sync</code> shows the daemon itself, and <code>systemctl status conntrackd@&lt;peer-node-id&gt;</code> shows one specific peer relationship; <code>journalctl -u lng-buddy-sync -f</code> logs every roster poll and every peer change live.</p>
 
         <h3>What happens if it stops</h3>
         <p>A node with no active sync peer is still completely healthy and still fully participating in ECMP rotation — this is a session-continuity mitigation, not a health signal, and should never be treated as equivalent to a node being down. The only practical consequence of losing sync is that a <em>future</em> failure of that specific node will reset in-flight connections outright instead of possibly continuing through a buddy that had a mirrored copy of the state.</p>
 
         <h3>How to restart it</h3>
-        <p>Simply restart the service. It carries no state of its own worth preserving — on restart, it re-derives its current peer assignment fresh from the roster on its very next pass and re-establishes sync from there. There is nothing to migrate and no manual reconciliation step.</p>
+        <p><code>systemctl restart lng-buddy-sync</code> on the affected node. It carries no state of its own worth preserving — on restart, it re-derives its current peer assignment fresh from the roster on its very next check and re-establishes sync from there (each individual <code>conntrackd@&lt;peer&gt;</code> process is started and stopped automatically by buddy-sync itself as peers come and go — there's normally no reason to touch those directly). There is nothing to migrate and no manual reconciliation step.</p>
 
         <h3>What it stores</h3>
         <p>Only its own regenerable configuration — the BGP announcer's running configuration is rewritten on every pairing change, and a small status file exists purely for observability and is never read back by anything. The actual mirrored connection-tracking table lives only in kernel memory on both ends and is never written to disk anywhere.</p>
@@ -658,7 +822,7 @@ flowchart LR
 
       <section class="chapter" id="c4-4">
         <h2><span class="chno">4.4</span> BGP-Based IP Failover</h2>
-        <p class="lede">A BGP routing daemon on every node, paired with the cloud provider's own IP-Sharing capability, is what actually lets a buddy take over a dead node's public IP — not just its connection state.</p>
+        <p class="lede">A BGP routing daemon called <strong>FRR</strong> (<code>frr.service</code>) runs on every node, paired with the cloud provider's own IP-Sharing capability — together, this is what actually lets a buddy take over a dead node's public IP, not just its connection state.</p>
 
         <h3>The mechanism</h3>
         <p>From the moment it boots, every paired node is simultaneously doing two things: announcing its own public IP as the primary route, and — once buddy-paired — announcing its buddy's/buddies' public IP(s) as a secondary backup route. This is fully bidirectional and active from boot, not something that only activates once a failure is detected.</p>
@@ -668,7 +832,7 @@ flowchart LR
         <p>Its buddy's already-standing secondary announcement is what lets traffic addressed to the dead node's public IP keep reaching a live host — typically within a single BGP convergence cycle, with proven zero packet loss in both directions during a live failover exercise. Any TCP connection that was actively open through the dead node at the moment it died still resets; that is connection-state loss, a separate concern that only connection-state sync (previous chapter) addresses.</p>
 
         <h3>How to restart it</h3>
-        <p>Stopping and starting the BGP daemon on a node is enough — its own self-announcement resumes automatically at boot with no manual step, and its buddy assignment is entirely independent of the daemon's own lifecycle, since that assignment is recomputed by the control plane, not stored locally.</p>
+        <p><code>systemctl restart frr</code> on the affected node is enough — its own self-announcement resumes automatically at boot with no manual step, and its buddy assignment is entirely independent of the daemon's own lifecycle, since that assignment is recomputed by the control plane, not stored locally. Check current session state with <code>vtysh -c "show bgp summary"</code> on the node itself.</p>
 
         <div class="callout warn">
           <span class="co-label">Operational caution</span>
@@ -692,6 +856,12 @@ flowchart LR
         <h2><span class="chno">4.7</span> Handling a Persistently Unhealthy Node</h2>
         <p>The count that actually matters against a pool's minimum node requirement is the number of currently <em>healthy</em> nodes, never the raw node count — a node that exists but is failing its own health check does not count toward satisfying the floor.</p>
         <p>An elastic node that stays unhealthy past a configured threshold is drained and replaced automatically, with no human intervention required. A Terraform-managed floor node is treated completely differently and deliberately never auto-replaced under any circumstance — instead, the system compensates by provisioning additional elastic capacity to make up for the lost floor capacity, while leaving the actual broken floor node for an operator to investigate and fix by hand. This is a hard safety boundary, not an inconsistency: an automated system should never delete infrastructure a human explicitly declared should always exist.</p>
+      </section>
+
+      <section class="chapter" id="c4-8">
+        <h2><span class="chno">4.8</span> The Trade-Off This Design Accepts</h2>
+        <p class="lede">Worth stating plainly rather than glossing over: the active-active model trades away the simplicity of a fixed master/standby pair — where one continuously mirrored relationship gives genuinely zero session loss on failover — in exchange for horizontal scaling and full utilization, with no idle standby capacity sitting around unused.</p>
+        <p>Buddy connection-state sync combined with bidirectional BGP IP failover (this Part) narrows that gap substantially — a buddy takes over both a dead node's connection state and its public identity, in both directions of every pairing. It remains, honestly, a mitigation rather than an absolute guarantee: propagation carries real if small lag, and a genuinely correlated failure of both members of a pair at once has nothing left to fail over to unless anti-affinity placement (4.5) is also in use. A workload that truly cannot tolerate any connection reset under any circumstance at all has a real reason to weigh a simpler, pair-based model's stronger session-loss guarantee against this design's better scaling and utilization — they are optimized for different priorities, and that trade-off deserves to be made deliberately rather than assumed away.</p>
       </section>
 
       <!-- ============ PART V ============ -->
@@ -823,14 +993,18 @@ flowchart LR
 
       <section class="chapter" id="c6-2">
         <h2><span class="chno">6.2</span> Fetched-at-Boot Artifacts</h2>
-        <p class="lede">A cloud provider's own boot-time configuration payload — the data handed to a fresh instance the moment it boots — has a hard, fixed size ceiling. This project's own agent source code, on its own, already exceeds a meaningful fraction of that ceiling before a single optional feature is even turned on.</p>
-        <p>The fix: every file that's identical across every node — the metrics exporter, the connection-sync daemon, and the control-plane package itself — is uploaded to object storage exactly once per deployment, as a plain, public-read object, and re-uploaded automatically only when its actual content changes. Every node then fetches its copy over a plain HTTP request at boot, instead of having that content embedded directly in its boot payload.</p>
+        <p class="lede">A cloud provider's own boot-time configuration payload — the data handed to a fresh instance the moment it boots, sometimes called "user data" or "cloud-init" — has a hard, fixed size ceiling: <strong>16,384 bytes</strong>, decoded. This project's own agent source code, on its own, already exceeds a meaningful fraction of that ceiling before a single optional feature is even turned on — the metrics exporter alone is around 32KB, the connection-sync daemon around 30KB, and the full control-plane package around 230KB. None of that fits inside a 16KB budget no matter how it's arranged.</p>
 
-        <h3>Public, not signed — a deliberate choice</h3>
-        <p>None of these fetched files contain secrets. Actual secrets are always injected separately, as small, per-node files with narrow permissions — this design never changes that. A plain public-read object plus a plain HTTP fetch avoids the need for a cloud-signing client to be preinstalled on a completely bare image just to pull this project's own non-secret source code.</p>
+        <h3>What this actually is, concretely</h3>
+        <p>Every file that's identical across every node — the metrics exporter, the connection-sync daemon, and the control-plane package itself — is uploaded to Object Storage exactly <strong>once per deployment</strong>, as a plain, public-read file, and re-uploaded automatically only when its actual content changes (so a redeploy that changes nothing skips the upload entirely). Instead of that content being embedded in a node's boot payload, the boot payload just contains one line telling the node where to fetch it from — something like:</p>
+        <pre class="code">curl -fsSL https://lng-artifacts.us-east-1.linodeobjects.com/lng-artifacts/exporter.py -o /opt/lng/exporter.py</pre>
+        <p>Every node runs that same <code>curl</code> command at boot, for each of the shared files it needs, and only then starts the corresponding service. The boot payload itself shrinks from "the whole file" to "one short line," which is what actually solves the size problem.</p>
+
+        <h3>Why public, not signed</h3>
+        <p>These specific files — the exporter, the sync daemon, the control-plane package — never contain secrets. Actual secrets (API tokens, passwords) are always handled a completely different way: written directly into a small, narrowly-permissioned file on the node itself at boot, never uploaded anywhere. So making <em>these particular</em> files public-read isn't a security trade-off — it's what avoids a real practical problem: fetching a <em>private</em> file from Object Storage normally requires a signing client (credentials, a signature calculation) already installed on the machine doing the fetching. A brand-new, bare cloud image doesn't have that installed yet, and installing it just to pull the project's own non-secret source code would be extra complexity for no real security benefit — a plain public URL and a plain <code>curl</code>, as shown above, is the simplest thing that actually works on a fresh image.</p>
 
         <h3>What's compressed instead of uploaded separately</h3>
-        <p>Everything that must stay embedded directly in a node's own boot payload — because it's genuinely unique to that one node, like its firewall ruleset, or because it carries a secret and therefore can never be public — is compressed before being embedded, which by itself comfortably closes most of the remaining size gap for a typical configuration.</p>
+        <p>Not every file can go through this shared-upload path — some content is different for every single node and can't be uploaded once and reused. The clearest example is each node's own firewall ruleset: it embeds that node's own specific addresses, so node A's ruleset isn't node B's ruleset. Content like that has to stay directly inside that one node's own boot payload rather than being fetched from a shared file. To keep it from blowing the same 16KB budget, it's compressed (gzip) before being embedded — cloud-init already knows how to transparently decompress gzip'd boot payloads, so nothing extra needs to run on the node to unpack it. Compression alone shrinks a typical per-node configuration file dramatically (plain text compresses very well), which is normally enough to fit it comfortably inside the remaining budget after the shared files above have already been moved out.</p>
       </section>
 
       <section class="chapter" id="c6-3">
@@ -974,9 +1148,38 @@ flowchart LR
 
       <section class="chapter" id="c8-1">
         <h2><span class="chno">8.1</span> The Firewall Model</h2>
-        <p>Every node's public and VPC interfaces sit behind a default-deny cloud firewall — nothing is reachable that isn't explicitly listed. Nodes never accept an inbound connection initiated from the internet at all; NAT and forwarding are unidirectional by construction, not merely by firewall policy.</p>
-        <p>The VLAN interface is handled completely differently, because the cloud provider's own firewall layer never inspects VLAN traffic at all — it simply isn't in that path. The node's own local packet-filter ruleset is the entire security boundary for VLAN traffic, and it is written accordingly: it keeps the metrics port open there (client instances need to reach it) while explicitly excluding administrative access from that interface.</p>
-        <p>The control plane's own host — wherever it runs — exposes its administrative and dashboard ports only to an explicitly configured administrator address range, never to the open internet by default, and exposes its roster API only to the private network the fleet actually lives on.</p>
+        <p class="lede">Every node's public and VPC interfaces sit behind a default-deny cloud firewall — <code>inbound_policy = DROP</code> as the catch-all, with only the specific ports below explicitly allowed. Nodes never accept an inbound connection initiated from the internet at all; NAT and forwarding are unidirectional by construction, not merely by firewall policy. Outbound traffic is unrestricted from every node (<code>outbound_policy = ACCEPT</code>) — nothing here limits what a node itself can reach.</p>
+        <p>The VLAN interface is handled completely differently, because the cloud provider's own firewall layer never inspects VLAN traffic at all — it simply isn't in that path. The node's own local packet-filter ruleset (<code>nftables</code>, not the cloud firewall) is the entire security boundary for VLAN traffic instead, and it's written accordingly: it keeps the metrics port open there (client instances need to reach it) while explicitly excluding administrative access from that interface.</p>
+
+        <h3>Every rule, exactly as created</h3>
+        <p>Three separate firewalls are created — one per role. Every rule below is scoped to the narrowest source it can be; the two CIDR groups referenced are <code>admin_cidrs</code> (an operator-supplied list — your office/VPN egress address, never left open to the whole internet) and "VPC-internal" (every subnet in the VPC this deployment uses, public and private alike).</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Firewall</th><th>Rule</th><th>Protocol / Port</th><th>Allowed from</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr><td rowspan="5">NAT node</td><td>nat-exporter</td><td>TCP 9200</td><td>VPC-internal</td><td>Prometheus scraping metrics/health from the control plane</td></tr>
+            <tr><td>natctl-api</td><td>TCP 8099</td><td>VPC-internal</td><td>the roster API, when natctl runs on this node (every-node placement)</td></tr>
+            <tr><td>conntrackd-sync</td><td>UDP 3780–4779</td><td>VPC-internal</td><td>buddy connection-state sync (Part IV, 4.3) — a range, not one port, since each peer relationship gets its own deterministically-derived port</td></tr>
+            <tr><td>ssh</td><td>TCP 22</td><td><code>admin_cidrs</code></td><td>operator access</td></tr>
+            <tr><td>icmp</td><td>ICMP</td><td><code>admin_cidrs</code></td><td>lets an operator ping a node's public IP directly — genuinely needed to observe a live BGP failover in progress</td></tr>
+            <tr><td rowspan="4">Control plane host</td><td>natctl-api</td><td>TCP 8099</td><td>VPC-internal</td><td>the roster API</td></tr>
+            <tr><td>grafana-prometheus</td><td>TCP 3000, 9090, 9093</td><td><code>admin_cidrs</code></td><td>the Grafana / Prometheus / Alertmanager UIs — human access only</td></tr>
+            <tr><td>prometheus-vpc-internal</td><td>TCP 9090</td><td>VPC-internal</td><td>every NAT node's own natctl querying Prometheus for autoscale metrics, in the every-node placement — a separate rule from the human-facing one above, on the same port but a different, narrower purpose</td></tr>
+            <tr><td>ssh</td><td>TCP 22</td><td><code>admin_cidrs</code></td><td>operator access</td></tr>
+            <tr><td>Client instance</td><td>ssh</td><td>TCP 22</td><td><code>admin_cidrs</code></td><td>the only inbound rule a client instance needs at all — the routing agent is purely outbound</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>The control plane's own host — wherever it runs — exposes its administrative and dashboard ports only to <code>admin_cidrs</code>, never to the open internet by default, and exposes its roster API only to the VPC the fleet actually lives on.</p>
+
+        <h3>How to change these rules</h3>
+        <p>These firewalls are ordinary Terraform resources in your own copy of the infrastructure code, not a managed setting hidden behind a control panel — you're expected to read, audit, and modify them like any other part of your own infrastructure.</p>
+        <ul>
+          <li><strong>Narrowing or widening who counts as an admin</strong> is the one change most operators will ever need, and it needs no code edit at all: set <code>admin_cidrs</code> in your Terraform variables to whatever office/VPN/bastion address range should have SSH and dashboard access, and re-apply.</li>
+          <li><strong>Opening an additional port</strong> (say, a custom monitoring agent you run yourself): add another <code>inbound { ... }</code> block to the relevant <code>linode_firewall</code> resource in <code>terraform/modules/vpc/main.tf</code>, following the exact same shape as the rules above — a label, a protocol, a port, and an explicit <code>ipv4</code> source list. Never widen a rule's source to <code>0.0.0.0/0</code> unless you specifically intend to expose that port to the entire internet.</li>
+          <li><strong>Attaching a completely separate firewall to just one instance</strong> (rather than editing the shared one every node uses) is also fully supported — Terraform's <code>linode_firewall_device</code> resource attaches any firewall to any instance independently; nothing about this project's own firewalls prevents an additional one from also being attached.</li>
+        </ul>
+        <p>Whatever you change, re-run <code>terraform plan</code> first and read it — a firewall rule is exactly the kind of change worth reviewing before it goes live.</p>
       </section>
 
       <section class="chapter" id="c8-2">
@@ -1046,87 +1249,102 @@ flowchart LR
 
       <section class="chapter" id="c10-2">
         <h2><span class="chno">10.2</span> Common Procedures</h2>
+        <p class="lede">Every procedure below assumes nothing beyond a working deployment — each command is the exact, complete step, not a paraphrase of one.</p>
 
         <h3>Raise the floor</h3>
-        <p>Increase the declared floor node count and re-apply the infrastructure configuration. Every connected client picks up the new node automatically on its next roster refresh — no other action is needed anywhere.</p>
+        <ol>
+          <li>From the Terraform environment directory: <pre class="code">terraform apply -var 'shared_pool_floor_nodes=&lt;new-count&gt;'</pre></li>
+          <li>Confirm the new node(s) reach a <code>running</code> state and pass their own health check (Part VII).</li>
+        </ol>
+        <p>Every connected client picks up the new node automatically on its next roster refresh — no other action is needed anywhere.</p>
 
         <h3>Adjust elastic bounds</h3>
-        <p>Change the minimum/maximum node bounds or any autoscaling setting for the pool and restart the control plane — the new bounds take effect on its very next reconcile pass.</p>
+        <ol>
+          <li>Edit the pool's <code>min_nodes</code>/<code>max_nodes</code> (or any <code>autoscale:</code> setting, Part V, 5.2) in the control plane's own configuration file (<code>natctl.yaml</code>).</li>
+          <li>Restart the service so it re-reads the file: <pre class="code">systemctl restart natctl</pre></li>
+        </ol>
+        <p>The new bounds take effect on its very next reconcile pass, roughly 15 seconds later.</p>
 
         <h3>Manually drain and remove an elastic node</h3>
-        <p>A specific elastic node can be told to drain directly — it's immediately excluded from the roster and deleted once its live connection count empties out, or once a configured drain timeout elapses, whichever comes first. A floor node can never be drained this way by design; reduce the floor's declared count instead.</p>
+        <pre class="code">python -m natctl.natctl_cli drain --config natctl.yaml --pool shared --node-id shared-elastic-103</pre>
+        <p>The named node is immediately excluded from the roster and deleted once its live connection count empties out, or once a configured drain timeout elapses, whichever comes first. A floor node can never be drained this way by design — the command refuses; reduce the floor's declared count instead (above).</p>
 
         <h3>Resize a node's instance plan</h3>
-        <p>Name the node (or nodes) and the target plan — see the full mechanics in Part V. Nodes are always processed one at a time, and the operation stops at the very first failure rather than continuing against a pool that's already short a node.</p>
+        <pre class="code">python -m natctl.natctl_cli resize --config natctl.yaml --pool shared \
+  --node-id shared-3 --instance-type g6-dedicated-8</pre>
+        <p><code>--node-id</code> can be repeated for more than one node — see the full mechanics (drain, warm/cold resize, rejoin) in Part V, 5.4. Nodes are always processed one at a time, and the operation stops at the very first failure rather than continuing against a pool that's already short a node.</p>
 
         <h3>Add an extra egress IP to a running node</h3>
-        <p>Extra IPs multiply a node's available port ceiling. This is currently available for floor nodes only — elastic nodes are provisioned single-IP.</p>
+        <ol>
+          <li>Raise <code>egress_ips_per_node</code> in Terraform and apply — this allocates the address but does not yet wire it into the node's live NAT rules.</li>
+          <li>SSH into the specific node and run: <pre class="code">/path/to/scripts/add-egress-ip.sh --ip &lt;new-ip&gt; --bucket-index 1 --bucket-count 2</pre></li>
+          <li>Confirm with <code>nft list table inet lng_nat</code> on that node.</li>
+        </ol>
+        <p>This currently only works for floor nodes — elastic nodes are provisioned single-IP.</p>
 
         <h3>Enable BGP IP failover for a pool</h3>
-        <p>This is the one procedure in day-2 operations that carries real reachability risk if rushed. Confirm buddy sync is already active for the pool, set the correct region's BGP identifier, and enable the feature. Automatic IP-share configuration then handles registering the actual failover relationship as pairings form — verify by watching the BGP daemon's own session state move from connecting to established shortly after a pairing forms, and by testing an actual failover from an external host in both directions before trusting it in production.</p>
+        <p>This is the one procedure in day-2 operations that carries real reachability risk if rushed.</p>
+        <ol>
+          <li>Confirm buddy sync (Part IV, 4.3) is already active for the pool.</li>
+          <li>Look up the correct BGP data-center identifier for your region and set it, along with <code>ip_failover_enabled = true</code>, in Terraform for the pool.</li>
+          <li><code>terraform apply</code>. This installs and starts FRR on every node in the pool with self-announcement already active — it does not yet call the cloud provider's IP-sharing API.</li>
+          <li>Watch buddy-sync take over from here automatically (its default activation delay lets the announcing side come up first): <code>journalctl -u lng-buddy-sync -f</code> on a paired node should show its buddy assignment, then shortly after, <code>journalctl -u natctl</code> should log that it called the IP-sharing API.</li>
+          <li>Confirm sessions actually establish: <code>vtysh -c "show bgp summary"</code> on a paired node — peers should show <code>Established</code>, not stuck on <code>Active</code>.</li>
+          <li>Test a real failover from an external host before trusting it in production: <code>ping</code> a node's public IP continuously, then <code>systemctl stop frr</code> on that node and confirm the ping keeps answering (now via its buddy). <code>systemctl start frr</code> to fail back.</li>
+        </ol>
 
         <h3>Enable the every-node control-plane placement</h3>
-        <p>Confirm the API token's scope, enable the setting, and re-apply. Confirm exactly one node's logs show it actively claiming leadership and every other node logging that it's a follower — every node should still answer read-only roster and status requests regardless of which one holds leadership.</p>
+        <ol>
+          <li>Confirm the API token already has the scopes in Part II, 2.5 — no new scope is needed for this specifically.</li>
+          <li>Set <code>natctl_on_node_enabled = true</code> in Terraform and apply. This recreates every floor node (Part II, 2.3) and turns natctl off on the dedicated observability host.</li>
+          <li>Confirm exactly one leader: <code>journalctl -u natctl -f</code> on any node should show exactly one node logging that it's now the leader, and every other node logging that it's a follower.</li>
+          <li>Confirm every node still answers reads regardless of leadership: <code>curl http://&lt;any node's private IP&gt;:8099/status</code>.</li>
+        </ol>
       </section>
 
       <section class="chapter" id="c10-3">
         <h2><span class="chno">10.3</span> Troubleshooting Playbook</h2>
+        <p class="lede">Each entry assumes you're starting from zero context on this specific alert — what it means, and the exact steps to actually resolve it.</p>
 
         <h3>A port-exhaustion alert fires</h3>
-        <p>Check the dashboard's port-headroom panel to identify the specific saturated node and IP. If the whole pool is under pressure, the autoscaler should be scaling out on its own — check whether it's blocked by cooldown or an already-reached maximum. If only one node is hot while others have headroom, that's expected at low connection counts and self-corrects as volume grows; if it persists, consider giving that node an extra egress IP.</p>
+        <ol>
+          <li>Open the dashboard's port-headroom panel (Part VII, 7.3) to identify the specific node and public IP that's actually saturated.</li>
+          <li><strong>If the whole pool is under pressure</strong> (every node's headroom is low, not just one): the autoscaler should already be scaling out on its own. Check <code>journalctl -u natctl</code> for whether it's blocked — either still inside its cooldown window after a recent scaling action, or already at the pool's configured maximum node count (Part V, 5.2). If it's at maximum and still under pressure, raise <code>max_nodes</code> for the pool (see "Adjust elastic bounds" above).</li>
+          <li><strong>If only one node is hot while others have headroom</strong>: this is expected at low connection counts — ECMP hashing isn't perfectly even across a small number of flows, and it self-corrects as volume grows. If it persists under real sustained load, give that specific node an extra egress IP ("Add an extra egress IP" above) to multiply its own port ceiling.</li>
+        </ol>
 
         <h3>A pool-below-floor alert fires</h3>
-        <p>Check how many nodes are actually healthy, not just present — the floor check is against healthy count specifically. A missing or unhealthy elastic node should self-heal automatically past its configured threshold; if it isn't, check the control plane's own logs and its API token's scope. A floor node that's unhealthy is never auto-replaced by design — the pool instead runs with extra elastic capacity compensating for it, which is expected behavior, not an error condition; the floor node itself still needs a human to fix it.</p>
+        <ol>
+          <li>Run <code>python -m natctl.natctl_cli nodes --config natctl.yaml --pool shared</code> — this shows every node and whether it's actually healthy, not just present. The floor check is against <em>healthy</em> count specifically, so a node that exists but is failing its health check doesn't count.</li>
+          <li><strong>If an elastic node is missing or unhealthy</strong>: it should self-heal automatically once it's been unhealthy past the configured threshold (default 90 seconds) — watch for a log line like <code>"elastic node ... has failed health checks for &gt;=Ns — draining for replacement"</code> in <code>journalctl -u natctl</code>. If that line never appears, check the API token's scope and any provisioning errors in the same log (a bad instance type, a region quota, etc.).</li>
+          <li><strong>If a floor node is unhealthy</strong>: this is never auto-replaced by design — the pool instead runs with extra elastic capacity compensating for it, which is expected, not an error. Fix the actual floor node yourself: SSH in and investigate (check <code>systemctl status nat-exporter</code> and <code>journalctl -u nat-exporter</code> first, since that's what the health check itself depends on), or replace the instance through a targeted re-apply of just that node.</li>
+          <li><strong>If a floor node is simply missing entirely</strong> (not present at all, not just unhealthy): that's infrastructure drift, not something natctl can or should fix — run <code>terraform plan</code> and reconcile it the normal way.</li>
+        </ol>
 
         <h3>A node has no sync buddy</h3>
-        <p>Confirm the pool actually has buddy sync enabled and its roster URL configuration is consistent. On the node itself, confirm the sync daemon is actively running and logging roster polls. Remember this is a mitigation, not a health signal — an unpaired node is still fully healthy and fully in rotation; it should never be treated as equivalent to a down node.</p>
+        <ol>
+          <li>Confirm buddy sync is actually turned on for the pool and its roster-URL configuration matches everywhere it's referenced (Part IV, 4.3).</li>
+          <li>On the node itself: <code>systemctl status lng-buddy-sync</code> should show it active, and <code>journalctl -u lng-buddy-sync -f</code> should show it polling the roster. If the service isn't running at all, <code>systemctl restart lng-buddy-sync</code> and watch the log for it picking up a peer assignment.</li>
+          <li>Remember this is a mitigation, not a health signal — an unpaired node is still fully healthy and fully in ECMP rotation. Don't page on this alone; it only means a <em>future</em> failure of that node won't have a warm buddy to fail over to yet.</li>
+        </ol>
 
         <h3>A client isn't picking up a fleet change</h3>
-        <p>Confirm the client can actually reach the roster URL at all. Check the routing agent's own logs for roster refreshes and healthy-set changes. Remember that membership and health can refresh on different cadences depending on configuration — a node present in the roster but failing its own health check is excluded from routing regardless of how fresh the membership list itself is.</p>
+        <ol>
+          <li>Confirm the client can reach the roster URL at all: <code>curl http://&lt;control-plane private IP&gt;:8099/fleet/&lt;pool&gt;</code> from the client instance itself. If this fails outright, it's a network/firewall problem, not a routing-agent problem.</li>
+          <li>On the client: <code>systemctl status lng-client-agent</code> and <code>journalctl -u lng-client-agent -f</code> — it logs every roster refresh and every change to its healthy-node set live.</li>
+          <li>Remember a node present in the roster but reporting unhealthy is excluded from routing regardless of how fresh the roster itself is — check the node's own health first (Part II, 2.1) before assuming the client is the problem.</li>
+        </ol>
 
         <h3>Rolling a security patch across the fleet</h3>
-        <p>Patch elastic nodes first via drain-and-replace — the pool naturally provisions fresh replacement capacity. For floor nodes, patch one at a time: drain it manually, patch and reboot it, confirm its health check passes again, then move to the next node — there is no automatic drain for floor nodes, since the system never touches them on its own.</p>
+        <ol>
+          <li><strong>Elastic nodes</strong>: drain-and-replace is simplest — drain each one ("Manually drain and remove an elastic node" above) and let the pool provision fresh, already-patched replacement capacity as it naturally scales.</li>
+          <li><strong>Floor nodes</strong>: patch one at a time, since there's no automatic drain for these. For each node: drain it manually (there's no built-in command for this on a floor node — coordinate it yourself, e.g. a temporary firewall rule, or SSH in and stop <code>nat-exporter</code> so its health check starts failing, which the routing agents pick up within seconds), patch and reboot it, confirm <code>curl http://&lt;node&gt;:9200/healthz</code> reports healthy again, then move to the next node.</li>
+        </ol>
       </section>
 
       <section class="chapter" id="c10-4">
         <h2><span class="chno">10.4</span> Where to Look First</h2>
         <p>In rough order of likelihood: a private-subnet instance's routing agent isn't running or can't reach the roster URL; the control plane's API token has expired or lost a scope; or the minimum/maximum bounds are misconfigured for actual current load. The architecture and this book describe exactly how the system is supposed to behave — when real behavior diverges from that, that gap is always the right starting point for debugging, not a sign the design itself is wrong.</p>
-      </section>
-
-      <!-- ============ APPENDIX ============ -->
-      <div class="part-open" id="part-11">
-        <div class="part-num">Appendix</div>
-        <h2 class="part-title">Compared to AWS NAT Gateway and GCP Cloud NAT</h2>
-        <p class="part-dek">An honest, side-by-side look at where a self-operated fleet wins, where the hyperscalers still win, and the one trade-off inherent to the active-active design itself.</p>
-        <div class="part-rule"></div>
-      </div>
-
-      <section class="chapter" id="c11-1">
-        <h2><span class="chno">A.1</span> Head-to-Head</h2>
-        <div class="table-wrap"><table>
-          <thead><tr><th></th><th>AWS NAT Gateway</th><th>GCP Cloud NAT</th><th>This system</th></tr></thead>
-          <tbody>
-            <tr><td>Management model</td><td>Fully managed, opaque</td><td>Fully managed, opaque</td><td>Self-operated — every configuration file is yours to read and audit</td></tr>
-            <tr><td>HA model</td><td>Managed redundancy within an availability zone</td><td>Managed, distributed</td><td>Active-active pool — a node failure loses only its own fraction of flows, no failover cliff</td></tr>
-            <tr><td>Scale-out for one heavy tenant</td><td>Automatic, one gateway per subnet/zone</td><td>Automatic</td><td>Spreads across the entire pool via ECMP, not capped at one pair</td></tr>
-            <tr><td>Simultaneous connections</td><td>55,000 per IP per destination</td><td>Dynamic allocation, roughly 64,500 per IP</td><td>55,000 per IP per destination, multiplied by however many egress IPs a node holds</td></tr>
-            <tr><td>Metrics granularity</td><td>Around 8 built-in metrics</td><td>Built-in monitoring plus optional connection logging</td><td>Full per-pool, per-node, per-IP, per-protocol metric label space</td></tr>
-            <tr><td>Cost model</td><td>Per-hour plus per-gigabyte processed</td><td>Per-hour plus per-gigabyte processed</td><td>Pure compute cost of the NAT instances — no per-gigabyte NAT surcharge</td></tr>
-            <tr><td>Custom firewall rules on the gateway itself</td><td>Not possible</td><td>Not possible</td><td>A full local packet-filter ruleset on every node</td></tr>
-            <tr><td>Multi-tenancy</td><td>One gateway per subnet/zone</td><td>One per VPC</td><td>Shared pool by default, dedicated pools on demand</td></tr>
-          </tbody>
-        </table></div>
-      </section>
-
-      <section class="chapter" id="c11-2">
-        <h2><span class="chno">A.2</span> Where the Hyperscalers Still Win</h2>
-        <p>Being candid: a fully managed NAT service is genuinely zero-ops. No operating-system patching, no capacity-planning judgment calls, no failover drills to run, no on-call for a kernel panic on a NAT node. Operating this system instead means operating real compute instances — the trade being made is control, cost, and observability depth in exchange for taking on real operational ownership. That ownership is made as low-friction as realistically possible, but it is never nothing.</p>
-      </section>
-
-      <section class="chapter" id="c11-3">
-        <h2><span class="chno">A.3</span> The Trade-Off Inside the Design Itself</h2>
-        <p>Separate from the comparison against the hyperscalers, there's a trade-off internal to the active-active model itself, worth stating plainly rather than glossing over: it trades away the simplicity of a fixed master/standby pair — where one continuously mirrored relationship gives genuinely zero session loss on failover — in exchange for horizontal scaling and full utilization, with no idle standby capacity sitting around unused.</p>
-        <p>Buddy connection-state sync combined with bidirectional BGP IP failover narrows that gap substantially — a buddy takes over both a dead node's connection state and its public identity, in both directions of every pairing. It remains, honestly, a mitigation rather than an absolute guarantee: propagation carries real if small lag, and a genuinely correlated failure of both members of a pair at once has nothing left to fail over to unless anti-affinity placement is also in use. A workload that truly cannot tolerate any connection reset under any circumstance at all has a real reason to weigh a simpler, pair-based model's stronger session-loss guarantee against this design's better scaling and utilization — they are optimized for different priorities, and that trade-off deserves to be made deliberately rather than assumed away.</p>
       </section>
 
       <div class="book-footer">
@@ -1198,7 +1416,7 @@ flowchart LR
       ["c4-1","4.1 Four Layers"],["c4-2","4.2 Pair & Triangle"],
       ["c4-3","4.3 Connection-State Sync"],["c4-4","4.4 BGP IP Failover"],
       ["c4-5","4.5 Anti-Affinity Placement"],["c4-6","4.6 Reserved IPs"],
-      ["c4-7","4.7 Unhealthy Node Handling"]
+      ["c4-7","4.7 Unhealthy Node Handling"],["c4-8","4.8 The Trade-Off Accepted"]
     ]},
     {label:"Part V", title:"Scaling", chapters:[
       ["c5-1","5.1 Two Tiers of Capacity"],["c5-2","5.2 The Autoscaling Algorithm"],
@@ -1224,10 +1442,6 @@ flowchart LR
     {label:"Part X", title:"Day-2 Operations", chapters:[
       ["c10-1","10.1 Pre-Production Checklist"],["c10-2","10.2 Common Procedures"],
       ["c10-3","10.3 Troubleshooting Playbook"],["c10-4","10.4 Where to Look First"]
-    ]},
-    {label:"Appendix", title:"vs. AWS & GCP", chapters:[
-      ["c11-1","A.1 Head-to-Head"],["c11-2","A.2 Where They Still Win"],
-      ["c11-3","A.3 The Internal Trade-Off"]
     ]}
   ];
 
