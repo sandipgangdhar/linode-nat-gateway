@@ -102,9 +102,28 @@ pools:
     # SSH access to primary_ssh_host and that this suite itself can ping
     # primary_public_ip directly (i.e. runs somewhere with real internet
     # egress, not from inside the VLAN).
+    #
+    # primary_restore_host (optional but strongly recommended): a
+    # BGP-independent way to reach the primary node specifically for the
+    # restore (`systemctl start frr`) step -- its VPC-private address is
+    # the natural choice. Real, live-reproduced bug this closes: while
+    # frr is stopped on the primary, its own public IP is answered by its
+    # buddy (that's the whole point of the drill) -- SSHing to
+    # primary_ssh_host at that exact moment structurally cannot reach the
+    # primary machine when primary_ssh_host IS the public IP, only
+    # whichever node currently wins the BGP announcement. Depending on
+    # this machine's ambient SSH host-key policy that either fails loudly
+    # (strict checking correctly refuses the changed host key -- a
+    # confusing false-negative FAIL for what is actually a fully-working
+    # feature) or, worse, silently restarts frr on the *buddy* instead
+    # (already running -- a harmless no-op that reports success) while
+    # the actual primary's frr stays down. Leave unset only if
+    # primary_ssh_host already points at something BGP-independent (e.g.
+    # you're already using a VPC/private address for it).
     ip_failover_drill:
       primary_public_ip: "172.237.46.98"
       primary_ssh_host: "172.237.46.98"
+      primary_restore_host: "10.60.32.20"
       failover_wait_seconds: 15
       max_acceptable_loss_percent: 0
 

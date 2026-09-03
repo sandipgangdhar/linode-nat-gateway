@@ -9,6 +9,20 @@
 # survives its own node dying, not just a monitoring dashboard saying
 # so). Then restarts frr and confirms the original node reclaims the IP.
 #
+# roadmap/M27-open-findings-and-load-verification.md: the restore step
+# (restarting frr on the primary) now targets `primary_restore_host` when
+# configured -- a BGP-independent address (its VPC-private IP, by
+# convention) -- instead of unconditionally reusing `primary_ssh_host`.
+# Live-reproduced bug this closes: while frr is down, the primary's own
+# public IP is answered by its buddy (the entire point of the drill), so
+# SSHing to `primary_ssh_host` at that exact moment when it IS the public
+# IP structurally cannot reach the primary machine -- either a confusing
+# false-negative FAIL (strict host-key checking correctly refuses the
+# now-different host), or worse, a silent no-op restart on the buddy
+# (already running) while the real primary's frr stays down. See
+# config.example.yaml's `primary_restore_host` comment for the full
+# writeup.
+#
 # -----------------------------------------------------
 # What this verifies (per pool with an `ip_failover_drill` block):
 #
@@ -126,6 +140,16 @@ def run(cfg: Config, report: Reporter) -> None:
             report.skipped(CHECK_ID, f"{pool_name}: {exc}", started)
             continue
 
+        # See this module's header comment and config.example.yaml's
+        # primary_restore_host comment: while frr is down, primary_ssh_host
+        # -- if it's the public IP -- structurally cannot reach the primary
+        # machine (its buddy is answering that address instead). Use a
+        # BGP-independent address for the restore step specifically when
+        # one's configured; fall back to primary_ssh_host unchanged
+        # otherwise (e.g. a deployment where primary_ssh_host already is
+        # BGP-independent).
+        restore_host = drill.get("primary_restore_host", primary_ssh_host)
+
         wait_seconds = int(drill.get("failover_wait_seconds", DEFAULT_FAILOVER_WAIT_SECONDS))
         max_loss = float(drill.get("max_acceptable_loss_percent", DEFAULT_MAX_ACCEPTABLE_LOSS_PERCENT))
         # +2 gives the ping a couple of seconds of headroom either side of the
@@ -142,14 +166,22 @@ def run(cfg: Config, report: Reporter) -> None:
         # Always attempt to restore frr, even if the loss measurement above
         # failed to parse -- never leave the node in a deliberately-broken
         # state just because this check hit an unrelated error.
-        start_proc = _ssh(ssh_user, ssh_key, primary_ssh_host, "systemctl start frr")
+        start_proc = _ssh(ssh_user, ssh_key, restore_host, "systemctl start frr")
 
         if failover_loss is None:
             report.failed(CHECK_ID, f"{pool_name}: could not parse ping output while frr was stopped on {primary_ssh_host} -- is `ping` installed where this suite runs?", started)
             continue
 
         if start_proc.returncode != 0:
-            report.failed(CHECK_ID, f"{pool_name}: failover loss was {failover_loss}%, but could not `systemctl start frr` again on {primary_ssh_host} to restore it: {start_proc.stderr.strip()}", started)
+            hint = (
+                "" if "primary_restore_host" in drill else
+                " -- primary_ssh_host is the public IP, which its buddy is answering right now during "
+                "the drill; set ip_failover_drill.primary_restore_host to a BGP-independent address "
+                "(its VPC-private IP, by convention) so this step reaches the primary machine "
+                "specifically, not whichever node currently wins the BGP announcement (see "
+                "config.example.yaml)"
+            )
+            report.failed(CHECK_ID, f"{pool_name}: failover loss was {failover_loss}%, but could not `systemctl start frr` again on {restore_host} to restore it: {start_proc.stderr.strip()}{hint}", started)
             continue
 
         if failover_loss > max_loss:
