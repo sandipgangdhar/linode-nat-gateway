@@ -724,9 +724,14 @@ flowchart TB
           <span class="co-label">Overriding the auto-detection: <code>--force</code></span>
           By default, the configuration script skips installing the routing agent on an instance that already has its own path to the internet — "Public + VLAN" and "VPC (1:1 NAT) + VLAN" in the table above are left untouched. Pass <code>--force</code> to install and start the agent anyway, handing it the default route regardless of what other path the instance already has:
           <pre class="code">./install-nat-client.sh --vlan-iface eth0 --vlan-ip 192.168.100.130/22 \
-  --natctl-url http://&lt;observability-private-ip&gt;:8099/fleet/shared \
+  --roster-url http://&lt;observability-private-ip&gt;:8099/fleet/shared \
   --force</pre>
           This is for a deliberate dual-path egress policy — a customer that wants every packet routed through the NAT fleet's pool of static IPs even though the instance technically has another way out.
+        </div>
+
+        <div class="callout warn">
+          <span class="co-label">A real constraint worth knowing before relying on <code>--force</code></span>
+          The routing agent still needs to actually reach the roster URL to do anything, and that endpoint is deliberately scoped to the fleet's own private network — not the public internet. On a "Public + VLAN" instance with no VPC interface of its own, there is no network path to a roster URL given as a private address, and the fetch (or the agent's own later polling) will simply fail. Two ways around this: give the instance a VPC interface too so it has a real path to the control plane, or fetch the agent binary via <code>--artifact-base-url</code> (the object-storage bucket directly, reachable from the public internet) — but the agent still can't build a working route without eventually reaching the roster itself. If it can't, its own fail-safe leaves the existing route alone rather than guessing — a safe failure, but not a working one, so plan the network path before reaching for <code>--force</code>, not after.
         </div>
       </section>
 
