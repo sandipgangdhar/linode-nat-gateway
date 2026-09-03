@@ -17,8 +17,8 @@
 #       every reconcile pass (natctl/main.py's write_file_sd()).
 #     - run_natctl=false (natctl_on_node_enabled -- natctl runs on every
 #       NAT node instead, nobody on THIS host ever writes that file):
-#       http_sd_configs polling one natctl instance's own
-#       GET /file_sd HTTP endpoint instead (controller/natctl/api.py's
+#       http_sd_configs polling ONE natctl instance PER ENABLED POOL's
+#       own GET /file_sd HTTP endpoint instead (controller/natctl/api.py's
 #       build_file_sd_groups()) -- the same target-group JSON shape
 #       either way, so this is a clean swap, not a different data
 #       format. REAL BUG, found live 2026-09-02 (roadmap/M2-security.md's
@@ -27,6 +27,20 @@
 #       forever -- every autoscale metric, dashboard panel, and alert
 #       backed by this job had no data the entire time that mode was in
 #       use, with no error surfaced anywhere.
+#       SECOND REAL BUG, found live M28 (roadmap/M28-full-production-
+#       readiness-pass.md's Phase 4 severe finding): the original fix
+#       above polled a SINGLE hardcoded node on the (wrong) assumption
+#       that any one instance answers identically for the whole fleet --
+#       a node's own knowledge of which pools exist is baked into its
+#       `user_data`/cloud-init config at ITS OWN creation time and never
+#       refreshed, so a node created before a second pool was enabled
+#       has no idea that pool exists and its /file_sd answers for its
+#       own pool only. Confirmed live: a dedicated pool had zero
+#       Prometheus/Grafana/alerting visibility for its entire lifetime.
+#       Fixed by polling one target PER ENABLED POOL instead (each
+#       pool's own first floor node, guaranteed by construction to know
+#       about its own pool) -- multiple http_sd_configs entries under
+#       one job, each independently polled and merged, not a single URL.
 #   See docs/OBSERVABILITY.md "Fleet-aware scraping".
 # - Also scrapes natctl's OWN :8099/metrics (fleet-wide node counts, see
 #   controller/natctl/api.py's render_natctl_metrics()) -- a single
@@ -91,16 +105,21 @@ scrape_configs:
   # autoscales, so static_configs would go stale — Prometheus picks up
   # additions/removals on its own, no natctl restart or Prometheus
   # reload needed. See docs/OBSERVABILITY.md "Fleet-aware scraping".
-%{ if natctl_http_sd_target != "" ~}
+%{ if length(natctl_http_sd_targets) > 0 ~}
   # M2-security.md regression fix (2026-09-02): natctl_on_node_enabled
   # -- THIS host doesn't run natctl, so nobody writes a local file_sd
-  # file. Poll natctl's own GET /file_sd HTTP endpoint instead (any one
-  # instance answers for the whole fleet, every pool -- see this file's
-  # header comment for the single-target trade-off).
+  # file. Poll natctl's own GET /file_sd HTTP endpoint instead. One
+  # entry PER ENABLED POOL (M28 fix -- see this file's header comment):
+  # a single shared target does not answer for every pool, since a
+  # node's own config only covers the pools that existed when IT was
+  # created. Prometheus merges targets from every entry below under this
+  # one job.
   - job_name: nat_exporter
     http_sd_configs:
-      - url: http://${natctl_http_sd_target}/file_sd
+%{ for target in natctl_http_sd_targets ~}
+      - url: http://${target}/file_sd
         refresh_interval: 30s
+%{ endfor ~}
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance

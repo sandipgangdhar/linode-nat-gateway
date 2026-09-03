@@ -94,11 +94,13 @@ locals {
       # this module also runs natctl itself -- see prometheus.yml.tftpl's
       # own header comment for the natctl-on-node limitation.
       scrape_natctl_metrics = var.run_natctl
-      # M2-security.md regression fix (found live, 2026-09-02): non-empty
-      # only when natctl_on_node_enabled -- see
-      # terraform/environments/example/main.tf's natctl_http_sd_target
+      # M2-security.md regression fix (found live, 2026-09-02), corrected
+      # for a second real bug found live in M28: non-empty only when
+      # natctl_on_node_enabled, one target per enabled pool (not one
+      # target for the whole fleet) -- see
+      # terraform/environments/example/main.tf's natctl_http_sd_targets
       # local for the full story.
-      natctl_http_sd_target = var.natctl_http_sd_target
+      natctl_http_sd_targets = var.natctl_http_sd_targets
     })
     alertmanager_yml       = file("${path.module}/../../../ansible/templates/alertmanager.yml")
     grafana_datasource_yml = file("${path.module}/../../../ansible/templates/grafana-datasource.yml")

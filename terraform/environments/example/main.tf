@@ -1074,17 +1074,31 @@ module "observability" {
   # permanently (confirmed live: an already-running natctl_on_node_enabled
   # deployment had never scraped a single node's exporter). Point
   # Prometheus at natctl's own GET /file_sd HTTP endpoint instead in
-  # that case -- ANY one natctl instance answers it identically for the
-  # WHOLE fleet (every pool), since every instance is built from the
-  # same composed natctl.yaml (local.natctl_pools covers every pool, not
-  # just the one this particular node happens to belong to). A single
-  # target is a real, accepted trade-off, not solved here: if that one
-  # node's natctl is down, Prometheus stops discovering NEW/removed
-  # nodes until it recovers, though it keeps scraping whatever targets
-  # it already knew about (Prometheus's normal target-caching
-  # behavior) -- multiple http_sd_configs entries for redundancy is a
-  # reasonable future improvement.
-  natctl_http_sd_target = var.natctl_on_node_enabled ? "${values(module.nat_fleet_shared.node_vpc_ips)[0]}:8099" : ""
+  # that case.
+  #
+  # SECOND real bug found live, M28 (roadmap/M28-full-production-
+  # readiness-pass.md's Phase 4 severe finding), correcting this local's
+  # own former assumption: polling a SINGLE hardcoded node does NOT
+  # answer identically for the whole fleet -- that assumed every
+  # instance's own `user_data`/cloud-init config always covers every
+  # pool, but it's baked in once at each node's own creation time and
+  # never refreshed, so a node created before a second pool was ever
+  # enabled has no idea that pool exists and answers /file_sd for its
+  # own pool only. Confirmed live: querying the single previously-
+  # hardcoded target directly returned targets for the shared pool only,
+  # zero for a dedicated pool that had existed for 10+ minutes at the
+  # time. Fixed by polling ONE TARGET PER ENABLED POOL instead of one
+  # target for the whole fleet -- each pool's own first floor node is,
+  # by construction, always aware of its own pool (it was created as
+  # part of enabling it), so this guarantees full coverage regardless of
+  # any other node's own config age. Prometheus's http_sd_configs
+  # supports multiple entries under one job (ansible/templates/
+  # prometheus.yml.tftpl loops over this list), each independently
+  # polled and merged -- not a single URL with a list value.
+  natctl_http_sd_targets = var.natctl_on_node_enabled ? compact(concat(
+    [try("${values(module.nat_fleet_shared.node_vpc_ips)[0]}:8099", "")],
+    [for m in module.nat_fleet_dedicated_acme : "${values(m.node_vpc_ips)[0]}:8099"],
+  )) : []
 
   # v6: reuse an existing Prometheus/Grafana instead of standing up a
   # second one -- see variables.tf's run_monitoring_stack and

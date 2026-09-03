@@ -99,10 +99,10 @@ variable "run_natctl" {
   default     = true
 }
 
-variable "natctl_http_sd_target" {
-  description = "roadmap/M2-security.md regression fix (found live, 2026-09-02): a <vpc-ip>:8099 address for Prometheus to poll GET /file_sd on instead of reading a local file, for the run_natctl=false (natctl_on_node_enabled) case where nobody on THIS host ever writes that file. Empty string (default) means \"use the local file_sd_configs path\" -- the original, still-correct behavior when run_natctl is true. See ansible/templates/prometheus.yml.tftpl for how this switches the nat_exporter scrape job's discovery mechanism."
-  type        = string
-  default     = ""
+variable "natctl_http_sd_targets" {
+  description = "roadmap/M2-security.md regression fix (found live, 2026-09-02), corrected for a second real bug found live in M28 (roadmap/M28-full-production-readiness-pass.md's Phase 4 severe finding): one <vpc-ip>:8099 address PER ENABLED POOL for Prometheus to poll GET /file_sd on instead of reading a local file, for the run_natctl=false (natctl_on_node_enabled) case where nobody on THIS host ever writes that file. A single shared target does NOT answer for every pool -- a node's own knowledge of which pools exist is baked in at its own creation time and never refreshed, so a node created before a second pool was enabled has no idea that pool exists. One target per pool's own first floor node guarantees full coverage regardless of any other node's config age. Empty list (default) means \"use the local file_sd_configs path\" -- the original, still-correct behavior when run_natctl is true. See ansible/templates/prometheus.yml.tftpl for how this switches the nat_exporter scrape job's discovery mechanism."
+  type        = list(string)
+  default     = []
 }
 
 # ---------------------------------------------------------------------------

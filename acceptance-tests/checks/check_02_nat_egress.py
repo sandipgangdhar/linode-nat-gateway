@@ -60,7 +60,6 @@ import subprocess
 import time
 
 import requests
-
 from lib.config import Config, MissingConfigError
 from lib.http_client import request_with_backoff
 from lib.reporter import Reporter
@@ -77,7 +76,16 @@ def _ssh_curl(ssh_user: str, ssh_key: str | None, host: str, target: str) -> str
     ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
     if ssh_key:
         ssh_cmd += ["-i", ssh_key]
-    ssh_cmd += [f"{ssh_user}@{host}", f"curl -s --max-time 10 {target}"]
+    # -4 is required, not optional: client-agent deliberately only manages
+    # the IPv4 default route (docs/ARCHITECTURE.md) and leaves IPv6
+    # untouched, so on any normal dual-stack client a plain curl to an
+    # AAAA-capable target goes out the client's own native IPv6 path --
+    # bypassing the NAT gateway entirely -- and this check would then
+    # report a false "traffic may be leaking" FAIL against a perfectly
+    # correct deployment. Found live, M28 (roadmap/M28-full-production-
+    # readiness-pass.md's acceptance-suite section) -- this reproduced on
+    # BOTH pools tested, not an edge case.
+    ssh_cmd += [f"{ssh_user}@{host}", f"curl -4 -s --max-time 10 {target}"]
     out = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=SSH_TIMEOUT_SECONDS, check=True)
     return out.stdout.strip()
 

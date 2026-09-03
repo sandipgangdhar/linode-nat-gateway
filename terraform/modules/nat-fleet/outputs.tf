@@ -50,7 +50,7 @@ output "node_private_ips" {
 }
 
 output "node_vpc_ips" {
-  description = "Each node's VPC (eth1) address -- what natctl itself listens on (:8099) and what natctl-api's firewall rule scopes to. Distinct from node_private_ips above (VLAN, for client-agent's ECMP nexthops) -- found needed live, 2026-09-02, while fixing a natctl_on_node_enabled deployment's Prometheus service-discovery gap (see terraform/environments/example/main.tf's natctl_http_sd_target local / roadmap/M2-security.md's regression note)."
+  description = "Each node's VPC (eth1) address -- what natctl itself listens on (:8099) and what natctl-api's firewall rule scopes to. Distinct from node_private_ips above (VLAN, for client-agent's ECMP nexthops) -- found needed live, 2026-09-02, while fixing a natctl_on_node_enabled deployment's Prometheus service-discovery gap (see terraform/environments/example/main.tf's natctl_http_sd_targets local / roadmap/M2-security.md's regression note, corrected for a second bug in roadmap/M28-full-production-readiness-pass.md's Phase 4 severe finding -- one target per enabled pool now, not one for the whole fleet)."
   value       = local.node_vpc_ips
 }
 

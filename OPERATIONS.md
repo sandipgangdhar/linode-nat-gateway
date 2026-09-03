@@ -17,13 +17,27 @@ Author: Sandip Gangdhar (https://github.com/sandipgangdhar)
 `buddy-sync` (conntrackd buddy-pair sync + BGP IP failover), and
 `client-agent` (ECMP routing on private-subnet instances) are shipped as
 pre-compiled, self-contained native binaries — not Python scripts. This
-doesn't change anything about how you deploy or operate this repository:
-Terraform still provisions everything, `natctl.yaml` still configures
-`natctl`, and every day-2 procedure below works exactly the same way. The
-only practical difference is that no node needs a Python interpreter
-installed — a compiled binary is fetched (from your own Object Storage
-bucket, via the same mechanism as every other config file this project
-uploads) and run directly.
+doesn't change how you deploy this repository: Terraform still
+provisions everything, and `natctl.yaml` still configures `natctl`. The
+only practical difference for the fleet-controller daemon itself is that
+no node needs a Python interpreter installed — a compiled binary is
+fetched (from your own Object Storage bucket, via the same mechanism as
+every other config file this project uploads) and run directly.
+
+**One real, currently-open exception, found live and not yet fixed: the
+`natctl_cli` operator commands referenced throughout "Common procedures"
+below (`status`, `nodes`, `drain`, `resize`, `check-orphans`,
+`set-client-config`) are NOT available in this repository.** They're
+invoked as `python -m natctl.natctl_cli ...` — a separate, Python-only
+operator CLI, distinct from the compiled `natctl` daemon binary above,
+and its source is not part of this compiled distribution (the compiled
+`natctl` binary you actually run is daemon-only: `natctl --config
+<path> [--once]`, no subcommands). Running any of the commands below
+as written will fail. Until this is fixed, the roster HTTP API (`GET
+/status`, `GET /fleet/<pool>`, served by your own deployment's `natctl`
+on port 8099) is the only day-2 introspection surface available out of
+the box, and it's read-only — draining or resizing a node currently has
+no supported path from this repository alone.
 
 ## `natctl.yaml` configuration reference
 
