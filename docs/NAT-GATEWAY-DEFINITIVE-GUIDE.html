@@ -1265,7 +1265,66 @@ flowchart LR
       </section>
 
       <section class="chapter" id="c10-2">
-        <h2><span class="chno">10.2</span> Common Procedures</h2>
+        <h2><span class="chno">10.2</span> The Operator CLI (<code>natctl-cli</code>)</h2>
+        <p class="lede">Every command below is a real, complete invocation against a live deployment — not a paraphrase. This is the tool for day-2 questions and actions the dashboard can show you but can't take for you.</p>
+
+        <h3>What it is, and why it's a separate binary from the daemon</h3>
+        <p><code>natctl</code> itself (Part II, 2.1) is a long-running daemon — it never takes commands, it just runs its reconcile loop forever, on its own, from the moment it starts. <code>natctl-cli</code> is a completely separate program: a one-shot tool an operator runs by hand, once, to ask a question or take a single action, then exits. Both are built from the same underlying fleet-management logic, so what <code>natctl-cli status</code> reports is exactly what the daemon itself currently believes — it's not a second, independent source of truth, just a different way of reaching the one that already exists.</p>
+
+        <h3>Getting it</h3>
+        <p>Download <code>natctl-cli</code> from this release's GitHub Release page — the same page this repository's own README links you to for the other four compiled binaries — then:</p>
+        <pre class="code">chmod +x natctl-cli</pre>
+        <p>Run it from wherever you operate the fleet from: your own laptop, the observability host, or any node itself all work equally well, as long as that machine can reach the Linode API and, for the commands that read live fleet state, the roster (Part II, 2.2). It needs no Python interpreter and no dependencies installed — it's a single, self-contained native binary, the same as <code>natctl</code> itself.</p>
+
+        <h3>The <code>--config</code> flag, on every command</h3>
+        <p>Every subcommand needs <code>--config &lt;path-to-natctl.yaml&gt;</code> — the same configuration file the daemon itself reads (Part II, 2.5). <code>natctl-cli</code> reads it fresh on every invocation and never modifies it. If you're running the CLI from a machine other than a live fleet node, you'll need your own local copy of that file (and the credentials it references) — see Part II, 2.5 for exactly what it contains and how secrets are kept out of the parts of it that get distributed widely.</p>
+
+        <h3><code>status</code> — the one-line fleet-wide health check</h3>
+        <pre class="code">./natctl-cli status --config natctl.yaml</pre>
+        <p><strong>Why:</strong> the fastest possible answer to "is everything okay right now," with nothing to open, load, or log into. <strong>When:</strong> first, before anything more specific — the natural opening move of any troubleshooting session, or a quick sanity check before/after a change.</p>
+        <pre class="code">shared: 3 node(s), 3 healthy
+dedicated-acme-corp: 3 node(s), 3 healthy</pre>
+
+        <h3><code>nodes</code> — every node in one pool, in detail</h3>
+        <pre class="code">./natctl-cli nodes --config natctl.yaml --pool shared</pre>
+        <p><strong>Why:</strong> where <code>status</code> gives a count, <code>nodes</code> gives the roster itself — every node's ID, private IP, health, and public IP(s). <strong>When:</strong> the moment <code>status</code> shows fewer healthy nodes than expected, to see exactly which node it is and what its current public-facing address is — the natural next step, not a replacement for <code>status</code>.</p>
+        <pre class="code">  shared-1                       private=10.60.32.20     healthy=True  public=['172.236.173.36']
+  shared-2                       private=10.60.32.21     healthy=True  public=['172.236.171.17']
+  shared-elastic-100             private=10.60.32.100    healthy=False public=['172.236.180.4']</pre>
+
+        <h3><code>drain</code> — retire one elastic node on your own schedule</h3>
+        <pre class="code">./natctl-cli drain --config natctl.yaml --pool shared --node-id shared-elastic-103</pre>
+        <p><strong>Why:</strong> you want a specific elastic node gone now, rather than waiting for the autoscaler to eventually decide it's no longer needed. <strong>When:</strong> rolling a patch across the fleet (10.4 below), moving load off a node ahead of planned maintenance elsewhere on it, or simply correcting a scale-out you no longer want.</p>
+        <p>The named node is excluded from the roster immediately — new connections stop landing on it at once — and deleted once its live connection count actually empties out, or once <code>drain_timeout_seconds</code> elapses, whichever comes first. Existing connections are allowed to finish; nothing is severed.</p>
+        <p>It refuses outright on a Terraform floor node, by design — floor capacity is Terraform's to manage, not natctl's (Part V, 5.1). Lower the floor count instead (<code>terraform apply -var 'shared_pool_floor_nodes=&lt;n-1&gt;'</code>) if you actually want to remove permanent capacity.</p>
+
+        <h3><code>resize</code> — change a node's instance plan in place</h3>
+        <pre class="code">./natctl-cli resize --config natctl.yaml --pool shared \
+  --node-id shared-3 --instance-type g6-dedicated-8</pre>
+        <p><strong>Why:</strong> a node's own traffic has genuinely outgrown its current plan. <strong>When:</strong> persistently high CPU/softirq or bandwidth against that one specific node — not a pool-wide capacity problem, which autoscaling already handles on its own without you touching this command at all.</p>
+        <p>Works identically on a floor or elastic node, and never deletes the node — it drains it, resizes the underlying instance, then rejoins it to the pool, all in one invocation. See Part V, 5.4 for the full mechanics (warm resize, falling back to cold automatically if Linode rejects the warm attempt, and what to do if a downsize doesn't fit on-disk).</p>
+        <p><code>--node-id</code> is repeatable for more than one node in the same invocation — <code>--node-id shared-3 --node-id shared-elastic-7</code> — but nodes are always processed strictly one at a time, and the whole operation stops at the very first failure rather than continuing against a pool that's already short a node.</p>
+        <p><strong>If the resized node is a Terraform floor node</strong>, the command prints the exact override block to add to your <code>.tfvars</code> immediately after — do it before the next <code>terraform apply</code>, or Terraform will see drift and try to revert the resize back to the pool's base instance type.</p>
+
+        <h3><code>check-orphans</code> — find elastic nodes a rebuild left behind</h3>
+        <pre class="code">./natctl-cli check-orphans --config natctl.yaml --pool shared
+./natctl-cli check-orphans --config natctl.yaml   # every pool at once, omit --pool</pre>
+        <p><strong>Why:</strong> <code>terraform destroy</code> only ever knows about the resources Terraform itself created — floor nodes. It has no idea an elastic node exists at all, since natctl provisions those dynamically, entirely outside Terraform's view. A rebuild can leave a real, billable elastic instance running from the previous environment with nothing left pointing at it. <strong>When:</strong> before and after any <code>terraform destroy</code>/<code>apply</code> rebuild of an environment — before, to see what already exists; after, to confirm the rebuild didn't leave anything behind.</p>
+        <p>Lists every node it currently sees, flags any elastic node that's unhealthy and not already draining as a <strong>SUSPECT ORPHAN</strong>, and tells you how to verify and clean one up. It's read-only — it never deletes anything itself, just reports, so it's always safe to run.</p>
+        <p>One honest limitation, stated plainly: this is a single, one-shot pass, not the long-running daemon's own continuously-updated view — a flagged node's unhealthy status reflects only the instant you ran the command, not how long it's actually been that way. Correlate against what you know you just created (your own <code>terraform apply</code> output) before deciding anything is genuinely orphaned.</p>
+
+        <h3><code>set-client-config</code> — override client fallback-probe behavior fleet-wide, live</h3>
+        <pre class="code">./natctl-cli set-client-config --config natctl.yaml --pool shared \
+  --fallback-probe-enabled true --fallback-probe-interval 10
+
+./natctl-cli set-client-config --config natctl.yaml --pool shared --clear</pre>
+        <p><strong>Why:</strong> every connected client trusts the roster's own computed health by default (Part II, 2.2) rather than independently probing each node itself — correct for almost every deployment, since it means a client never adds duplicate probe traffic the control plane is already generating. <strong>When:</strong> the rare occasion you judge that trust unacceptable for a specific pool (a single-node pool already turns the probe on automatically where it matters most, Part IV — this command is for deliberately overriding the default elsewhere, not for the case that's already handled).</p>
+        <p>Flips the fallback probe on or off, and sets its interval, for every currently-connected client in that pool at once — without touching <code>natctl.yaml</code> or restarting anything anywhere. <code>--clear</code> reverts to whatever the pool's own static configuration says. Every connected client picks up the change within one long-poll round-trip (Part II, 2.2) — seconds, not a deploy cycle.</p>
+        <p>Unlike every other subcommand here, this one doesn't build a local view of the fleet at all — it sends a real HTTP request straight to a running <code>natctl</code> process's own API. It defaults to talking to <code>localhost</code> (the common case: running this from the same host natctl runs on, or against a specific node in the every-node placement mode), so pass <code>--natctl-url</code> explicitly if you're operating from anywhere else.</p>
+      </section>
+
+      <section class="chapter" id="c10-3">
+        <h2><span class="chno">10.3</span> Common Procedures</h2>
         <p class="lede">Every procedure below assumes nothing beyond a working deployment — each command is the exact, complete step, not a paraphrase of one.</p>
 
         <h3>Raise the floor</h3>
@@ -1289,11 +1348,11 @@ flowchart LR
         <p>These settings are genuinely boot-time configuration, unlike a pool's <code>min_nodes</code>/<code>max_nodes</code> above — a restart is required for a change to take effect.</p>
 
         <h3>Manually drain and remove an elastic node</h3>
-        <pre class="code">python -m natctl.natctl_cli drain --config natctl.yaml --pool shared --node-id shared-elastic-103</pre>
-        <p>The named node is immediately excluded from the roster and deleted once its live connection count empties out, or once a configured drain timeout elapses, whichever comes first. A floor node can never be drained this way by design — the command refuses; reduce the floor's declared count instead (above).</p>
+        <pre class="code">./natctl-cli drain --config natctl.yaml --pool shared --node-id shared-elastic-103</pre>
+        <p>The named node is immediately excluded from the roster and deleted once its live connection count empties out, or once a configured drain timeout elapses, whichever comes first. A floor node can never be drained this way by design — the command refuses; reduce the floor's declared count instead (above). See 10.2 above for the full picture of when to reach for this.</p>
 
         <h3>Resize a node's instance plan</h3>
-        <pre class="code">python -m natctl.natctl_cli resize --config natctl.yaml --pool shared \
+        <pre class="code">./natctl-cli resize --config natctl.yaml --pool shared \
   --node-id shared-3 --instance-type g6-dedicated-8</pre>
         <p><code>--node-id</code> can be repeated for more than one node — see the full mechanics (drain, warm/cold resize, rejoin) in Part V, 5.4. Nodes are always processed one at a time, and the operation stops at the very first failure rather than continuing against a pool that's already short a node.</p>
 
@@ -1325,8 +1384,8 @@ flowchart LR
         </ol>
       </section>
 
-      <section class="chapter" id="c10-3">
-        <h2><span class="chno">10.3</span> Troubleshooting Playbook</h2>
+      <section class="chapter" id="c10-4">
+        <h2><span class="chno">10.4</span> Troubleshooting Playbook</h2>
         <p class="lede">Each entry assumes you're starting from zero context on this specific alert — what it means, and the exact steps to actually resolve it.</p>
 
         <h3>A port-exhaustion alert fires</h3>
@@ -1338,7 +1397,7 @@ flowchart LR
 
         <h3>A pool-below-floor alert fires</h3>
         <ol>
-          <li>Run <code>python -m natctl.natctl_cli nodes --config natctl.yaml --pool shared</code> — this shows every node and whether it's actually healthy, not just present. The floor check is against <em>healthy</em> count specifically, so a node that exists but is failing its health check doesn't count.</li>
+          <li>Run <code>./natctl-cli nodes --config natctl.yaml --pool shared</code> — this shows every node and whether it's actually healthy, not just present. The floor check is against <em>healthy</em> count specifically, so a node that exists but is failing its health check doesn't count.</li>
           <li><strong>If an elastic node is missing or unhealthy</strong>: it should self-heal automatically once it's been unhealthy past the configured threshold (default 90 seconds) — watch for a log line like <code>"elastic node ... has failed health checks for &gt;=Ns — draining for replacement"</code> in <code>journalctl -u natctl</code>. If that line never appears, check the API token's scope and any provisioning errors in the same log (a bad instance type, a region quota, etc.).</li>
           <li><strong>If a floor node is unhealthy</strong>: this is never auto-replaced by design — the pool instead runs with extra elastic capacity compensating for it, which is expected, not an error. Fix the actual floor node yourself: SSH in and investigate (check <code>systemctl status nat-exporter</code> and <code>journalctl -u nat-exporter</code> first, since that's what the health check itself depends on), or replace the instance through a targeted re-apply of just that node.</li>
           <li><strong>If a floor node is simply missing entirely</strong> (not present at all, not just unhealthy): that's infrastructure drift, not something natctl can or should fix — run <code>terraform plan</code> and reconcile it the normal way.</li>
@@ -1365,8 +1424,8 @@ flowchart LR
         </ol>
       </section>
 
-      <section class="chapter" id="c10-4">
-        <h2><span class="chno">10.4</span> Where to Look First</h2>
+      <section class="chapter" id="c10-5">
+        <h2><span class="chno">10.5</span> Where to Look First</h2>
         <p>In rough order of likelihood: a private-subnet instance's routing agent isn't running or can't reach the roster URL; the control plane's API token has expired or lost a scope; or the minimum/maximum bounds are misconfigured for actual current load. The architecture and this book describe exactly how the system is supposed to behave — when real behavior diverges from that, that gap is always the right starting point for debugging, not a sign the design itself is wrong.</p>
       </section>
 
@@ -1463,8 +1522,9 @@ flowchart LR
       ["c9-3","9.3 Onboarding a Client"]
     ]},
     {label:"Part X", title:"Day-2 Operations", chapters:[
-      ["c10-1","10.1 Pre-Production Checklist"],["c10-2","10.2 Common Procedures"],
-      ["c10-3","10.3 Troubleshooting Playbook"],["c10-4","10.4 Where to Look First"]
+      ["c10-1","10.1 Pre-Production Checklist"],["c10-2","10.2 The Operator CLI"],
+      ["c10-3","10.3 Common Procedures"],["c10-4","10.4 Troubleshooting Playbook"],
+      ["c10-5","10.5 Where to Look First"]
     ]}
   ];
 

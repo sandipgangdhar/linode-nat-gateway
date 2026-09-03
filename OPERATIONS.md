@@ -13,7 +13,10 @@ Author: Sandip Gangdhar (https://github.com/sandipgangdhar)
 
 ## How this repository is built
 
-`natctl` (the fleet controller), `nat-exporter` (the Prometheus exporter),
+`natctl` (the fleet controller), `natctl-cli` (the operator-facing day-2
+CLI — `status`/`nodes`/`drain`/`resize`/`check-orphans`/
+`set-client-config`, a separate entry point from the daemon with no
+subcommands of its own), `nat-exporter` (the Prometheus exporter),
 `buddy-sync` (conntrackd buddy-pair sync + BGP IP failover), and
 `client-agent` (ECMP routing on private-subnet instances) are shipped as
 pre-compiled, self-contained native binaries — not Python scripts. This
@@ -24,20 +27,22 @@ no node needs a Python interpreter installed — a compiled binary is
 fetched (from your own Object Storage bucket, via the same mechanism as
 every other config file this project uploads) and run directly.
 
-**One real, currently-open exception, found live and not yet fixed: the
-`natctl_cli` operator commands referenced throughout "Common procedures"
-below (`status`, `nodes`, `drain`, `resize`, `check-orphans`,
-`set-client-config`) are NOT available in this repository.** They're
-invoked as `python -m natctl.natctl_cli ...` — a separate, Python-only
-operator CLI, distinct from the compiled `natctl` daemon binary above,
-and its source is not part of this compiled distribution (the compiled
-`natctl` binary you actually run is daemon-only: `natctl --config
-<path> [--once]`, no subcommands). Running any of the commands below
-as written will fail. Until this is fixed, the roster HTTP API (`GET
-/status`, `GET /fleet/<pool>`, served by your own deployment's `natctl`
-on port 8099) is the only day-2 introspection surface available out of
-the box, and it's read-only — draining or resizing a node currently has
-no supported path from this repository alone.
+**`natctl-cli` is distributed differently from the other four,
+deliberately.** It's an operator's own tool, run by hand from wherever
+you choose to operate the fleet from (your laptop, the observability
+host, a node — your call) — never something a node needs automatically,
+so it isn't fetched by Terraform/cloud-init the way the other four are.
+Download it directly from this version's GitHub Release (the same page
+this repository's Terraform config and README point you at for every
+other binary), `chmod +x natctl-cli`, and run it from there — every
+`natctl_cli`/`natctl-cli` command in "Common procedures" below is the
+real, working command as written, invoked as `./natctl-cli <subcommand>
+--config natctl.yaml ...` (no `python -m` prefix — it's a compiled
+binary, not a Python module). **This was a real, live-found gap in
+earlier releases of this repository** (through `v0.1.14`): only the
+`natctl` daemon had a compiled binary, so every `natctl_cli` command
+documented here failed outright with "command not found" — fixed as of
+this release.
 
 ## `natctl.yaml` configuration reference
 
@@ -125,7 +130,7 @@ If you'd rather authorize the first pairing yourself before `natctl` touches it,
 **Resizing an existing node (floor or elastic) — the safe, in-place way**, via the operator CLI (handles drain → resize → rejoin for you, never deletes the node):
 
 ```bash
-python -m natctl.natctl_cli resize --config natctl.yaml --pool shared \
+./natctl-cli resize --config natctl.yaml --pool shared \
   --node-id shared-3 --instance-type g6-dedicated-8
 ```
 
@@ -142,7 +147,7 @@ terraform apply -var 'shared_pool_floor_nodes=<n>'
 
 **Manually drain and remove an elastic node**:
 ```bash
-python -m natctl.natctl_cli drain --config natctl.yaml --pool shared --node-id shared-elastic-103
+./natctl-cli drain --config natctl.yaml --pool shared --node-id shared-elastic-103
 ```
 Refuses to drain a Terraform floor node — lower the floor via Terraform instead.
 
@@ -152,15 +157,15 @@ Refuses to drain a Terraform floor node — lower the floor via Terraform instea
 
 **Checking fleet status**:
 ```bash
-python -m natctl.natctl_cli status --config natctl.yaml
-python -m natctl.natctl_cli nodes --config natctl.yaml --pool shared
+./natctl-cli status --config natctl.yaml
+./natctl-cli nodes --config natctl.yaml --pool shared
 ```
 
 ## HA fleet health check
 
 Run through this whenever you're asked "is this fleet actually highly available," or periodically as a standing check:
 
-1. **Enough healthy nodes?** `natctl_cli status`, or the roster's `healthy_count` vs `node_count`.
+1. **Enough healthy nodes?** `./natctl-cli status`, or the roster's `healthy_count` vs `node_count`.
 2. **Buddy-pair sync actually paired?** Grafana's "Buddy-Paired Nodes" panel, or `nat_conntrack_buddy_paired` (1/0 per node). `0` on a node in an otherwise-healthy pool means genuinely unpaired.
 3. **BGP sessions actually established?** "BGP Peers Established" vs "BGP Peers Configured" should match; `nat_bgp_peer_state` should be `1` per peer.
 4. **Every node announcing its own IP?** `nat_ip_failover_self_announced` should be `1` on every node with `ip_failover_enabled`.
