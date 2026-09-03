@@ -1270,12 +1270,18 @@ flowchart LR
         </ol>
         <p>Every connected client picks up the new node automatically on its next roster refresh — no other action is needed anywhere.</p>
 
-        <h3>Adjust elastic bounds</h3>
+        <h3>Adjust elastic bounds (<code>min_nodes</code> / <code>max_nodes</code>)</h3>
         <ol>
-          <li>Edit the pool's <code>min_nodes</code>/<code>max_nodes</code> (or any <code>autoscale:</code> setting, Part V, 5.2) in the control plane's own configuration file (<code>natctl.yaml</code>).</li>
+          <li>From the Terraform environment directory: <pre class="code">terraform apply -var 'shared_pool_max_nodes=&lt;new-value&gt;'</pre> (or <code>shared_pool_floor_nodes</code> for the pool's minimum — the same variable "Raise the floor" above uses).</li>
+        </ol>
+        <p>This writes the new value to a small, dedicated object the control plane rereads every reconcile pass — the very next pass, roughly 15 seconds later, is already sizing against it. No restart, and — unlike changing the floor node count's own boot-time settings below — no existing node of any kind is touched: the apply is a plain, in-place update to that one object, nothing else.</p>
+
+        <h3>Adjust other autoscaling tuning (watermarks, sustained-breach window, step caps, cooldown)</h3>
+        <ol>
+          <li>Edit the relevant <code>autoscale:</code> setting (Part V, 5.2) in the control plane's own configuration file (<code>natctl.yaml</code>).</li>
           <li>Restart the service so it re-reads the file: <pre class="code">systemctl restart natctl</pre></li>
         </ol>
-        <p>The new bounds take effect on its very next reconcile pass, roughly 15 seconds later.</p>
+        <p>These settings are genuinely boot-time configuration, unlike a pool's <code>min_nodes</code>/<code>max_nodes</code> above — a restart is required for a change to take effect.</p>
 
         <h3>Manually drain and remove an elastic node</h3>
         <pre class="code">python -m natctl.natctl_cli drain --config natctl.yaml --pool shared --node-id shared-elastic-103</pre>
