@@ -886,16 +886,20 @@ flowchart LR
 
       <section class="chapter" id="c5-2">
         <h2><span class="chno">5.2</span> The Autoscaling Algorithm</h2>
-        <p class="lede">Every reconcile pass, three independent capacity signals are checked. Any single one crossing its line is enough to trigger a scaling evaluation — a single exhausted resource degrades real traffic regardless of what the other two look like.</p>
+        <p class="lede">Every reconcile pass, four independent capacity signals are checked. Any single one crossing its line is enough to trigger a scaling evaluation — a single exhausted resource degrades real traffic regardless of what the others look like.</p>
 
         <div class="table-wrap"><table>
           <thead><tr><th>Signal</th><th>Scale-out trigger</th><th>Meaning</th></tr></thead>
           <tbody>
             <tr><td>Connection-tracking utilization</td><td>≥ 70%</td><td>The node's fixed-size connection table is nearly full — past 100%, new connections start failing outright.</td></tr>
-            <tr><td>Port headroom</td><td>≤ 15%</td><td>Fewer than 15% of usable source ports per destination remain free. Note the direction — low is the bad reading here, the mirror image of the other two.</td></tr>
+            <tr><td>Port headroom</td><td>≤ 15%</td><td>Fewer than 15% of usable source ports per destination remain free. Note the direction — low is the bad reading here, the mirror image of the others.</td></tr>
             <tr><td>Throughput ratio</td><td>≥ 85%</td><td>The node is using 85% of its real, measured network bandwidth ceiling for its specific instance plan.</td></tr>
+            <tr><td>CPU / softirq ratio</td><td>≥ 80%</td><td>The single busiest CPU core, anywhere in the pool, is spending 80%+ of its time on network packet-processing work — catches packet-rate-driven saturation neither of the other signals sees coming.</td></tr>
           </tbody>
         </table></div>
+
+        <h3>Why CPU/softirq gets its own signal</h3>
+        <p>A NAT gateway is fundamentally network-I/O-bound, and the busiest-core reading is deliberately not an average across cores or nodes. Which CPU core handles a given network card's packets is generally fixed by interrupt/queue affinity, not the ordinary process scheduler — so a flood of small packets can pin one specific core near 100% while every other core, on that node and every other node in the pool, sits comfortably idle. A node in that state can look completely healthy on connection-tracking, port usage, and even total throughput in bytes per second, while its actual packet-forwarding capacity is already maxed out. Averaging across cores or nodes would wash that signal out entirely; taking the single worst core anywhere in the pool is what actually catches it. This trigger only ever adds capacity — unlike connection-tracking utilization, it has no low-watermark side and never independently drives scale-in, since a quiet core for a pass or two is a much weaker signal that it's safe to shrink the pool than a sustained drop in connection count is.</p>
 
         <h3>The sizing formula</h3>
         <div class="formula">Required Capacity&nbsp; =&nbsp; Current Capacity &nbsp;×&nbsp; (Current Metric ÷ Target Metric)</div>
@@ -913,6 +917,7 @@ flowchart LR
           <thead><tr><th>Setting</th><th>Default</th><th>Meaning</th></tr></thead>
           <tbody>
             <tr><td>Target utilization (each signal)</td><td>50%</td><td>How far below its trigger line a scale-out action aims to land</td></tr>
+            <tr><td>CPU / softirq trigger</td><td>80%</td><td>No low-watermark equivalent — scale-out only, see above</td></tr>
             <tr><td>Sustained-breach passes</td><td>2</td><td>Consecutive breached passes required before a reading is trusted for sizing</td></tr>
             <tr><td>Max scale-out step</td><td>100% of current size</td><td>Never more than doubling in a single action</td></tr>
             <tr><td>Max scale-in step</td><td>50% of elastic capacity</td><td>Never removes more than half the current elastic node count at once</td></tr>
@@ -1074,6 +1079,7 @@ flowchart LR
           <tbody>
             <tr><td><code>conntrack_buddy_paired</code></td><td>Whether this node currently has a live sync buddy — deliberately separate from overall health, since an unpaired node is still fully healthy and fully in rotation</td></tr>
             <tr><td><code>conntrack_stat_total</code></td><td>Raw kernel connection-tracking accounting (inserts, drops, errors) — the same category of numbers AWS and GCP expose for their own NAT services</td></tr>
+            <tr><td><code>cpu_softirq_seconds_total</code></td><td>Cumulative per-core time spent on network packet-processing work — rate this per core and take the max across the pool for the busiest-core saturation ratio the autoscaler itself watches (Part V, 5.2)</td></tr>
             <tr><td><code>bgp_peers_total</code> / <code>bgp_peers_established_total</code></td><td>How many BGP peers this node has configured, and how many sessions are actually up</td></tr>
             <tr><td><code>bgp_peer_state</code></td><td>Per-peer session state — established or not</td></tr>
             <tr><td><code>ip_failover_self_announced</code></td><td>Whether this node is correctly announcing its own address — should read true on every healthy node; false means this node's own shared IP is not currently reachable via BGP at all</td></tr>

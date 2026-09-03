@@ -2,13 +2,18 @@
 # install-nat-client.sh (scripts)
 #
 # Turns any existing Linode into a client of this NAT gateway fleet:
-# sets a persistent static address on its VLAN interface, fetches the
-# compiled client-agent binary from your artifacts bucket, and installs
-# it as a systemd service that manages ECMP routing across every healthy
-# node in the pool -- the same mechanism Terraform's client-fleet module
-# wires up automatically for "vlan_only"/"vpc_vlan" client_groups
-# (ansible/cloud-init/client-node.yaml.tftpl), packaged here as a
-# standalone script for a server that already exists outside Terraform.
+# sets a persistent static address on its VLAN interface, and -- if this
+# instance doesn't already have a default route of its own -- fetches the
+# compiled client-agent binary from your artifacts bucket and installs it
+# as a systemd service that manages ECMP routing across every healthy
+# node in the pool. An instance that already has its own path out (a
+# public IP, or a VPC interface with 1:1 NAT) is left alone by default,
+# since there'd be nothing for client-agent to manage -- pass --force to
+# install it anyway, e.g. for a deliberate dual-path egress policy. Same
+# mechanism Terraform's client-fleet module wires up automatically for
+# "vlan_only"/"vpc_vlan" client_groups (ansible/cloud-init/
+# client-node.yaml.tftpl), packaged here as a standalone script for a
+# server that already exists outside Terraform.
 #
 # Does NOT attach the VLAN interface itself -- that's a Linode
 # account-level action (Cloud Manager, or `linode-cli linodes
@@ -193,6 +198,24 @@
 #      Match client-agent/lng-client-agent.env.example's own defaults --
 #      only override if you've tuned these elsewhere in your fleet.
 #
+# 11) --force / LNG_FORCE=true (optional flag, no value -- default false)
+#      DEFAULT BEHAVIOR: this script checks for an existing default route
+#      BEFORE touching client-agent. Found one (this instance already has
+#      its own path out -- a public IP via Network Helper/DHCP, or a VPC
+#      interface with 1:1 NAT) -> client-agent is NOT installed, since
+#      there's nothing for it to manage (the "public_vlan"/
+#      "public_vpc_vlan" interface_mode shapes, see docs/ARCHITECTURE.md
+#      section 3.1). Found none -> client-agent IS installed and takes
+#      over the default route ("vlan_only"/"vpc_vlan"). Pass --force to
+#      skip this check and install/start client-agent unconditionally --
+#      for a deliberate dual-path egress policy where you want every
+#      packet routed through this fleet's static IP pool even though the
+#      instance technically has another way out already. Once installed
+#      by ANY run of this script (forced or not), a later re-run without
+#      --force still reinstalls/restarts it rather than removing it --
+#      this flag only affects the decision on a run where client-agent
+#      isn't already present.
+#
 # -----------------------------------------------------
 # Best Practices:
 #
@@ -233,6 +256,7 @@ while [[ $# -gt 0 ]]; do
     --fallback-probe-enabled) LNG_FALLBACK_PROBE_ENABLED="$2"; shift 2 ;;
     --fallback-probe-interval) LNG_FALLBACK_PROBE_INTERVAL="$2"; shift 2 ;;
     --health-probe-timeout) LNG_HEALTH_PROBE_TIMEOUT="$2"; shift 2 ;;
+    --force) LNG_FORCE=true; shift ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -251,6 +275,7 @@ LNG_DNS_DEFAULT_ROUTE="${LNG_DNS_DEFAULT_ROUTE:-true}"
 LNG_FALLBACK_PROBE_ENABLED="${LNG_FALLBACK_PROBE_ENABLED:-false}"
 LNG_FALLBACK_PROBE_INTERVAL="${LNG_FALLBACK_PROBE_INTERVAL:-30}"
 LNG_HEALTH_PROBE_TIMEOUT="${LNG_HEALTH_PROBE_TIMEOUT:-1.5}"
+LNG_FORCE="${LNG_FORCE:-false}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "Must run as root." >&2
@@ -479,6 +504,29 @@ else
   echo "Applied ${LNG_VLAN_IP} to ${LNG_VLAN_IFACE} for this boot only -- see this script's final output for how it gets persisted across a reboot."
 fi
 
+# 3a. Decide whether client-agent belongs on this instance at all -- see
+#     the --force parameter comment above for the full reasoning. Order
+#     matters: an already-installed unit (a prior run of this script,
+#     forced or not) always wins, so a re-run never flip-flops based on
+#     whatever the route table happens to look like at that moment --
+#     only the FIRST run's decision (or an explicit --force) matters.
+if [[ "${LNG_FORCE}" == "true" ]]; then
+  LNG_INSTALL_CLIENT_AGENT=true
+  echo "--force given -- installing client-agent regardless of any existing default route."
+elif [[ -f /etc/systemd/system/lng-client-agent.service ]]; then
+  LNG_INSTALL_CLIENT_AGENT=true
+  echo "client-agent is already installed from a previous run of this script -- re-run will update it in place."
+elif ip route show default 2>/dev/null | grep -q .; then
+  LNG_INSTALL_CLIENT_AGENT=false
+  echo "This instance already has a default route via another interface -- client-agent will NOT be installed (nothing for it to manage)."
+  echo "Pass --force to install and start it anyway, e.g. for a deliberate dual-path egress policy."
+else
+  LNG_INSTALL_CLIENT_AGENT=true
+  echo "No existing default route found -- installing client-agent to provide one via the NAT fleet."
+fi
+
+if [[ "${LNG_INSTALL_CLIENT_AGENT}" == "true" ]]; then
+
 # 4. Fetch the compiled client-agent binary. python3, not curl -- every
 #    Ubuntu cloud image guarantees python3 (cloud-init itself needs it),
 #    but curl needs an apt-get install, which needs internet access this
@@ -551,6 +599,8 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now lng-client-agent
+
+fi  # LNG_INSTALL_CLIENT_AGENT
 
 # 7. Last-resort DNS auto-detection via the Linode regions API, only
 #    reached if step 3 found NOTHING on any other interface (e.g. a
@@ -710,8 +760,12 @@ PYEOF
   fi
 fi
 
-echo "Done. client-agent installed and started on ${LNG_VLAN_IFACE} (${LNG_VLAN_IP})."
-echo "Verify with:"
-echo "  ip route"
-echo "  journalctl -u lng-client-agent -f"
+if [[ "${LNG_INSTALL_CLIENT_AGENT}" == "true" ]]; then
+  echo "Done. client-agent installed and started on ${LNG_VLAN_IFACE} (${LNG_VLAN_IP})."
+  echo "Verify with:"
+  echo "  ip route"
+  echo "  journalctl -u lng-client-agent -f"
+else
+  echo "Done. ${LNG_VLAN_IP} applied to ${LNG_VLAN_IFACE} -- client-agent was NOT installed, since this instance already has its own default route (pass --force to install it anyway)."
+fi
 echo "  curl -s https://ifconfig.me"

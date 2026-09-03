@@ -148,6 +148,7 @@ pools:
       conntrack_low_watermark: 0.30
       port_headroom_low_watermark: 0.15
       throughput_high_watermark: 0.85
+      cpu_high_watermark: 0.80   # busiest core's softirq/packet-processing saturation ratio, from nat_exporter -- scale-out only, no low-watermark equivalent (see docs/AUTOSCALING.md)
       cooldown_seconds: 300
       drain_timeout_seconds: 180
       unhealthy_replace_after_seconds: 900   # see docs/RUNBOOK.md "zombie node" handling -- covers a fresh elastic node's full cloud-init time, not just steady-state failures
