@@ -100,24 +100,51 @@ locals {
   natctl_private_ip = cidrhost(module.vpc.public_subnet_cidr, 5)
 
   # v6: once natctl runs on every NAT node instead of the dedicated
-  # observability host (natctl_on_node_enabled), the roster API client-agent
-  # and buddy-sync poll has to point somewhere that's ACTUALLY running
-  # natctl -- the observability host may not even exist anymore (see
-  # create_observability_instance below). Points at the shared pool's first
-  # Terraform-managed floor node (cidrhost(public_subnet_cidr, 20), the same
-  # deterministic formula nat-fleet's own locals.node_vpc_ips uses for
-  # offset 20 + index 0) -- known at plan time with no dependency cycle,
-  # same trick natctl_private_ip already relies on above. HONEST CAVEAT:
-  # this is a single node, not a highly-available endpoint -- natctl's
-  # read-only roster work runs on every leader-eligible node (see
-  # main.py's reconcile_once()), so any node would answer, but this
-  # environment doesn't load-balance across them. See docs/RUNBOOK.md's
-  # natctl-on-node section for how to put a DNS round-robin or small L4
-  # balancer in front of every node's :8099 in production instead of
-  # relying on one node's availability.
+  # observability host (natctl_on_node_enabled), buddy-sync's roster poll
+  # has to point somewhere that's ACTUALLY running natctl -- the
+  # observability host may not even exist anymore (see
+  # create_observability_instance below). This is buddy-sync-only --
+  # NOT client-agent, which always gets its own roster URL via an
+  # explicit --roster-url at manual client-install time (see
+  # docs/RUNBOOK.md's "Onboard a client instance"), never through this
+  # local at all (config.py's PoolConfig.natctl_roster_base_url docstring
+  # confirms the same buddy-sync/IP-failover-only scope).
+  #
+  # REAL BUG, found live, M28 (roadmap/M28-full-production-readiness-
+  # pass.md's Phase 4 severe-finding live re-verification): the previous
+  # value here -- a single hardcoded address, the shared pool's first
+  # floor node (cidrhost(public_subnet_cidr, 20)) -- was reused
+  # IDENTICALLY for every pool's own nat-fleet module call below (see
+  # natctl_roster_url on module.nat_fleet_shared AND
+  # module.nat_fleet_dedicated_acme, both referencing this exact local).
+  # That single node only ever knows about its OWN pool ("shared") --
+  # the same "config baked in at each node's own creation time" root
+  # cause already fixed for leader election and Prometheus service
+  # discovery, but this specific consequence had gone unnoticed until
+  # live-verifying THOSE fixes: with a real, working leader now elected
+  # for dedicated-acme-corp, buddy-sync on that pool's own nodes still
+  # couldn't actually apply the computed IP-failover buddy assignment,
+  # because every roster fetch to the shared node's :8099/fleet/
+  # dedicated-acme-corp 404'd outright (confirmed live:
+  # journalctl -u lng-buddy-sync showed "roster fetch failed ...
+  # HTTP Error 404: Not Found", repeating indefinitely).
+  #
+  # Fixed the cleaner way, not by trying to compute a correct per-pool
+  # remote address: in natctl_on_node_enabled mode, buddy-sync and its
+  # OWN pool-aware natctl instance are ALWAYS co-located on the exact
+  # same node (that's the definition of this mode -- natctl runs on
+  # every NAT node) -- so localhost is unambiguously correct, trivially
+  # simple, and structurally immune to this whole class of bug (there is
+  # no "which node" question left to get wrong). The single-dedicated-
+  # host branch (natctl_on_node_enabled = false) keeps the real remote
+  # address -- there, buddy-sync (on NAT nodes) and natctl (on the
+  # separate observability host) are never co-located, so localhost
+  # would be wrong there specifically; that mode also only ever runs a
+  # single natctl process serving every pool, so it never had this bug
+  # to begin with.
   natctl_roster_base_url = (
     var.natctl_on_node_enabled
-    ? "http://${cidrhost(module.vpc.public_subnet_cidr, 20)}:8099"
+    ? "http://localhost:8099"
     : "http://${local.natctl_private_ip}:8099"
   )
 

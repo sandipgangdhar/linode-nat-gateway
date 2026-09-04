@@ -297,6 +297,27 @@ resource "linode_instance" "node" {
     # natctl package specifically.
     user_data = base64gzip(local.node_cloud_init[each.key])
   }
+
+  # NOTE on Network Helper (found live in M28, NOT fixed here -- see
+  # roadmap/M28-full-production-readiness-pass.md): Linode's Network Helper
+  # regenerates /etc/systemd/network/05-eth0.network on every boot from
+  # this instance's CURRENT IP-sharing state, and it renders every
+  # ipv4.shared address (buddy IP failover's whole mechanism --
+  # ip_failover_enabled, POST /networking/ips/share) as an extra static
+  # `Address=` line on eth0 -- not something FRR/BGP announces dynamically
+  # from lo the way docs/ARCHITECTURE.md §3.6 describes. Both buddies end
+  # up with the SAME address bound to eth0 simultaneously (confirmed live:
+  # lng-shared-1 booted with lng-shared-2's own IP statically on its eth0),
+  # breaking that node's own egress outright, and it recurs on every
+  # reboot. linode/linode provider ~> 2.9 (pinned in versions.tf) exposes
+  # NEITHER a top-level network_helper attribute NOR a helpers block on
+  # linode_instance/its config block for the implicit-config pattern used
+  # here (confirmed against this version's own provider schema) -- so this
+  # can't be fixed in HCL without a provider bump, which is out of scope
+  # for a live-testing pass. The elastic-node path (fleet.py's
+  # create_instance() payload, a raw POST /linode/instances call) CAN and
+  # does set network_helper=false directly, since that API field exists at
+  # instance-create time regardless of provider support.
 }
 
 # Extra egress IPs beyond each node's primary public IP. These stay on the
