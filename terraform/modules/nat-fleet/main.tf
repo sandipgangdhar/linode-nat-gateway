@@ -405,11 +405,17 @@ locals {
 
   node_cloud_init = {
     for node_id in local.node_ids : node_id => templatefile("${path.module}/../../../ansible/cloud-init/nat-node.yaml.tftpl", {
-      node_name           = node_id
-      node_id             = node_id
-      pool_name           = var.pool_name
-      vpc_ip              = local.node_vpc_ips[node_id]
-      vlan_ip             = local.node_vlan_ips[node_id]
+      node_name = node_id
+      node_id   = node_id
+      pool_name = var.pool_name
+      vpc_ip    = local.node_vpc_ips[node_id]
+      vlan_ip   = local.node_vlan_ips[node_id]
+      # M31 Finding 18: prefix lengths for the eth1/eth2 systemd-networkd
+      # DNS-scope-removal override files (see nat-node.yaml.tftpl's own
+      # runcmd comment for the full root cause) -- same source CIDRs
+      # already used elsewhere in this module, just also needed here.
+      vpc_prefix          = split("/", var.public_subnet_cidr)[1]
+      vlan_prefix         = split("/", var.vlan_cidr)[1]
       conntrack_max       = var.conntrack_max
       natctl_roster_url   = var.natctl_roster_url
       ip_failover_enabled = var.ip_failover_enabled

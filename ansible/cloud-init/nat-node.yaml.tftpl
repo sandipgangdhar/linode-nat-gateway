@@ -328,10 +328,90 @@ write_files:
         set community 65000:2
 
       ipv6 nht resolve-via-default
+
+  # M31 Finding 20: Linode's own Network Helper reflects every buddy
+  # IP-failover address this node is currently backing up onto eth0 AS
+  # A /24 (e.g. Address=172.236.171.170/24), not a /32 -- creating an
+  # on-link subnet route (172.236.171.0/24 dev eth0 src 172.236.171.170)
+  # that's MORE SPECIFIC than, and so wins over, the default route for
+  # anything else in that same /24 -- including, if Linode's own DNS
+  # resolvers happen to fall in it, this node's own outbound DNS
+  # queries. Live-reproduced during Run 5: natctl's own discover() calls
+  # to api.linode.com failed outright with a DNS NameResolutionError,
+  # leaving this node's roster permanently empty (roster_version stuck
+  # at 0) until fixed. Explicit /32 host routes for each DNS server,
+  # via the default gateway with this node's OWN address as source,
+  # override the wrongly-preferred on-link route for exactly those
+  # destinations without touching eth0's own addressing (which Network
+  # Helper must stay free to keep reflecting the fleet's live failover
+  # state). Unlike the one-time PUB_IP runcmd steps below, buddy
+  # addresses (and so this exact route conflict) can appear or change
+  # on ANY later reboot, not just first boot -- cloud-init's own runcmd
+  # never re-runs after first boot, so this has to be a real systemd
+  # unit that re-applies itself on every boot, not another runcmd line.
+  - path: /usr/local/bin/lng-dns-route-fixup.sh
+    owner: root:root
+    permissions: '0750'
+    content: |
+      #!/bin/sh
+      set -eu
+%{ if reserved_public_ip != "" ~}
+      PUB_IP="${reserved_public_ip}"
+%{ else ~}
+      PUB_IP=$(ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1 | head -n1)
+%{ endif ~}
+      GW=$(ip -4 route show default dev eth0 | awk '{for(i=1;i<=NF;i++) if ($i=="via") print $(i+1)}' | head -n1)
+      for dns_ip in $(grep '^DNS=' /etc/systemd/network/05-eth0.network 2>/dev/null | head -n1 | cut -d= -f2); do
+        ip route replace "$dns_ip/32" via "$GW" src "$PUB_IP" dev eth0
+      done
+
+  - path: /etc/systemd/system/lng-dns-route-fixup.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=LNG: pin host routes for Linode's DNS resolvers to this node's own address (M31 Finding 20)
+      After=systemd-networkd.service network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/lng-dns-route-fixup.sh
+
+      [Install]
+      WantedBy=multi-user.target
 %{ endif ~}
 
 runcmd:
   - sysctl --system
+  # M31 Finding 18: Linode's own boot-time "Network Helper" (its
+  # /etc/systemd/network/05-eth*.network files, regenerated on every boot,
+  # outside this project's control) statically assigns the SAME DNS
+  # resolver IPs to eth0 (public, DNS actually reachable) AND eth1 (VPC,
+  # deliberately isolated -- §3.0/§3.7 -- DNS is NOT reachable there).
+  # systemd-resolved then treats eth1 as a valid DNS scope alongside eth0,
+  # and a query that happens to race onto the eth1 path silently hangs
+  # until timeout instead of failing over -- this reproducibly caused
+  # exporter.py's own `curl https://...` egress_reachable probe (which
+  # needs to resolve a hostname) to intermittently time out and report a
+  # fully-functional node as unhealthy, live-reproduced and root-caused
+  # during M31 Run 5 after months of this exact symptom being attributed
+  # to unexplained "stuck VPC attachment" platform flakiness. These two
+  # lower-numbered (04-, processed before Network Helper's own 05-) files
+  # fully take over eth1/eth2's config each boot, republishing the same
+  # DHCP=no/Address= Network Helper already sets but omitting the DNS=
+  # line entirely -- so systemd-resolved never sees a scope for either
+  # link, and every DNS query goes out eth0 only, where it's actually
+  # answerable. IPv4 forwarding/NAT itself was never affected by this
+  # (confirmed live via a direct `ping 8.8.8.8` from an "unhealthy" node,
+  # which succeeded 0% loss the whole time) -- only the health check's
+  # own DNS-dependent methodology was.
+  - mkdir -p /etc/systemd/network
+  - |
+    printf '[Match]\nName=eth1\n\n[Network]\nDHCP=no\nAddress=${vpc_ip}/${vpc_prefix}\nIPv6PrivacyExtensions=false\n' > /etc/systemd/network/04-lng-eth1-no-dns.network
+  - |
+    printf '[Match]\nName=eth2\n\n[Network]\nDHCP=no\nAddress=${vlan_ip}/${vlan_prefix}\nIPv6PrivacyExtensions=false\n' > /etc/systemd/network/04-lng-eth2-no-dns.network
+  - systemctl restart systemd-networkd
   # v10: nftables.conf is fetched from Object Storage (per-node object,
   # uploaded by terraform/modules/nat-fleet -- differs per node by IP/CIDR,
   # so it isn't a candidate for the shared, one-per-environment artifacts
@@ -393,6 +473,11 @@ runcmd:
   # its frr:frr system user) is guaranteed present, before frr starts.
   - chown frr:frr /etc/frr/frr.conf
   - systemctl enable --now frr
+  # M31 Finding 20: --now runs it immediately (fixing this exact boot);
+  # `enable` is what actually matters for the reboot case this bug was
+  # found on -- see the write_files entries above for the full write-up.
+  - systemctl daemon-reload
+  - systemctl enable --now lng-dns-route-fixup.service
   - |
 %{ if reserved_public_ip != "" ~}
     # reserved_ip_enabled: this node's eth0 address is a Reserved IP,
@@ -411,6 +496,11 @@ runcmd:
     systemctl restart systemd-networkd
     vtysh -c "configure terminal" -c "router bgp 65001" -c "bgp router-id $PUB_IP" -c "address-family ipv4 unicast" -c "network $PUB_IP/32 route-map primary" -c "exit-address-family" -c "end" -c "write memory"
     echo "NAT_PUBLIC_IP=$${PUB_IP}" >> /etc/lng-buddy-sync/env
+    # M31 Finding 19: same unambiguous self-detected PUB_IP, also given to
+    # the exporter so its egress_reachable probe can pin its source
+    # address instead of picking ambiguously among eth0's addresses once
+    # a buddy IP is also present there -- see exporter.py's own comment.
+    echo "NAT_PUBLIC_IP=$${PUB_IP}" >> /etc/nat-exporter/env
 %{ endif ~}
 %{ if natctl_roster_url != "" ~}
   # `systemctl mask` (not just disable) the conntrack-tools package's own
