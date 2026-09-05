@@ -416,7 +416,7 @@ runcmd:
   # uploaded by terraform/modules/nat-fleet -- differs per node by IP/CIDR,
   # so it isn't a candidate for the shared, one-per-environment artifacts
   # module), not embedded -- see this file's v10 header note.
-  - curl -fsSL "${nftables_conf_url}" -o /etc/nftables.conf
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${nftables_conf_url}" -o /etc/nftables.conf
   - chown root:root /etc/nftables.conf
   - chmod 0640 /etc/nftables.conf
   - systemctl enable --now nftables
@@ -443,15 +443,15 @@ runcmd:
   # renderer must stay in sync with that one.
   - mkdir -p /opt/nat-exporter
 %{ if agent_distribution == "binary" ~}
-  - curl -fsSL "${exporter_bin_url}" -o /opt/nat-exporter/nat-exporter
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${exporter_bin_url}" -o /opt/nat-exporter/nat-exporter
   - chown root:root /opt/nat-exporter/nat-exporter
   - chmod 0750 /opt/nat-exporter/nat-exporter
 %{ else ~}
-  - curl -fsSL "${exporter_py_url}" -o /opt/nat-exporter/exporter.py
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${exporter_py_url}" -o /opt/nat-exporter/exporter.py
   - chown root:root /opt/nat-exporter/exporter.py
   - chmod 0750 /opt/nat-exporter/exporter.py
 %{ endif ~}
-  - curl -fsSL "${nat_exporter_service_url}" -o /etc/systemd/system/nat-exporter.service
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${nat_exporter_service_url}" -o /etc/systemd/system/nat-exporter.service
   - chown root:root /etc/systemd/system/nat-exporter.service
   - chmod 0644 /etc/systemd/system/nat-exporter.service
   - systemctl daemon-reload
@@ -526,16 +526,16 @@ runcmd:
   # see the exporter.py block above's matching comment.
   - mkdir -p /opt/lng-buddy-sync
 %{ if agent_distribution == "binary" ~}
-  - curl -fsSL "${buddy_sync_bin_url}" -o /opt/lng-buddy-sync/buddy-sync
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${buddy_sync_bin_url}" -o /opt/lng-buddy-sync/buddy-sync
   - chown root:root /opt/lng-buddy-sync/buddy-sync
   - chmod 0750 /opt/lng-buddy-sync/buddy-sync
 %{ else ~}
-  - curl -fsSL "${buddy_sync_py_url}" -o /opt/lng-buddy-sync/buddy_sync.py
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${buddy_sync_py_url}" -o /opt/lng-buddy-sync/buddy_sync.py
   - chown root:root /opt/lng-buddy-sync/buddy_sync.py
   - chmod 0750 /opt/lng-buddy-sync/buddy_sync.py
 %{ endif ~}
-  - curl -fsSL "${lng_buddy_sync_service_url}" -o /etc/systemd/system/lng-buddy-sync.service
-  - curl -fsSL "${conntrackd_peer_service_url}" -o /etc/systemd/system/conntrackd@.service
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${lng_buddy_sync_service_url}" -o /etc/systemd/system/lng-buddy-sync.service
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${conntrackd_peer_service_url}" -o /etc/systemd/system/conntrackd@.service
   - chown root:root /etc/systemd/system/lng-buddy-sync.service /etc/systemd/system/conntrackd@.service
   - chmod 0644 /etc/systemd/system/lng-buddy-sync.service /etc/systemd/system/conntrackd@.service
   - systemctl daemon-reload
@@ -591,18 +591,18 @@ runcmd:
   # controller/natctl/cloud_init.py's matching v21 comment.
 %{ if agent_distribution == "binary" ~}
   - mkdir -p /opt/natctl
-  - curl -fsSL "${natctl_bin_url}" -o /opt/natctl/natctl
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_bin_url}" -o /opt/natctl/natctl
   - chown root:root /opt/natctl/natctl
   - chmod 0750 /opt/natctl/natctl
 %{ else ~}
   - mkdir -p /opt/natctl/natctl
-  - curl -fsSL "${natctl_requirements_txt_url}" -o /opt/natctl/requirements.txt
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_requirements_txt_url}" -o /opt/natctl/requirements.txt
 %{ for rel_path, url in natctl_file_urls ~}
-  - curl -fsSL "${url}" -o /opt/natctl/natctl/${rel_path}
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${url}" -o /opt/natctl/natctl/${rel_path}
 %{ endfor ~}
   - chmod -R 0644 /opt/natctl/natctl
 %{ endif ~}
-  - curl -fsSL "${natctl_service_url}" -o /etc/systemd/system/natctl.service
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_service_url}" -o /etc/systemd/system/natctl.service
   - chown root:root /etc/systemd/system/natctl.service
   - chmod 0644 /etc/systemd/system/natctl.service
 %{ if agent_distribution != "binary" ~}
