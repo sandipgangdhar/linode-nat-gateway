@@ -282,6 +282,21 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+# This script configures a Linux network stack directly (sysctl under
+# /proc/sys/net/ipv4, `ip` nexthop/route commands, systemd) -- it must
+# run ON the target client instance itself, not on whatever machine is
+# driving your automation. Caught live, 2026-09-08: run on macOS, the
+# very first step below (a Linux-only sysctl) fails with a cryptic BSD
+# "sysctl: unknown oid" error that reads like a kernel/config problem
+# on the *target*, when the real issue is just the wrong host running
+# it -- macOS has no net.ipv4.fib_multipath_hash_policy at all. Fail
+# fast with an actionable message instead.
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "This script must run on the Linux client instance itself (detected: $(uname -s))." >&2
+  echo "SSH into the target Linode and run it there, or deliver it as that instance's own user-data -- see the usage comment at the top of this file." >&2
+  exit 1
+fi
+
 # 0. Set the ECMP multipath hash policy. This is a plain kernel sysctl,
 #    identical across every Linux distro/interface-generation this
 #    script supports (Ubuntu, Debian, systemd-networkd or ifupdown

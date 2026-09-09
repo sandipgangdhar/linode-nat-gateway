@@ -86,7 +86,7 @@ terraform apply
 #    OPERATIONS.md "Onboarding a client instance"): apply its static
 #    VLAN address and install client-agent, in one step.
 ./scripts/install-nat-client.sh --vlan-iface eth0 --vlan-ip <address>/<prefix> \
-  --natctl-url "$(terraform -chdir=terraform/environments/example output -raw natctl_roster_url_shared)"
+  --roster-url "$(terraform -chdir=terraform/environments/example output -raw natctl_roster_url_shared)"
 
 # 3. Open Grafana
 terraform -chdir=terraform/environments/example output grafana_url
