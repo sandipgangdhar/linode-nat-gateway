@@ -102,21 +102,33 @@ variable "vlan_label_shared" {
 }
 
 variable "vlan_cidr_shared" {
-  description = "VLAN address space for the shared pool -- covers both the pool's own static node IPs (vlan_ip_offset+) and its reserved static-IP window (vlan_reserved_ceiling_shared/vlan_usable_ceiling_shared). OK to overlap or nest with vlan_cidr_dedicated_acme in every case -- separate VLAN labels are fully isolated L2 domains on Linode regardless of numeric CIDR overlap (same as two unrelated VPCs both reusing 10.0.0.0/8). v13: vlan_label_shared and vlan_label_dedicated_acme are ALSO allowed to be the SAME value (\"same-VLAN mode\", e.g. one account-wide VLAN shared with VPN traffic) -- when they are, main.tf automatically excludes vlan_cidr_dedicated_acme's whole block from this pool's own computed reserved window (see locals.same_vlan_mode/vlan_usable_ceiling_shared and the \"same_vlan_dedicated_acme_reservation_valid\" check block, both in main.tf, and docs/RUNBOOK.md's \"Same-VLAN mode\" section), so the two pools' reserved windows never collide on that shared L2 segment. That mode does require vlan_cidr_dedicated_acme to be nested inside this CIDR and positioned after this pool's own floor+elastic node IPs -- enforced at plan time, not just documented."
+  description = "The FULL, real VLAN address space for the shared pool -- e.g. a customer's whole /16. Every node (floor, elastic, and the observability host when it joins this VLAN) configures THIS CIDR's own prefix length on its interface, so routing works across the entire VLAN, not just this project's own corner of it. 2026-09-11 range-simplification refactor: this project's own floor+elastic nodes only ever draw addresses from vlan_cidr_shared_reserved below (a small, wholly-owned sub-block nested inside this CIDR) -- everything else in vlan_cidr_shared is free for a customer's own automation to assign client addresses from, with no reservation-window sizing needed on their side at all. OK to overlap or nest with vlan_cidr_dedicated_acme -- separate VLAN labels are fully isolated L2 domains on Linode regardless of numeric CIDR overlap."
   type        = string
   default     = "192.168.100.0/22" # covers private-app-1 + private-app-2 clients
 }
 
+variable "vlan_cidr_shared_reserved" {
+  description = "A small sub-block nested inside vlan_cidr_shared, wholly owned by the shared pool's own floor+elastic nodes (and the observability host, when it joins this VLAN) -- nothing else should ever be assigned an address inside it. Communicate this to the customer as a clean, round boundary (\"everything from X onward is yours\") rather than sizing it precisely -- generous slack here is harmless. Must be nested inside vlan_cidr_shared -- validated at plan time (terraform/modules/nat-fleet's vlan_reserved_cidr_nested_in_vlan_cidr check). Replaces the old vlan_elastic_headroom_margin + client_static_vlan_reserved mechanism."
+  type        = string
+  default     = "192.168.100.0/24" # nested inside vlan_cidr_shared's own default /22 above
+}
+
 variable "vlan_label_dedicated_acme" {
-  description = "VLAN label the dedicated-acme example pool's nodes join. Only relevant if enable_dedicated_pool_example is true. See terraform/modules/nat-fleet's vlan_label. Can be DIFFERENT from vlan_label_shared (separate VLANs, the original/simplest setup) or the SAME value (\"same-VLAN mode\" -- see vlan_cidr_shared's description above and docs/RUNBOOK.md's \"Same-VLAN mode\" section); if you make it the same, vlan_cidr_dedicated_acme must be nested inside vlan_cidr_shared and positioned past the shared pool's own node offsets -- main.tf's \"same_vlan_dedicated_acme_reservation_valid\" check block validates this at plan time rather than leaving it to chance."
+  description = "VLAN label the dedicated-acme example pool's nodes join. Only relevant if enable_dedicated_pool_example is true. See terraform/modules/nat-fleet's vlan_label. Can be DIFFERENT from vlan_label_shared (separate VLANs, the original/simplest setup) or the SAME value (\"same-VLAN mode\" -- see vlan_cidr_shared's description above and docs/RUNBOOK.md's \"Same-VLAN mode\" section); if you make it the same, vlan_cidr_dedicated_acme_reserved must not overlap vlan_cidr_shared_reserved -- main.tf's \"vlan_cidr_reserved_no_overlap_same_vlan\" check block validates this at plan time rather than leaving it to chance."
   type        = string
   default     = "lng-vlan-acme"
 }
 
 variable "vlan_cidr_dedicated_acme" {
-  description = "VLAN address space for the dedicated-acme example pool -- see vlan_cidr_shared above for the same reasoning; overlapping/nesting inside vlan_cidr_shared's range is fine regardless of whether vlan_label_dedicated_acme matches vlan_label_shared or not. Only relevant if enable_dedicated_pool_example is true."
+  description = "The FULL, real VLAN address space for the dedicated-acme example pool -- see vlan_cidr_shared above for the same reasoning. Overlapping/nesting inside vlan_cidr_shared's range is fine regardless of whether vlan_label_dedicated_acme matches vlan_label_shared or not. Only relevant if enable_dedicated_pool_example is true."
   type        = string
   default     = "192.168.105.0/24"
+}
+
+variable "vlan_cidr_dedicated_acme_reserved" {
+  description = "Same as vlan_cidr_shared_reserved above, but for the dedicated-acme pool's own floor+elastic nodes. Must be nested inside vlan_cidr_dedicated_acme. Only relevant if enable_dedicated_pool_example is true."
+  type        = string
+  default     = "192.168.105.0/27" # nested inside vlan_cidr_dedicated_acme's own default /24 above
 }
 
 variable "authorized_keys" {
@@ -202,27 +214,6 @@ variable "placement_group_policy" {
 }
 
 # ---------------------------------------------------------------------------
-# v12: Reserved static-IP ranges are now COMPUTED (see main.tf's
-# vlan_reserved_ceiling_shared/vlan_usable_ceiling_shared locals), not
-# hand-typed -- you were previously required to pick an IP literal range
-# that (a) falls inside the right VLAN CIDR and (b) stays clear of every
-# node's static vlan_ip, entirely by hand, with no automated check.
-# That's exactly the kind of arithmetic a machine should do: main.tf now
-# derives both ranges directly from vlan_cidr_shared/vlan_cidr_dedicated_acme,
-# each pool's own vlan_ip_offset/elastic_ip_offset_start/max_nodes, and the
-# margin below -- see docs/RUNBOOK.md for the exact formula and an HONEST
-# CAVEAT about its limits. vlan_elastic_headroom_margin is the only knob
-# left; the rest of what used to be separate start/end inputs no longer
-# exists as separate inputs.
-# ---------------------------------------------------------------------------
-
-variable "vlan_elastic_headroom_margin" {
-  description = "Extra host-offset headroom (on top of elastic_ip_offset_start + max_nodes) reserved for floor+elastic static VLAN IPs before the pool's reserved static-IP window begins -- the SAME number is applied to both pools, so it's sized for the smallest configured VLAN CIDR, not the largest. See docs/RUNBOOK.md for why this can't be a mathematically perfect guarantee (natctl's elastic VLAN IP offset counter increments once per node EVER provisioned for a pool's whole lifetime, never reused when a node drains -- see controller/natctl/fleet.py's _next_elastic_offset) and is instead a practical buffer sized for realistic autoscaling churn. This environment's default is deliberately conservative because the dedicated-acme example pool's VLAN CIDR is only a /24 (vlan_cidr_dedicated_acme, 254 usable hosts) with elastic_ip_offset_start_dedicated_acme=150 and a 6-node ceiling already consuming addresses up to offset 176 -- a bigger margin here makes Terraform's cidrhost() call fail outright with \"prefix of 24 does not accommodate a host numbered N\" (a hard error, not a silent collision, which is the whole point of computing this instead of hand-typing it). If every pool in your environment uses a roomier CIDR (e.g. a /22 like vlan_cidr_shared's default), or you don't enable the dedicated-acme example pool at all, you can safely raise this for more autoscaling headroom."
-  type        = number
-  default     = 30
-}
-
-# ---------------------------------------------------------------------------
 # v6: natctl-on-node (opt-in) — removes the requirement for a dedicated
 # control-plane host by running natctl itself, leader-elected with STONITH
 # fencing, on every NAT node instead. See controller/natctl/leader_election.py,
@@ -298,17 +289,14 @@ variable "customer_prometheus_remote_write_password" {
 # client_groups variable and module.client_fleet that used to live here
 # are removed. This environment no longer creates client instances --
 # see docs/RUNBOOK.md's "Onboard a client instance" section for the
-# replacement (scripts/install-nat-client.sh, run against an instance
-# the customer's own automation already created).
+# replacement (scripts/configure-vlan-address.sh + scripts/install-nat-client.sh,
+# run against an instance the customer's own automation already created).
+#
+# 2026-09-11: client_static_vlan_reserved (a per-pool reserved-address
+# COUNT, carved out of a shared range) is also removed -- replaced by
+# vlan_cidr_shared_reserved/vlan_cidr_dedicated_acme_reserved above, a
+# wholly-owned sub-block this project's own nodes never leave, rather
+# than a window sized in the middle of a range the customer also shares.
+# See docs/ARCHITECTURE.md's write-up of this refactor for the full
+# reasoning.
 # ---------------------------------------------------------------------------
-# client_static_vlan_slot_size (per-slot address width) is removed
-# alongside client_groups -- it only ever existed to size a Terraform-
-# computed slot, which no longer exists. client_static_vlan_reserved
-# stays: it's still meaningful as "how much VLAN address space to leave
-# alone for manually-assigned client instances", independent of whether
-# Terraform ever subdivided that window into named slots.
-variable "client_static_vlan_reserved" {
-  description = "Number of VLAN addresses, per pool, reserved for manually-assigned client instances -- see docs/RUNBOOK.md's \"Onboard a client instance\" section. natctl's elastic-node allocator (fleet.py's _provision()) never hands out an address at or past this reservation's ceiling (main.tf's vlan_reserved_ceiling_shared/vlan_reserved_ceiling_dedicated_acme), so an operator can safely hand-assign an address anywhere in this window without racing natctl for it. Backward compatible: 0 (the default) reserves nothing, identical to the address layout before this variable existed."
-  type        = number
-  default     = 0
-}

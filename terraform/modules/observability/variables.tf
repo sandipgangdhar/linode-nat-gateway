@@ -82,6 +82,18 @@ variable "vpc_sibling_subnet_cidrs" {
   default     = []
 }
 
+variable "vlan_label" {
+  description = "2026-09-11: which VLAN this host joins, so a \"vlan_only\" client (no VPC interface at all) can reach the roster API in the default single-dedicated-host layout -- previously structurally impossible, this instance had no VLAN interface at all. Pass the shared pool's own vlan_label_shared (the default pool every tenant uses); a dedicated pool on a genuinely separate VLAN is unaffected. Default \"\" skips the VLAN interface entirely -- backward compatible for any caller that hasn't wired this yet."
+  type        = string
+  default     = ""
+}
+
+variable "vlan_ip" {
+  description = "This instance's static address on vlan_label, as a full \"host/prefix\" string (e.g. \"192.168.100.19/22\") -- ready to use directly as the interface's ipam_address, same shape terraform/modules/nat-fleet's own node_vlan_ips/vlan_cidr combination produces. Only meaningful when vlan_label is set."
+  type        = string
+  default     = ""
+}
+
 variable "firewall_id" {
   type = number
 }

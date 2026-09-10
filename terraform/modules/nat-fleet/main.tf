@@ -108,9 +108,15 @@ locals {
     local.node_ids[i] => cidrhost(var.public_subnet_cidr, var.private_ip_offset + i)
   }
 
+  # 2026-09-11 range-simplification refactor: addresses are now selected
+  # from vlan_reserved_cidr (this fleet's own small, wholly-owned
+  # sub-block), not var.vlan_cidr directly -- see that variable's own
+  # comment. ipam_address below still combines this HOST with vlan_cidr's
+  # own (wider) PREFIX LENGTH, so the interface itself is still correctly
+  # configured for routing across the whole VLAN.
   node_vlan_ips = {
     for i in range(var.node_count) :
-    local.node_ids[i] => cidrhost(var.vlan_cidr, var.vlan_ip_offset + i)
+    local.node_ids[i] => cidrhost(var.vlan_reserved_cidr, var.vlan_ip_offset + i)
   }
 
   # v7: per-node instance_type override (docs/VERTICAL-SCALING.md) -- lets
@@ -191,6 +197,31 @@ check "reserved_ip_pool_fits_node_count" {
   assert {
     condition     = !var.reserved_ip_enabled || length(var.reserved_ip_pool) <= var.node_count
     error_message = "reserved_ip_pool has ${length(var.reserved_ip_pool)} address(es) but node_count is only ${var.node_count} -- ${length(var.reserved_ip_pool) - var.node_count} of the supplied address(es) would never be assigned to any node in this pool. Either trim reserved_ip_pool to at most node_count entries, or raise node_count."
+  }
+}
+
+# 2026-09-11 range-simplification refactor: vlan_reserved_cidr must
+# actually be nested inside vlan_cidr, or "select addresses from the
+# reserved block, but configure the interface with vlan_cidr's own
+# (wider) prefix length" (see node_vlan_ips/ipam_address above) produces
+# an address the interface's own connected route wouldn't even cover --
+# a real, live-found class of bug this session (mirrors the identical
+# VPC-sibling-subnet routing gap found and fixed the same way,
+# docs/ARCHITECTURE.md §8.4). Plain integer-range containment, same
+# technique terraform/environments/example/main.tf already uses for its
+# own same-VLAN-mode nesting check.
+locals {
+  _vlan_cidr_int          = [for h in [cidrhost(var.vlan_cidr, 0), cidrhost(var.vlan_cidr, -1)] : sum([for i, o in split(".", h) : tonumber(o) * pow(256, 3 - i)])]
+  _vlan_reserved_cidr_int = [for h in [cidrhost(var.vlan_reserved_cidr, 0), cidrhost(var.vlan_reserved_cidr, -1)] : sum([for i, o in split(".", h) : tonumber(o) * pow(256, 3 - i)])]
+}
+
+check "vlan_reserved_cidr_nested_in_vlan_cidr" {
+  assert {
+    condition = (
+      local._vlan_reserved_cidr_int[0] >= local._vlan_cidr_int[0] &&
+      local._vlan_reserved_cidr_int[1] <= local._vlan_cidr_int[1]
+    )
+    error_message = "vlan_reserved_cidr (${var.vlan_reserved_cidr}) is not nested inside vlan_cidr (${var.vlan_cidr}) -- every node still configures vlan_cidr's own prefix length on its interface, so an address outside vlan_cidr's range would never actually be reachable over this VLAN. Pick a vlan_reserved_cidr that falls entirely within vlan_cidr."
   }
 }
 

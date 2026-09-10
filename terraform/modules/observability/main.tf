@@ -160,6 +160,27 @@ resource "linode_instance" "observability" {
     }
   }
 
+  # 2026-09-11: genuine VLAN presence for this host, added specifically so
+  # a "vlan_only" client (no VPC interface at all) can reach the roster
+  # API in the default single-dedicated-host layout (natctl_on_node_enabled
+  # = false) -- previously structurally impossible, since this instance
+  # had no VLAN interface at all (see docs/ARCHITECTURE.md's client
+  # onboarding notes). Joins the SHARED pool's own VLAN specifically (the
+  # default pool every tenant uses) -- a dedicated pool on a genuinely
+  # separate VLAN is unaffected by this and still needs
+  # natctl_on_node_enabled (or a VPC-capable client) for the same reason
+  # as before. Only attached when var.vlan_label is actually given (empty
+  # string skips this interface entirely) -- backward compatible for any
+  # caller that hasn't wired the new variables yet.
+  dynamic "interface" {
+    for_each = var.vlan_label != "" ? [1] : []
+    content {
+      purpose      = "vlan"
+      label        = var.vlan_label
+      ipam_address = var.vlan_ip # full "host/prefix" string -- caller combines them, same as nat-fleet's own node_vlan_ips/vlan_cidr pattern
+    }
+  }
+
   metadata {
     # v9: gzip before base64 -- see nat-fleet/main.tf's matching comment.
     # v15: the dashboard JSON (~18KB raw) is no longer part of this

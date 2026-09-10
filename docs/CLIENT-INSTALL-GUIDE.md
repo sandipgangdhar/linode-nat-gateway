@@ -52,22 +52,28 @@ half-working state.
     --purpose vlan --label <vlan-label> --ipam_address <cidr>
   ```
   (power the instance off first if replacing an existing interface).
-- **Pick a VLAN address from your pool's reserved static-client
-  window** (`client_static_vlan_reserved` in `terraform.tfvars`) so it
-  can't collide with a floor/elastic node's own range -- there is no
-  reservation system for manually-assigned clients, only a live
-  ARP-probe collision check at apply time (see
-  `configure-vlan-address.sh`'s own header comment).
+- **Pick a VLAN address from outside your pool's dedicated reserved
+  sub-block** (`vlan_cidr_shared_reserved`/`vlan_cidr_dedicated_acme_reserved`
+  in `terraform.tfvars` -- that block belongs to this pool's own
+  floor/elastic/observability nodes only) so it can't collide with a
+  node's own range -- there is no reservation system for
+  manually-assigned clients, only a live ARP-probe collision check at
+  apply time (see `configure-vlan-address.sh`'s own header comment).
 - **Know your pool's roster URL — and whether that's a VPC or VLAN
   address depends on where natctl itself runs, not on the client:**
   - **Default (single dedicated control-plane host)**: natctl runs on
-    the `observability` instance, which only has **public + VPC**
-    interfaces attached (no VLAN at all). Use its **VPC private IP**:
-    `http://<observability-instance-VPC-private-ip>:8099/fleet/<pool>`.
-    This also means the *client* needs a VPC interface of its own
-    (`vpc_vlan` or `public_vpc_vlan` mode) to route there at all -- a
-    `vlan_only` client has no VPC interface and structurally cannot
-    reach a VPC-only natctl.
+    the `observability` instance, which has public + VPC interfaces
+    plus (since 2026-09-11) a **VLAN** interface on the shared pool's
+    own VLAN. **A client on that same VLAN can use its VLAN address
+    directly**, `vlan_only` included:
+    `http://<observability-instance-VLAN-ip>:8099/fleet/shared`. A
+    client on a *different* VLAN (a dedicated tenant pool with its own
+    separate VLAN) still needs its own VPC interface (`vpc_vlan` or
+    `public_vpc_vlan` mode) and the observability instance's **VPC
+    private IP** instead:
+    `http://<observability-instance-VPC-private-ip>:8099/fleet/<pool>`
+    -- the observability instance only ever joins one VLAN, so a
+    `vlan_only` client on a different VLAN structurally cannot reach it.
   - **`natctl_on_node_enabled = true`**: natctl runs on every NAT node,
     and every NAT node has a VLAN interface (`eth2`) -- **prefer a
     node's VLAN IP here, even if this client also has a VPC interface**

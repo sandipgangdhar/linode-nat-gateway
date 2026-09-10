@@ -71,12 +71,17 @@ variable "vlan_label" {
 }
 
 variable "vlan_cidr" {
-  description = "CIDR used to compute this fleet's deterministic static VLAN IPs (via cidrhost + vlan_ip_offset), same pattern as public_subnet_cidr for VPC. Must not overlap with any other fleet/pool's offset range sharing the same VLAN."
+  description = "The FULL, real VLAN CIDR every node's interface is actually configured with (its prefix length is what ipam_address and the rendered cloud-init .network file both use) -- e.g. a customer's whole /16. 2026-09-11 range-simplification refactor: this is no longer where addresses are SELECTED from (see vlan_reserved_cidr below) -- it's purely the source of the prefix length, so routing still works to whatever's outside this fleet's own reserved sub-block (a customer's own clients elsewhere in the same VLAN)."
+  type        = string
+}
+
+variable "vlan_reserved_cidr" {
+  description = "A small sub-block nested inside vlan_cidr, wholly owned by this fleet -- floor (and, via the identical field on PoolConfig, elastic) nodes' addresses are selected from HERE via cidrhost + vlan_ip_offset, not from vlan_cidr directly. Nothing else (a customer's own clients, another pool sharing the same physical VLAN) should ever be assigned an address inside this block -- see docs/RUNBOOK.md's onboarding guidance for the operator-facing convention this depends on. Replaces the old vlan_elastic_headroom_margin/client_static_vlan_reserved-derived ceiling."
   type        = string
 }
 
 variable "vlan_ip_offset" {
-  description = "Starting host offset within vlan_cidr for this fleet's static VLAN IPs."
+  description = "Starting host offset within vlan_reserved_cidr for this fleet's static VLAN IPs."
   type        = number
   default     = 20
 }

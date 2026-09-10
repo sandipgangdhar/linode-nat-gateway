@@ -18,9 +18,9 @@
 #    that module's header comment and docs/RUNBOOK.md "Bring your own
 #    VPC".
 # 2) locals (natctl_private_ip / vlan_*_shared / vlan_*_dedicated_acme /
-#    vlan_reserved_ceiling_*) - Deterministic addressing so every module
+#    vlan_cidr_*_reserved) - Deterministic addressing so every module
 #    below can reference natctl's IP, each pool's VLAN, and each pool's
-#    reserved static-IP ceiling without a cross-module dependency cycle.
+#    own reserved sub-block without a cross-module dependency cycle.
 # 3) module.nat_fleet_shared     - The default pool every tenant uses
 #    unless assigned elsewhere.
 # 4) module.nat_fleet_dedicated_acme - An optional second pool
@@ -159,295 +159,100 @@ locals {
   # purpose — VLAN (L2) and VPC (L3) are unrelated fabrics here. v11:
   # sourced from variables.tf (overridable from terraform.tfvars) instead
   # of hardcoded here -- see that file's matching v11 comment block.
-  vlan_label_shared         = var.vlan_label_shared
-  vlan_cidr_shared          = var.vlan_cidr_shared
-  vlan_label_dedicated_acme = var.vlan_label_dedicated_acme
-  vlan_cidr_dedicated_acme  = var.vlan_cidr_dedicated_acme
+  vlan_label_shared                 = var.vlan_label_shared
+  vlan_cidr_shared                  = var.vlan_cidr_shared
+  vlan_cidr_shared_reserved         = var.vlan_cidr_shared_reserved
+  vlan_label_dedicated_acme         = var.vlan_label_dedicated_acme
+  vlan_cidr_dedicated_acme          = var.vlan_cidr_dedicated_acme
+  vlan_cidr_dedicated_acme_reserved = var.vlan_cidr_dedicated_acme_reserved
 
   # v12: single source of truth for every pool's addressing offsets --
   # previously these were separate hardcoded literals scattered across the
   # nat_fleet_shared/nat_fleet_dedicated_acme module calls (vlan_ip_offset,
   # private_ip_offset) and the natctl_pool_shared/natctl_pool_dedicated_acme
-  # locals (elastic_ip_offset_start) below. Naming them once here lets the
-  # reserved-ceiling computation immediately below reference the SAME numbers those
-  # blocks use, instead of a human keeping two copies in sync by hand.
+  # locals (elastic_ip_offset_start) below.
   vlan_ip_offset                         = 20 # shared by both pools -- see each module call's private_ip_offset/vlan_ip_offset for why this is safe (separate address spaces)
   elastic_ip_offset_start_shared         = 100
   elastic_ip_offset_start_dedicated_acme = 150
+  # 2026-09-11: the observability host's own static VLAN address (when it
+  # joins the shared pool's VLAN -- see module.observability's vlan_label/
+  # vlan_ip below) sits at a fixed offset just below where floor nodes
+  # start -- comfortably clear of both the floor range (vlan_ip_offset+)
+  # and the elastic range (elastic_ip_offset_start_shared+) by
+  # construction, no separate collision check needed for a single fixed
+  # offset the way floor/elastic's own ranges need one.
+  observability_vlan_ip_offset = local.vlan_ip_offset - 1
+
   # v16: named here (was two separate hardcoded "2" literals -- one on
   # module.nat_fleet_dedicated_acme's node_count below, one on
-  # natctl_pool_dedicated_acme's min_nodes further down) so the new
+  # natctl_pool_dedicated_acme's min_nodes further down) so the
   # floor-vs-elastic-offset check block below, the module call, and
   # natctl's own min_nodes all reference the exact same number instead of
-  # a human keeping three copies in sync by hand -- same "single source
-  # of truth" reasoning as vlan_ip_offset/elastic_ip_offset_start_* above.
+  # a human keeping three copies in sync by hand.
   dedicated_acme_pool_floor_nodes = 2
   dedicated_acme_pool_max_nodes   = 6 # mirrors module.nat_fleet_dedicated_acme's node_count=2 floor + natctl_pool_dedicated_acme's max_nodes=6 below (not a variable -- this example pool's ceiling is fixed, unlike the shared pool's shared_pool_max_nodes)
 
   # v13: same-VLAN mode -- vlan_label_shared and vlan_label_dedicated_acme
-  # are now ALLOWED to be the same VLAN label. Real-world reason: some
-  # customers already run one VLAN per account for BOTH NAT gateway traffic
-  # and VPN traffic, and standing up a second, VPN-only VLAN just so this
-  # example's two pools can each keep their own separate VLAN isn't
-  # practical for them. When both pools share one VLAN, they share one real
-  # L2 broadcast domain -- see vlan_cidr_shared's description in
-  # variables.tf for why that's normally unsafe (no cross-pool address
-  # coordination anywhere in this codebase). same_vlan_mode below is what
-  # turns on the coordination needed to make it safe: vlan_cidr_dedicated_acme's
-  # ENTIRE block (its own floor+elastic node IPs AND its own reserved-window ceiling) is
-  # carved out of vlan_cidr_shared and excluded wholesale from the shared
-  # pool's own reserved-window ceiling (see vlan_usable_ceiling_shared below) -- see
-  # the "same_vlan_dedicated_acme_reservation_valid" check block further
-  # down for the plan-time validation that makes this safe rather than just
-  # assumed.
+  # are ALLOWED to be the same VLAN label (some customers already run one
+  # VLAN per account for both NAT gateway traffic and VPN traffic, and
+  # standing up a second VLAN just for this example's dedicated pool isn't
+  # practical for them). 2026-09-11 range-simplification refactor: when
+  # both pools share one physical VLAN, the only thing that actually needs
+  # coordinating is that their two RESERVED sub-blocks
+  # (vlan_cidr_shared_reserved/vlan_cidr_dedicated_acme_reserved) don't
+  # overlap with each other -- see the "vlan_cidr_reserved_no_overlap_same_vlan"
+  # check block below. Everything outside those small, wholly-owned blocks
+  # is free address space neither pool's own automation ever touches, so
+  # there's no "usable ceiling" positional math needed the way the
+  # pre-refactor design required.
   same_vlan_mode = var.enable_dedicated_pool_example && var.vlan_label_shared == var.vlan_label_dedicated_acme
 
-  # Plain-integer (base-256) encodings of each CIDR's network/broadcast
-  # address. Terraform's built-in cidrhost() only gives you an address AS AN
-  # OFFSET WITHIN one CIDR -- it has no function to compare two DIFFERENT
-  # CIDRs' address ranges against each other, which same_vlan_mode's
-  # reservation math needs (is vlan_cidr_dedicated_acme's block nested
-  # inside vlan_cidr_shared's, and where exactly does it start, in terms
-  # cidrhost(vlan_cidr_shared, ...) can consume?). Converting each address
-  # to a plain integer via its 4 octets makes that a normal numeric
-  # comparison -- no provider or external tool needed, pure Terraform.
-  _ipv4_to_int = {
-    for ip in toset([
-      cidrhost(local.vlan_cidr_shared, 0),
-      cidrhost(local.vlan_cidr_shared, -1),
-      cidrhost(local.vlan_cidr_dedicated_acme, 0),
-      cidrhost(local.vlan_cidr_dedicated_acme, -1),
-      ]) : ip => (
-      tonumber(split(".", ip)[0]) * 16777216 +
-      tonumber(split(".", ip)[1]) * 65536 +
-      tonumber(split(".", ip)[2]) * 256 +
-      tonumber(split(".", ip)[3])
-    )
-  }
-
-  vlan_shared_net_int      = local._ipv4_to_int[cidrhost(local.vlan_cidr_shared, 0)]
-  vlan_shared_bcast_int    = local._ipv4_to_int[cidrhost(local.vlan_cidr_shared, -1)]
-  vlan_dedicated_net_int   = local._ipv4_to_int[cidrhost(local.vlan_cidr_dedicated_acme, 0)]
-  vlan_dedicated_bcast_int = local._ipv4_to_int[cidrhost(local.vlan_cidr_dedicated_acme, -1)]
-
-  # Offset (within vlan_cidr_shared) where the shared pool's OWN floor +
-  # elastic static VLAN IPs stop and its reserved windows would otherwise end --
-  # named here (rather than left inline) so both vlan_reserved_ceiling_shared
-  # below AND the same-VLAN check block can reference the exact same
-  # expression instead of a human keeping two copies in sync.
-  shared_pool_own_ceiling_offset = local.vlan_ip_offset + local.elastic_ip_offset_start_shared + var.shared_pool_max_nodes + var.vlan_elastic_headroom_margin
-
-  # v17: the dedicated-acme pool's own equivalent of
-  # shared_pool_own_ceiling_offset above, pulled out into its own named
-  # local (previously computed inline, once, only inside
-  # vlan_reserved_ceiling_dedicated_acme below) so it can ALSO be referenced from
-  # local.pool_static_reserved_start further down, without a human having
-  # to keep two copies of this formula in sync.
-  dedicated_acme_pool_own_ceiling_offset = local.vlan_ip_offset + local.elastic_ip_offset_start_dedicated_acme + local.dedicated_acme_pool_max_nodes + var.vlan_elastic_headroom_margin
-
-  # v12: Reserved static-IP ceilings
-  # are now COMPUTED from each pool's VLAN CIDR + the offsets above, instead
-  # of hand-typed IP literals in variables.tf. Previously an operator had to
-  # pick a range that (a) falls inside the right VLAN CIDR and (b) stays
-  # clear of every node's static vlan_ip, entirely by hand, with NO
-  # automated check -- the shipped defaults up to v11 actually got this
-  # wrong (192.168.100.100 collided with the shared pool's first elastic
-  # node at 192.168.100.120). The range now starts just past every address
-  # a floor or elastic node could ever hold (vlan_ip_offset +
-  # elastic_ip_offset_start + max_nodes) plus a configurable safety margin
-  # (var.vlan_elastic_headroom_margin). HONEST CAVEAT: natctl's elastic offset
-  # counter (_next_elastic_offset in controller/natctl/fleet.py) increments
-  # once per node EVER provisioned in a pool's lifetime and is never reused
-  # when a node drains, so max_nodes is not a hard ceiling on that counter
-  # over a long enough time horizon -- the margin is a practical buffer
-  # sized for realistic autoscaling churn, not a mathematical guarantee. See
-  # docs/RUNBOOK.md for the full explanation. Override var.vlan_elastic_headroom_margin
-  # if you expect heavy long-running scale-out/scale-in churn.
-  #
-  # v17: + var.client_static_vlan_reserved shifts the reserved window's start
-  # out by exactly that many addresses, opening up a window
-  # [shared_pool_own_ceiling_offset, shared_pool_own_ceiling_offset +
-  # client_static_vlan_reserved - 1] for manually-assigned client instance
-  # addresses (see variables.tf's client_static_vlan_reserved and
-  # docs/RUNBOOK.md's "Onboard a client instance" section --
-  # roadmap/M20-remove-terraform-client-creation.md removed the
-  # Terraform-computed static_vlan_ip_offset mechanism this window used
-  # to feed automatically; an operator now picks an address from this
-  # window by hand).
-  # var.client_static_vlan_reserved defaults to 0, so this is a no-op
-  # (identical address layout to pre-v17) unless an operator deliberately
-  # raises it.
-  #
-  vlan_reserved_ceiling_shared = cidrhost(
-    local.vlan_cidr_shared,
-    local.shared_pool_own_ceiling_offset + var.client_static_vlan_reserved
-  )
-
-  # v13: in same_vlan_mode, the shared pool's reserved-window ceiling must stop BEFORE
-  # vlan_cidr_dedicated_acme's block begins, instead of running all the way
-  # to vlan_cidr_shared's last usable host -- that whole block (dedicated
-  # nodes' static IPs AND its own reserved-window ceiling, computed independently below)
-  # is reserved/excluded here so the two pools' reserved windows, now on the
-  # same L2 segment, can never overlap. HONEST CAVEAT:
-  # this keeps the shared pool's range a single CONTIGUOUS block (matching
-  # how this project's static-IP windows are modeled today --
-  # one contiguous range), which means any vlan_cidr_shared address space AFTER
-  # vlan_cidr_dedicated_acme's block goes entirely unused for the shared
-  # pool's own reserved windows, not just the reserved block itself -- place
-  # vlan_cidr_dedicated_acme as close to the END of vlan_cidr_shared as
-  # your sizing allows to avoid wasting address space. Supporting a
-  # reservation in the MIDDLE of the shared range (with usable space on
-  # both sides) would need real multi-range support wired through this
-  # environment's addressing scheme, which is a real feature, not
-  # implemented here.
-  vlan_usable_ceiling_shared = (
-    local.same_vlan_mode
-    ? cidrhost(local.vlan_cidr_shared, local.vlan_dedicated_net_int - local.vlan_shared_net_int - 1)
-    : cidrhost(local.vlan_cidr_shared, -2) # last usable host (skips broadcast) -- unchanged, separate-VLAN behavior
-  )
-
-  # Unaffected by same_vlan_mode -- entirely self-contained within
-  # vlan_cidr_dedicated_acme's own (now possibly-nested) block, exactly the
-  # same cidrhost() math as before same-VLAN mode existed.
-  # v17: same + var.client_static_vlan_reserved treatment as
-  # vlan_reserved_ceiling_shared above -- now expressed via
-  # dedicated_acme_pool_own_ceiling_offset instead of repeating the
-  # underlying formula inline a second time.
-  # BUG FIX (found live, 2026-08-02): these two used to call cidrhost()
-  # UNCONDITIONALLY, even though every actual consumer of them
-  # (module.nat_fleet_dedicated_acme's count, natctl_pool_dedicated_acme's
-  # inclusion in local.natctl_pools, etc.) is already gated on
-  # var.enable_dedicated_pool_example. That mismatch meant a real, live
-  # crash: with enable_dedicated_pool_example = false (the dedicated-acme
-  # example pool entirely disabled and never actually provisioned) plus
-  # sizing on the SHARED pool's own variables that happens to overflow
-  # vlan_cidr_dedicated_acme's default /24 once client_static_vlan_reserved/
-  # vlan_elastic_headroom_margin are raised (e.g. client_static_vlan_reserved =
-  # 100, vlan_elastic_headroom_margin = 100 -- both entirely reasonable choices
-  # for the SHARED pool, which is a /12 with room to spare), `terraform
-  # plan`/`apply` failed outright with "prefix of 24 does not accommodate a
-  # host numbered 376" for a pool that was never going to be created at
-  # all. The vlan_reserved_ceiling_dedicated_acme_range_valid check block below already
-  # had the right guard (!var.enable_dedicated_pool_example || ...) -- but a
-  # `check` block's condition can only run AFTER the locals it references
-  # evaluate without erroring, and cidrhost() itself has no such
-  # short-circuit; it fails as a hard function-call error regardless of
-  # whether anything downstream would ever use the result. Fixed by
-  # applying the exact same guard directly to the cidrhost() calls: when
-  # the dedicated-acme pool is disabled, fall back to a placeholder offset
-  # (0 -- the CIDR's own network address, always valid for any prefix) that
-  # is never actually read by anything (every real consumer is itself
-  # count/for_each-gated on this same var), instead of computing the real,
-  # potentially-overflowing formula for a pool that doesn't exist this
-  # apply.
-  vlan_reserved_ceiling_dedicated_acme = (
+  # Plain-integer (base-256) encodings of each reserved sub-block's own
+  # network/broadcast address, for the same-VLAN overlap check below --
+  # Terraform's built-in cidrhost() only gives you an address AS AN OFFSET
+  # WITHIN one CIDR, it has no function to compare two DIFFERENT CIDRs'
+  # ranges against each other. Same technique terraform/modules/nat-fleet's
+  # own vlan_reserved_cidr_nested_in_vlan_cidr check uses. The
+  # enable_dedicated_pool_example guard mirrors the same BUG FIX reasoning
+  # this file has used before (found live, 2026-08-02): cidrhost() has no
+  # short-circuit, so a disabled pool's own CIDR still needs a
+  # never-overflowing placeholder rather than the real formula.
+  _shared_reserved_int = [
+    for h in [cidrhost(local.vlan_cidr_shared_reserved, 0), cidrhost(local.vlan_cidr_shared_reserved, -1)] :
+    sum([for i, o in split(".", h) : tonumber(o) * pow(256, 3 - i)])
+  ]
+  _dedicated_acme_reserved_int = (
     var.enable_dedicated_pool_example
-    ? cidrhost(
-      local.vlan_cidr_dedicated_acme,
-      local.dedicated_acme_pool_own_ceiling_offset + var.client_static_vlan_reserved
-    )
-    : cidrhost(local.vlan_cidr_dedicated_acme, 0) # placeholder, unused -- see BUG FIX comment above
+    ? [
+      for h in [cidrhost(local.vlan_cidr_dedicated_acme_reserved, 0), cidrhost(local.vlan_cidr_dedicated_acme_reserved, -1)] :
+      sum([for i, o in split(".", h) : tonumber(o) * pow(256, 3 - i)])
+    ]
+    : [0, 0] # placeholder, unused when the dedicated-acme pool is disabled
   )
-  vlan_usable_ceiling_dedicated_acme = (
-    var.enable_dedicated_pool_example
-    ? cidrhost(local.vlan_cidr_dedicated_acme, -2)
-    : cidrhost(local.vlan_cidr_dedicated_acme, 0) # placeholder, unused -- see BUG FIX comment above
-  )
+
+  # The observability host's own VLAN address, as a full "host/prefix"
+  # string ready to pass straight into module.observability -- host from
+  # vlan_cidr_shared_reserved (this project's own sub-block), prefix from
+  # vlan_cidr_shared itself (the wide, real VLAN CIDR every node actually
+  # configures its interface with -- see that variable's own comment for
+  # why the prefix must stay wide, not narrowed to the reserved sub-block).
+  observability_vlan_ip = "${cidrhost(local.vlan_cidr_shared_reserved, local.observability_vlan_ip_offset)}/${split("/", local.vlan_cidr_shared)[1]}"
 }
 
-# v18: plain-integer encodings of the four actual, final reserved-ceiling
-# boundaries, for the two sanity checks just below. Kept SEPARATE from the
-# _ipv4_to_int map above (rather than folded into it) because
-# vlan_usable_ceiling_shared itself depends on vlan_dedicated_net_int/
-# vlan_shared_net_int, which are THEMSELVES derived from _ipv4_to_int --
-# adding vlan_usable_ceiling_shared to that same map's own input list would be a
-# circular reference. Same "tonumber(split(".", ip)[n])" pattern as
-# _ipv4_to_int, just applied directly and locally instead.
-locals {
-  vlan_reserved_ceiling_shared_int = (
-    tonumber(split(".", local.vlan_reserved_ceiling_shared)[0]) * 16777216 +
-    tonumber(split(".", local.vlan_reserved_ceiling_shared)[1]) * 65536 +
-    tonumber(split(".", local.vlan_reserved_ceiling_shared)[2]) * 256 +
-    tonumber(split(".", local.vlan_reserved_ceiling_shared)[3])
-  )
-  vlan_usable_ceiling_shared_int = (
-    tonumber(split(".", local.vlan_usable_ceiling_shared)[0]) * 16777216 +
-    tonumber(split(".", local.vlan_usable_ceiling_shared)[1]) * 65536 +
-    tonumber(split(".", local.vlan_usable_ceiling_shared)[2]) * 256 +
-    tonumber(split(".", local.vlan_usable_ceiling_shared)[3])
-  )
-  vlan_reserved_ceiling_dedicated_acme_int = (
-    tonumber(split(".", local.vlan_reserved_ceiling_dedicated_acme)[0]) * 16777216 +
-    tonumber(split(".", local.vlan_reserved_ceiling_dedicated_acme)[1]) * 65536 +
-    tonumber(split(".", local.vlan_reserved_ceiling_dedicated_acme)[2]) * 256 +
-    tonumber(split(".", local.vlan_reserved_ceiling_dedicated_acme)[3])
-  )
-  vlan_usable_ceiling_dedicated_acme_int = (
-    tonumber(split(".", local.vlan_usable_ceiling_dedicated_acme)[0]) * 16777216 +
-    tonumber(split(".", local.vlan_usable_ceiling_dedicated_acme)[1]) * 65536 +
-    tonumber(split(".", local.vlan_usable_ceiling_dedicated_acme)[2]) * 256 +
-    tonumber(split(".", local.vlan_usable_ceiling_dedicated_acme)[3])
-  )
-}
-
-# v18: catches a real, previously-unvalidated gap -- cidrhost() only
-# errors if vlan_reserved_ceiling_shared's offset exceeds what the CIDR can
-# hold AT ALL; it has no idea vlan_usable_ceiling_shared even exists, so
-# it happily computes a vlan_reserved_ceiling_shared that's numerically
-# AFTER vlan_usable_ceiling_shared (an inverted, nonsensical range) as
-# long as
-# that start offset still fits somewhere inside the CIDR. Concretely: a
-# large client_static_vlan_reserved (see variables.tf) pushes
-# the reserved ceiling out; in same_vlan_mode, vlan_usable_ceiling_shared is ALSO a
-# fixed, comparatively-nearby point (wherever vlan_cidr_dedicated_acme's
-# nested block begins) rather than the CIDR's last usable host -- so this
-# is easiest to hit with same_vlan_mode on and a smaller VLAN CIDR, but
-# the check applies unconditionally either way.
-check "vlan_reserved_ceiling_shared_range_valid" {
-  assert {
-    condition     = local.vlan_reserved_ceiling_shared_int <= local.vlan_usable_ceiling_shared_int
-    error_message = "vlan_reserved_ceiling_shared (${local.vlan_reserved_ceiling_shared}) is now AFTER vlan_usable_ceiling_shared (${local.vlan_usable_ceiling_shared}) -- client_static_vlan_reserved (currently ${var.client_static_vlan_reserved}) is too large for vlan_cidr_shared's available address space (and, if same_vlan_mode is on, for the room left before vlan_cidr_dedicated_acme's nested block). Lower client_static_vlan_reserved, widen vlan_cidr_shared, or (in same_vlan_mode) move vlan_cidr_dedicated_acme's block further from vlan_cidr_shared's start."
-  }
-}
-
-check "vlan_reserved_ceiling_dedicated_acme_range_valid" {
-  assert {
-    condition     = !var.enable_dedicated_pool_example || local.vlan_reserved_ceiling_dedicated_acme_int <= local.vlan_usable_ceiling_dedicated_acme_int
-    error_message = "vlan_reserved_ceiling_dedicated_acme (${local.vlan_reserved_ceiling_dedicated_acme}) is now AFTER vlan_usable_ceiling_dedicated_acme (${local.vlan_usable_ceiling_dedicated_acme}) -- client_static_vlan_reserved (currently ${var.client_static_vlan_reserved}) is too large for vlan_cidr_dedicated_acme's available address space. Lower client_static_vlan_reserved, or widen vlan_cidr_dedicated_acme."
-  }
-}
-
-# v13: plan-time validation for same_vlan_mode -- when vlan_label_shared and
-# vlan_label_dedicated_acme are deliberately set to the SAME VLAN (see
-# locals.same_vlan_mode above), the safety of vlan_usable_ceiling_shared's
-# reservation logic depends on two things actually being true, neither of
-# which Terraform enforces just by the math above running without erroring:
-#
-# 1) vlan_cidr_dedicated_acme's block must be fully NESTED inside
-#    vlan_cidr_shared's block -- otherwise "exclude it from the shared
-#    pool's range" doesn't even mean anything coherent (dedicated could be
-#    a disjoint block elsewhere in address space entirely, or only
-#    partially overlapping vlan_cidr_shared).
-# 2) vlan_cidr_dedicated_acme's block must start AFTER
-#    shared_pool_own_ceiling_offset (+ v17: client_static_vlan_reserved) --
-#    otherwise it would collide with the shared pool's OWN floor/elastic
-#    node static IPs, or with the shared pool's manually-assigned-client
-#    reservation window (roadmap/M20-remove-terraform-client-creation.md),
-#    both of which live at the LOW end of vlan_cidr_shared and are never
-#    excluded by anything else (only the reserved-window ceiling gets
-#    carved around the dedicated block).
-#
+# 2026-09-11 range-simplification refactor: with each pool now owning a
+# small, wholly-owned reserved sub-block instead of a computed ceiling
+# inside a shared range, the only thing that still needs plan-time
+# validation is same-VLAN mode's own cross-pool concern -- do the two
+# pools' reserved sub-blocks overlap on the physical VLAN they now share?
 # When same_vlan_mode is false (the default -- separate VLANs), this check
-# is always true and does nothing, matching this environment's existing,
-# already-safe behavior.
-check "same_vlan_dedicated_acme_reservation_valid" {
+# is always true and does nothing.
+check "vlan_cidr_reserved_no_overlap_same_vlan" {
   assert {
     condition = !local.same_vlan_mode || (
-      local.vlan_dedicated_net_int >= local.vlan_shared_net_int &&
-      local.vlan_dedicated_bcast_int <= local.vlan_shared_bcast_int &&
-      local.vlan_dedicated_net_int > local.vlan_shared_net_int + local.shared_pool_own_ceiling_offset + var.client_static_vlan_reserved
+      local._shared_reserved_int[1] < local._dedicated_acme_reserved_int[0] ||
+      local._dedicated_acme_reserved_int[1] < local._shared_reserved_int[0]
     )
-    error_message = "vlan_label_shared == vlan_label_dedicated_acme (same-VLAN mode), but vlan_cidr_dedicated_acme is not safely nested inside vlan_cidr_shared. It must (1) fall entirely within vlan_cidr_shared's address range, and (2) start after offset ${local.shared_pool_own_ceiling_offset + var.client_static_vlan_reserved} within vlan_cidr_shared (vlan_ip_offset + elastic_ip_offset_start_shared + shared_pool_max_nodes + vlan_elastic_headroom_margin + client_static_vlan_reserved), so it doesn't collide with the shared pool's own floor/elastic node static IPs or its manually-assigned-client reservation window. See docs/RUNBOOK.md's \"Same-VLAN mode\" and \"Onboard a client instance\" sections."
+    error_message = "vlan_label_shared == vlan_label_dedicated_acme (same-VLAN mode), but vlan_cidr_shared_reserved (${local.vlan_cidr_shared_reserved}) and vlan_cidr_dedicated_acme_reserved (${local.vlan_cidr_dedicated_acme_reserved}) overlap -- both pools' floor+elastic nodes would draw addresses from the same space on the same physical VLAN, a real collision risk. Pick non-overlapping reserved sub-blocks for the two pools."
   }
 }
 
@@ -487,16 +292,18 @@ check "dedicated_acme_pool_floor_nodes_below_elastic_offset" {
 # static_client_offsets/static_client_ranges + three check blocks) is
 # removed along with module.client_fleet/var.client_groups themselves --
 # this project no longer allocates addresses for client instances it
-# doesn't create. shared_pool_own_ceiling_offset/
-# dedicated_acme_pool_own_ceiling_offset and
-# vlan_reserved_ceiling_shared/dedicated_acme (above) are UNCHANGED and
-# still meaningful: they still mark where each pool's reserved-for-manual-
-# use VLAN window begins, via var.client_static_vlan_reserved (also
-# unchanged) -- an operator manually assigning a customer's client
-# instance a VLAN address should still pick one at or past that ceiling,
-# same as before, just without Terraform computing or validating the
-# exact address for them anymore. See docs/RUNBOOK.md's "Onboard a
-# client instance" section.
+# doesn't create.
+#
+# 2026-09-11 range-simplification refactor: the reserved-ceiling mechanism
+# that replaced client_groups (shared_pool_own_ceiling_offset/
+# vlan_reserved_ceiling_shared/dedicated_acme + var.client_static_vlan_reserved)
+# is itself now removed in favor of vlan_cidr_shared_reserved/
+# vlan_cidr_dedicated_acme_reserved above -- each pool's floor+elastic
+# nodes live inside a small, wholly-owned sub-block nested in its VLAN
+# CIDR; a customer's own automation is expected to never assign an
+# address inside that sub-block, by convention, not a computed window
+# inside a shared range. See docs/RUNBOOK.md's "Onboard a client
+# instance" section.
 
 locals {
   # v9: terraform/modules/artifacts needs the Object Storage S3 region/
@@ -592,9 +399,10 @@ module "nat_fleet_shared" {
   authorized_keys   = var.authorized_keys
   root_pass         = var.root_pass
 
-  vlan_label     = local.vlan_label_shared
-  vlan_cidr      = local.vlan_cidr_shared
-  vlan_ip_offset = local.vlan_ip_offset # mirrors private_ip_offset above; separate address space so no collision risk
+  vlan_label         = local.vlan_label_shared
+  vlan_cidr          = local.vlan_cidr_shared
+  vlan_reserved_cidr = local.vlan_cidr_shared_reserved
+  vlan_ip_offset     = local.vlan_ip_offset # mirrors private_ip_offset above; separate address space so no collision risk
 
   ip_failover_enabled = var.ip_failover_enabled
   linode_bgp_dcid     = var.linode_bgp_dcid
@@ -676,9 +484,10 @@ module "nat_fleet_dedicated_acme" {
   authorized_keys   = var.authorized_keys
   root_pass         = var.root_pass
 
-  vlan_label     = local.vlan_label_dedicated_acme
-  vlan_cidr      = local.vlan_cidr_dedicated_acme
-  vlan_ip_offset = local.vlan_ip_offset
+  vlan_label         = local.vlan_label_dedicated_acme
+  vlan_cidr          = local.vlan_cidr_dedicated_acme
+  vlan_reserved_cidr = local.vlan_cidr_dedicated_acme_reserved
+  vlan_ip_offset     = local.vlan_ip_offset
 
   ip_failover_enabled = var.ip_failover_enabled
   linode_bgp_dcid     = var.linode_bgp_dcid
@@ -754,10 +563,12 @@ locals {
     # own vlan_label/vlan_cidr arguments below (same source locals).
     vlan_label = local.vlan_label_shared
     vlan_cidr  = local.vlan_cidr_shared
-    # The address marking the top of this pool's Terraform-managed
-    # static VLAN reservation window -- fleet.py's _provision() refuses
-    # to hand a new elastic node an address at or past this ceiling.
-    vlan_static_ceiling = local.vlan_reserved_ceiling_shared
+    # 2026-09-11 range-simplification refactor: this pool's floor+elastic
+    # nodes live inside this small, wholly-owned sub-block of the VLAN --
+    # fleet.py's _provision() uses this directly both to pick an elastic
+    # node's address and as its hard containment refuse-to-provision
+    # gate. See PoolConfig.vlan_reserved_cidr's own comment (config.py).
+    vlan_reserved_cidr = local.vlan_cidr_shared_reserved
     # BUG FIX (found live, 2026-08-01): linode_firewall.id is a STRING in
     # the Linode Terraform provider's schema, even though it's a numeric
     # ID -- yamlencode() faithfully preserves that as a quoted YAML string
@@ -847,7 +658,7 @@ locals {
     vlan_label = local.vlan_label_dedicated_acme
     vlan_cidr  = local.vlan_cidr_dedicated_acme
     # See natctl_pool_shared's identical comment above.
-    vlan_static_ceiling = local.vlan_reserved_ceiling_dedicated_acme
+    vlan_reserved_cidr = local.vlan_cidr_dedicated_acme_reserved
     # BUG FIX (found live, 2026-08-01): linode_firewall.id is a STRING in
     # the Linode Terraform provider's schema, even though it's a numeric
     # ID -- yamlencode() faithfully preserves that as a quoted YAML string
@@ -1079,6 +890,16 @@ module "observability" {
   # discovered, not hand-maintained) and docs/ARCHITECTURE.md's write-up
   # of this finding.
   vpc_sibling_subnet_cidrs = module.vpc.all_subnet_cidrs
+
+  # 2026-09-11: observability's own genuine VLAN interface + reserved
+  # static address -- needed when natctl_on_node_enabled = false, since
+  # this dedicated host is then the only place natctl runs at all, and
+  # natctl needs a VLAN-side presence for the same reasons every NAT node
+  # does. Joins the SHARED pool's VLAN specifically (the default pool
+  # every tenant uses) -- see terraform/modules/observability/main.tf's
+  # dynamic "interface" block and variables.tf's vlan_label/vlan_ip.
+  vlan_label = local.vlan_label_shared
+  vlan_ip    = local.observability_vlan_ip
 
   grafana_admin_password = var.grafana_admin_password
   natctl_config_yaml     = local.natctl_config_yaml

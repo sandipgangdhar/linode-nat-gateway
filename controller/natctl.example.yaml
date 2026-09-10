@@ -94,12 +94,12 @@ pools:
     # buddy-sync/ and docs/ARCHITECTURE.md §5.
     conntrack_buddy_sync_enabled: true
     natctl_roster_base_url: "http://10.0.0.5:8099"
-    # Address marking the top of this pool's Terraform-managed reservation
-    # window for manually-assigned client addresses (client_static_vlan_reserved)
-    # — see terraform/environments/example/main.tf's vlan_reserved_ceiling_shared
-    # and fleet.py's _provision(), which refuses to hand a new elastic node
-    # an address at or past this ceiling.
-    vlan_static_ceiling: "192.168.100.100"
+    # This pool's own small, wholly-owned VLAN sub-block (nested inside
+    # vlan_cidr above) -- floor+elastic nodes' addresses are selected from
+    # HERE, not vlan_cidr itself (see terraform/environments/example/
+    # main.tf's vlan_cidr_shared_reserved). fleet.py's _provision()
+    # refuses to hand a new elastic node an address outside this block.
+    vlan_reserved_cidr: "192.168.100.0/24"
     # M17 (roadmap/M17-reserved-ip-pool-and-prereservation.md): addresses
     # the operator already owns (reused from a prior deployment on this
     # account, or reserved out-of-band ahead of time) -- _provision()
@@ -178,7 +178,7 @@ pools:
     elastic_ip_offset_start: 150
     conntrack_buddy_sync_enabled: true
     natctl_roster_base_url: "http://10.0.0.5:8099"
-    vlan_static_ceiling: ""
+    vlan_reserved_cidr: "192.168.105.0/27"
     ip_failover_enabled: false
     linode_bgp_dcid: null
     ip_failover_auto_configure: true
