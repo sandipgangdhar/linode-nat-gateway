@@ -564,7 +564,7 @@ flowchart LR
           <li><strong>Nobody "pushes" anything.</strong> There's no separate push channel or open socket the server writes into on its own initiative — the client always makes the request first, and the server simply waits before responding instead of answering immediately. This is a long-poll, not a WebSocket or a server push.</li>
           <li><strong>Why near-zero idle traffic.</strong> With plain polling, a client sends a brand-new request every few seconds forever, whether anything changed or not. With long-polling, a client sends one request and that single connection just sits there — no new requests, no new bytes on the wire — until there's actually something worth reporting. The "traffic" that disappears is every one of those repeated, mostly-pointless requests during a quiet period.</li>
           <li><strong>How many connections can the control plane hold open at once?</strong> Honestly: this hasn't been load-tested to a specific number, and it's worth knowing that rather than trusting a made-up figure. Each held-open long-poll ties up one thread and one file descriptor on whichever host is answering it — so the real ceiling is that host's own thread/file-descriptor limits, not anything special in the roster logic itself. If you're planning for a genuinely large client count, load-test at that count before trusting it blindly, the same way you'd load-test any thread-per-connection HTTP service.</li>
-          <li><strong>How does a client know which IP to connect to in the first place?</strong> There's no auto-discovery — an operator sets this explicitly, once, when a client is onboarded (Part IX): the client's routing agent is configured with the control plane's private address and port (<code>NATCTL_ROSTER_URL=http://10.60.32.5:8099/fleet/shared</code>), the same way you'd configure any client to point at a known server address.</li>
+          <li><strong>How does a client know which IP to connect to in the first place?</strong> There's no auto-discovery — an operator sets this explicitly, once, when a client is onboarded (Part IX): the client's routing agent is configured with the control plane's private address and port (<code>NATCTL_ROSTER_URL=http://10.60.32.5:8099/fleet/shared</code>), the same way you'd configure any client to point at a known server address. This can also be a comma-separated list of several addresses — every node's own, when the control plane runs on every node (2.3) — and the agent tries each in turn, starting from whichever last succeeded. A client with only one address configured has nothing to fall back to if that one specific answering node happens to be down the moment the client starts fresh; listing every node closes that gap.</li>
         </ul>
 
         <h3>Health is authoritative here, not advisory</h3>
@@ -576,11 +576,12 @@ flowchart LR
 
         <h3>What happens if a client can't reach it</h3>
         <p>A routing agent that fails to reach the roster URL never blackholes existing traffic. It keeps serving whatever roster it last successfully fetched, and if the set of healthy nodes it's holding onto is ever completely empty, it deliberately leaves the existing route in place rather than tearing egress down entirely. The failure mode of an unreachable control plane is "traffic keeps flowing on stale information," never "traffic stops."</p>
+        <p>That protection only applies once an agent already has something to fall back to. One that's freshly starting — or restarting, which happens far more often for a container that gets rescheduled than for a long-lived VM — has no prior roster at all, so a single configured address that happens to be down at that exact moment leaves it with zero routes until that address recovers. The multi-address list described above is what actually closes this: an agent with several addresses configured only fails its very first fetch if every single one of them is down at once.</p>
       </section>
 
       <section class="chapter" id="c2-3">
         <h2><span class="chno">2.3</span> Where the Control Plane Runs</h2>
-        <p>The fleet controller — <strong>natctl</strong> — has two supported placements, and switching between them changes nothing about how any client talks to it — the roster URL's shape is identical either way.</p>
+        <p>The fleet controller — <strong>natctl</strong> — has two supported placements. What a client sends its roster request to changes between them: on a single dedicated host, the controller only ever has a public interface and a VPC one — no VLAN — so a client needs its own VPC interface (not VLAN-only) to reach it at all. Run on every node instead, and the roster is also reachable over the fleet's VLAN, since every NAT node already has that interface — the better choice whenever a client has one, since VLAN is a single flat network with nothing to route, where the VPC path (below) needs the fleet's own routing configured correctly first.</p>
 
         <div class="table-wrap"><table>
           <thead><tr><th></th><th>Single dedicated host</th><th>Running on every node</th></tr></thead>
@@ -735,7 +736,7 @@ flowchart TB
         <p>Getting real distribution out of that mechanism also requires the kernel to hash on enough of each packet to tell separate connections apart. The agent sets this itself at every startup — hashing on source and destination port in addition to the address pair — so that many separate connections to the very same destination spread across the whole pool instead of all landing on one node, the same five-tuple approach used by every hardware router and both hyperscalers' own NAT implementations.</p>
 
         <h3>The one thing it manages, and the one thing it never touches</h3>
-        <p>The agent manages exactly one thing: the default route. By default, it installs one only on an instance that has no other path to the internet of its own; an instance that already has a public address or its own NAT path is left completely alone, since something else already owns that route. An operator can override this with the onboarding script's <code>--force</code> option (Part III, 3.3), which installs and starts the agent — and hands it the default route — regardless of what other path the instance already has, for a deliberate dual-path egress policy where NAT-fleet routing is wanted no matter what else the instance can reach. The agent never touches a VLAN or VPC interface's own connected route either way — those come from the kernel the instant the interface gets an address, independent of anything the agent does.</p>
+        <p>The agent manages exactly one thing: the default route. By default, it installs one only on an instance that has no other path to the internet of its own; an instance that already has a public address or its own NAT path is left completely alone, since something else already owns that route. An operator can override this with the routing script's <code>--force</code> option (Part III, 3.3), which installs and starts the agent — and hands it the default route — regardless of what other path the instance already has, for a deliberate dual-path egress policy where NAT-fleet routing is wanted no matter what else the instance can reach. The agent never touches a VLAN or VPC interface's own connected route either way — those come from the kernel the instant the interface gets an address, independent of anything the agent does.</p>
 
         <div class="callout good">
           <span class="co-label">Fail-safe by design</span>
@@ -757,20 +758,32 @@ flowchart TB
           </tbody>
         </table></div>
 
-        <p>Whichever shape applies, the sequence is the same: attach the required interface(s) at the account level, apply a static VLAN address to the VLAN interface, then run a short configuration step against the instance that applies the address, installs the routing agent only if the instance actually needs it, and starts it pointed at the pool's roster URL.</p>
+        <p>Whichever shape applies, the sequence is the same: attach the required interface(s) at the account level, then run two separate configuration scripts against the instance — one applies the static VLAN address, the other installs the routing agent only if the instance actually needs it, pointed at the pool's roster URL. Split deliberately, since VLAN addressing and NAT routing are genuinely separate concerns, and the second script verifies the first one's work rather than assuming it.</p>
 
         <div class="callout">
           <span class="co-label">Overriding the auto-detection: <code>--force</code></span>
-          By default, the configuration script skips installing the routing agent on an instance that already has its own path to the internet — "Public + VLAN" and "VPC (1:1 NAT) + VLAN" in the table above are left untouched. Pass <code>--force</code> to install and start the agent anyway, handing it the default route regardless of what other path the instance already has:
-          <pre class="code">./install-nat-client.sh --vlan-iface eth0 --vlan-ip 192.168.100.130/22 \
-  --roster-url http://&lt;observability-private-ip&gt;:8099/fleet/shared \
+          By default, the routing script skips installing the agent on an instance that already has its own path to the internet — "Public + VLAN" and "VPC (1:1 NAT) + VLAN" in the table above are left untouched. Pass <code>--force</code> to install and start the agent anyway, handing it the default route regardless of what other path the instance already has:
+          <pre class="code">./configure-vlan-address.sh --vlan-ip 192.168.100.130/22
+
+./install-nat-client.sh --vlan-iface eth0 \
+  --roster-url http://&lt;control-plane-VPC-private-ip&gt;:8099/fleet/shared \
   --force</pre>
-          This is for a deliberate dual-path egress policy — a customer that wants every packet routed through the NAT fleet's pool of static IPs even though the instance technically has another way out.
+          This is for a deliberate dual-path egress policy — a customer that wants every packet routed through the NAT fleet's pool of static IPs even though the instance technically has another way out. The routing script checks that the VLAN address is already applied and fails fast, pointing back at the address script, if it isn't.
         </div>
 
         <div class="callout warn">
           <span class="co-label">A real constraint worth knowing before relying on <code>--force</code></span>
           The routing agent still needs to actually reach the roster URL to do anything, and that endpoint is deliberately scoped to the fleet's own private network — not the public internet. On a "Public + VLAN" instance with no VPC interface of its own, there is no network path to a roster URL given as a private address, and the fetch (or the agent's own later polling) will simply fail. Two ways around this: give the instance a VPC interface too so it has a real path to the control plane, or fetch the agent binary via <code>--artifact-base-url</code> (the object-storage bucket directly, reachable from the public internet) — but the agent still can't build a working route without eventually reaching the roster itself. If it can't, its own fail-safe leaves the existing route alone rather than guessing — a safe failure, but not a working one, so plan the network path before reaching for <code>--force</code>, not after.
+        </div>
+
+        <div class="callout">
+          <span class="co-label">Picking the roster URL's address: VPC or VLAN?</span>
+          Which address family to use depends on where the control plane runs (2.3), not on the client. Single dedicated host: the control plane has no VLAN interface at all, so this must be its <strong>VPC</strong> private IP — meaning the client needs a VPC interface too ("VPC + VLAN" or "VPC (1:1 NAT) + VLAN" above), since a VLAN-only client structurally cannot reach it. Control plane running on every node: prefer a node's <strong>VLAN</strong> IP instead, even for a client that also has a VPC interface — every node already answers on VLAN, and VLAN is one flat network with nothing to route, simpler than the VPC path. On that placement, pass every node's VLAN address as one comma-separated <code>--roster-url</code> value rather than just one, for the fail-safe described in 2.2.
+        </div>
+
+        <div class="callout good">
+          <span class="co-label">A VPC-attached instance now reaches every subnet in its VPC, not just its own</span>
+          A Linode instance's VPC interface only ever gets a kernel route to its own directly-connected subnet — nothing routed it to any other subnet in the same VPC automatically. A client on a different VPC subnet than the fleet's own nodes therefore couldn't reach the control plane's VPC address, even with the firewall correctly scoped to allow it (8.1) — the packet simply had nowhere to go, and fell back to the public interface's default route instead, where it was silently dropped. Every node and the control-plane host now route to every subnet in the environment's VPC automatically, closing this gap — a routing fix only, not a change to what the firewall actually permits.
         </div>
       </section>
 
