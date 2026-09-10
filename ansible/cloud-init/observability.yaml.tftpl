@@ -167,6 +167,26 @@ write_files:
 %{ endif ~}
 
 runcmd:
+%{ if length(vpc_sibling_subnet_cidrs) > 0 ~}
+  # Found live 2026-09-09: this host's VPC interface only ever gets a
+  # kernel route for its OWN directly-connected subnet -- nothing routed
+  # it to any OTHER subnet in the same VPC, so a client on a different
+  # VPC subnet (the default single-control-plane layout's actual roster
+  # path -- see docs/RUNBOOK.md's "Onboard a client instance") couldn't
+  # reach, or get a reply from, natctl's roster API (8099) here, even
+  # though Cloud Firewall's private_subnet_ids rule already allows it.
+  # Same fix and same full-config-replacement mechanism as
+  # ansible/cloud-init/nat-node.yaml.tftpl's matching runcmd step (a
+  # lower-numbered file wins outright over Linode's own boot-time
+  # Network Helper for a given interface -- see that file's own comment
+  # for why this must restate DHCP=no/Address=, not just add routes).
+  # Only written when this list is actually non-empty, so an environment
+  # that hasn't wired vpc_sibling_subnet_cidrs sees zero behavior change.
+  - mkdir -p /etc/systemd/network
+  - |
+    printf '[Match]\nName=eth1\n\n[Network]\nDHCP=no\nAddress=${private_ip}/${vpc_prefix}\nIPv6PrivacyExtensions=false\n%{ for cidr in vpc_sibling_subnet_cidrs }\n[Route]\nDestination=${cidr}\n%{ endfor }' > /etc/systemd/network/04-lng-eth1-routes.network
+  - systemctl restart systemd-networkd
+%{ endif ~}
 %{ if run_monitoring_stack ~}
   - systemctl enable --now docker
   - mkdir -p /opt/lng-observability/file_sd

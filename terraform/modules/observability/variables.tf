@@ -71,6 +71,17 @@ variable "private_ip" {
   type        = string
 }
 
+variable "vpc_prefix" {
+  description = "Prefix length of subnet_id's CIDR (e.g. \"20\" for a /20) — needed alongside private_ip to statically configure this instance's VPC interface. Pass split(\"/\", module.vpc.public_subnet_cidr)[1] from the caller — same source terraform/modules/nat-fleet derives its own vpc_prefix from."
+  type        = string
+}
+
+variable "vpc_sibling_subnet_cidrs" {
+  description = "Found live 2026-09-09: this host's VPC interface only ever gets a kernel route for its OWN directly-connected subnet -- nothing routed it to any OTHER subnet in the same VPC, so a client on a different VPC subnet couldn't reach (or get a reply from) natctl's roster API here, even though Cloud Firewall already allows it. Pass module.vpc.all_subnet_cidrs (auto-discovered, see that module's own comment) — purely a routing convenience, not a new security boundary. Default [] preserves pre-existing behavior (no sibling routes, and no eth1 override at all) for any caller that hasn't wired this yet."
+  type        = list(string)
+  default     = []
+}
+
 variable "firewall_id" {
   type = number
 }

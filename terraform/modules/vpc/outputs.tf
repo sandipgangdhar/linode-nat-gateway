@@ -58,6 +58,14 @@ output "private_subnet_cidrs" {
   value = { for k, s in data.linode_vpc_subnet.private : k => s.ipv4 }
 }
 
+# Every subnet's CIDR in this VPC, auto-discovered -- see
+# data.linode_vpc_subnets.all's own comment for why. Consumed by
+# nat-fleet/observability to route each instance's VPC interface (eth1)
+# to every sibling subnet, closing the routing gap found live 2026-09-09.
+output "all_subnet_cidrs" {
+  value = [for s in data.linode_vpc_subnets.all.vpc_subnets : s.ipv4]
+}
+
 output "firewall_id" {
   value = linode_firewall.nat_node.id
 }

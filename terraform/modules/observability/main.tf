@@ -110,6 +110,13 @@ locals {
     run_natctl           = var.run_natctl
     run_monitoring_stack = var.run_monitoring_stack
     natctl_file_urls     = var.natctl_file_urls
+
+    # Found live 2026-09-09 -- see this module's vpc_sibling_subnet_cidrs
+    # variable and observability.yaml.tftpl's own runcmd comment for the
+    # full write-up.
+    private_ip               = var.private_ip
+    vpc_prefix               = var.vpc_prefix
+    vpc_sibling_subnet_cidrs = var.vpc_sibling_subnet_cidrs
     # v10: fetched from Object Storage instead of embedded -- see
     # terraform/modules/artifacts' new static uploads and nat-fleet's
     # matching v10 change.

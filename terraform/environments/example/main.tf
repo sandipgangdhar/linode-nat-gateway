@@ -581,7 +581,10 @@ module "nat_fleet_shared" {
   # VLAN CIDR (private client fleet), not the VPC private_subnet_cidrs
   # this used to point at in v3 — see the vlan_cidr_shared local above.
   private_subnet_cidrs = [local.vlan_cidr_shared]
-  firewall_id          = module.vpc.firewall_id
+  # Found live 2026-09-09 -- see terraform/modules/vpc's all_subnet_cidrs
+  # output and docs/ARCHITECTURE.md's write-up of this finding.
+  vpc_sibling_subnet_cidrs = module.vpc.all_subnet_cidrs
+  firewall_id              = module.vpc.firewall_id
 
   node_count        = var.shared_pool_floor_nodes
   private_ip_offset = local.vlan_ip_offset # occupies .20-.20+floor_nodes-1; natctl's elastic nodes start at .100 (see natctl_config below)
@@ -662,7 +665,10 @@ module "nat_fleet_dedicated_acme" {
   public_subnet_cidr = module.vpc.public_subnet_cidr
   # VLAN CIDR (private client fleet) — see vlan_cidr_dedicated_acme local.
   private_subnet_cidrs = [local.vlan_cidr_dedicated_acme]
-  firewall_id          = module.vpc.firewall_id
+  # Found live 2026-09-09 -- see terraform/modules/vpc's all_subnet_cidrs
+  # output and docs/ARCHITECTURE.md's write-up of this finding.
+  vpc_sibling_subnet_cidrs = module.vpc.all_subnet_cidrs
+  firewall_id              = module.vpc.firewall_id
 
   node_count        = local.dedicated_acme_pool_floor_nodes
   private_ip_offset = 50 # non-overlapping with the shared pool's 20-31 and natctl's elastic ranges below
@@ -946,6 +952,12 @@ locals {
     # elastic node had "failed health checks" and draining/deleting it
     # ~4 minutes after it came up healthy.
     prometheus_url = "http://${local.natctl_private_ip}:9090"
+    # Found live 2026-09-09: a VPC-attached instance only ever gets a
+    # kernel route to its OWN directly-connected subnet -- so an elastic
+    # node's eth1 needs the same sibling-subnet routes floor nodes now
+    # get. A top-level field (not per-pool) since it's a property of the
+    # VPC itself -- see docs/ARCHITECTURE.md's write-up of this finding.
+    vpc_sibling_subnet_cidrs = module.vpc.all_subnet_cidrs
     linode = {
       api_base = "https://api.linode.com/v4"
       token    = null # set via LINODE_TOKEN in /etc/natctl/env instead — see modules/observability
@@ -1057,6 +1069,16 @@ module "observability" {
   # actually reachable/meaningful when create_observability_instance is
   # true, of course.
   private_ip = local.natctl_private_ip
+  vpc_prefix = split("/", module.vpc.public_subnet_cidr)[1]
+  # Found live 2026-09-09: this host's VPC interface only ever got a
+  # kernel route for its OWN directly-connected subnet -- a client on
+  # ANY other VPC subnet couldn't reach (or get a reply from) natctl's
+  # roster API (8099) here in the default single-control-plane layout,
+  # even though Cloud Firewall's private_subnet_ids rule already allows
+  # it. See terraform/modules/vpc's all_subnet_cidrs output (auto-
+  # discovered, not hand-maintained) and docs/ARCHITECTURE.md's write-up
+  # of this finding.
+  vpc_sibling_subnet_cidrs = module.vpc.all_subnet_cidrs
 
   grafana_admin_password = var.grafana_admin_password
   natctl_config_yaml     = local.natctl_config_yaml

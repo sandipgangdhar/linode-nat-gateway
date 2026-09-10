@@ -86,6 +86,12 @@ variable "private_subnet_cidrs" {
   type        = list(string)
 }
 
+variable "vpc_sibling_subnet_cidrs" {
+  description = "Found live 2026-09-09: every subnet's CIDR in this environment's VPC (not just this pool's own -- the whole VPC), routed into each floor node's eth1 so it can actually reach (and reply to) a sibling subnet, not just the one it's directly attached to. Unlike private_subnet_cidrs above, this is genuinely VPC-side -- pass module.vpc.all_subnet_cidrs (auto-discovered, see that module's own comment) here, not a hand-maintained list. Purely a routing convenience: Cloud Firewall/nftables (gated by the environment's own private_subnet_ids) remain the actual security boundary regardless of what's routable. Default [] preserves pre-existing behavior (no sibling routes) for any caller that hasn't wired this yet."
+  type        = list(string)
+  default     = []
+}
+
 variable "firewall_id" {
   type = number
 }

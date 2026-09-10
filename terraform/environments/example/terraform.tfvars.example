@@ -54,19 +54,29 @@ public_subnet_id = 0 # REPLACE_ME with your public subnet's numeric id
 # Optional: only if some OTHER VPC-resident workload (e.g. an LKE
 # Enterprise cluster's own private subnet) needs to reach natctl's roster
 # API (port 8099) on the observability/control-plane host. This is a
-# Cloud-Firewall concern, not a routing one -- Linode VPC already routes
-# between subnets in the same VPC by default, but
-# terraform/modules/vpc/main.tf's control_plane firewall is default-deny
-# (inbound_policy = "DROP"), so a subnet not listed here still gets its
-# inbound connections to 8099 dropped even though the VPC would otherwise
-# happily route the packets. Listing a subnet's id below adds its real
-# CIDR to that one firewall rule's allowlist (see
-# data.linode_vpc_subnet.private + the natctl-api inbound block in that
-# file) -- nothing else. It does NOT affect the NAT client fleet (that
-# runs over VLAN, not VPC -- see docs/ARCHITECTURE.md §3.0) and does NOT
-# add the subnet to the nat_node firewall. Leave as {} (the default) if
-# nothing outside the NAT/observability nodes themselves needs to call
-# that API.
+# Cloud-Firewall concern, not a routing one -- terraform/modules/vpc/
+# main.tf's control_plane firewall is default-deny (inbound_policy =
+# "DROP"), so a subnet not listed here still gets its inbound connections
+# to 8099 dropped. Listing a subnet's id below adds its real CIDR to that
+# one firewall rule's allowlist (see data.linode_vpc_subnet.private + the
+# natctl-api inbound block in that file) -- nothing else. It does NOT
+# affect the NAT client fleet (that runs over VLAN, not VPC -- see
+# docs/ARCHITECTURE.md §3.0) and does NOT add the subnet to the nat_node
+# firewall. Leave as {} (the default) if nothing outside the
+# NAT/observability nodes themselves needs to call that API.
+#
+# CORRECTED 2026-09-09 (found live): despite this comment's earlier
+# claim, Linode does NOT automatically route a VPC-attached instance to
+# any OTHER subnet in the same VPC -- only its own directly-connected one
+# gets a kernel route; everything else falls through to the default
+# route (out the PUBLIC interface, not the VPC) and is silently dropped,
+# even once Cloud Firewall allows it here. This project now fixes that
+# separately and automatically (every subnet in the VPC is auto-
+# discovered via linode_vpc_subnets and routed into every node's eth1 --
+# see terraform/modules/vpc's all_subnet_cidrs output) -- you do not need
+# to do anything extra for routing itself, only decide which subnets
+# should be allowed through the firewall, which is what private_subnet_ids
+# below still controls.
 # private_subnet_ids = {
 #   "private-app-1"    = 0 # REPLACE_ME
 #   "private-app-2"    = 0 # REPLACE_ME

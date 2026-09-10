@@ -407,8 +407,24 @@ runcmd:
   # which succeeded 0% loss the whole time) -- only the health check's
   # own DNS-dependent methodology was.
   - mkdir -p /etc/systemd/network
+  # Found live 2026-09-09: this instance's VPC interface only ever gets a
+  # kernel route for its OWN directly-connected subnet -- nothing (not
+  # Linode's Network Helper, not this project until now) routed it to any
+  # OTHER subnet in the same VPC, so a packet to a sibling subnet (e.g. a
+  # customer's client instance on a different VPC subnet) fell through to
+  # the default route (out the PUBLIC interface, eth0) and was silently
+  # dropped there -- even though Cloud Firewall's private_subnet_ids
+  # rule (terraform/modules/vpc/main.tf) already allows it. Confirmed
+  # live via a real cross-subnet ping and natctl roster (8099) fetch,
+  # both restored immediately by adding these routes. vpc_sibling_subnet_cidrs
+  # is Terraform-auto-discovered (every subnet in the VPC, via
+  # terraform/modules/vpc's linode_vpc_subnets data source), not
+  # hand-maintained -- purely a routing convenience, not a new security
+  # boundary: Cloud Firewall/nftables remain the only thing that decides
+  # what's actually reachable. See docs/ARCHITECTURE.md's write-up of
+  # this finding.
   - |
-    printf '[Match]\nName=eth1\n\n[Network]\nDHCP=no\nAddress=${vpc_ip}/${vpc_prefix}\nIPv6PrivacyExtensions=false\n' > /etc/systemd/network/04-lng-eth1-no-dns.network
+    printf '[Match]\nName=eth1\n\n[Network]\nDHCP=no\nAddress=${vpc_ip}/${vpc_prefix}\nIPv6PrivacyExtensions=false\n%{ for cidr in vpc_sibling_subnet_cidrs }\n[Route]\nDestination=${cidr}\n%{ endfor }' > /etc/systemd/network/04-lng-eth1-no-dns.network
   - |
     printf '[Match]\nName=eth2\n\n[Network]\nDHCP=no\nAddress=${vlan_ip}/${vlan_prefix}\nIPv6PrivacyExtensions=false\n' > /etc/systemd/network/04-lng-eth2-no-dns.network
   - systemctl restart systemd-networkd

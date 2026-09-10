@@ -414,12 +414,17 @@ locals {
       # DNS-scope-removal override files (see nat-node.yaml.tftpl's own
       # runcmd comment for the full root cause) -- same source CIDRs
       # already used elsewhere in this module, just also needed here.
-      vpc_prefix          = split("/", var.public_subnet_cidr)[1]
-      vlan_prefix         = split("/", var.vlan_cidr)[1]
-      conntrack_max       = var.conntrack_max
-      natctl_roster_url   = var.natctl_roster_url
-      ip_failover_enabled = var.ip_failover_enabled
-      linode_bgp_dcid     = var.linode_bgp_dcid
+      vpc_prefix    = split("/", var.public_subnet_cidr)[1]
+      vlan_prefix   = split("/", var.vlan_cidr)[1]
+      conntrack_max = var.conntrack_max
+      # Found live 2026-09-09: routes eth1 to every sibling VPC subnet --
+      # see nat-node.yaml.tftpl's own runcmd comment for the full
+      # write-up. Distinct from private_subnet_cidrs above (that's the
+      # VLAN CIDR, for nftables' forward rule -- unrelated).
+      vpc_sibling_subnet_cidrs = var.vpc_sibling_subnet_cidrs
+      natctl_roster_url        = var.natctl_roster_url
+      ip_failover_enabled      = var.ip_failover_enabled
+      linode_bgp_dcid          = var.linode_bgp_dcid
       # Empty string (not reserved_ip_enabled) means "keep self-detecting
       # eth0's IP at boot, exactly as before this feature existed" -- see
       # nftables.conf.tftpl and nat-node.yaml.tftpl's own comments on

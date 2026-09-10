@@ -188,6 +188,29 @@ data "linode_vpc_subnet" "private" {
   id     = each.value
 }
 
+# Found live 2026-09-09: a Linode instance's VPC interface only ever gets
+# a kernel route for its OWN directly-connected subnet -- nothing (not
+# Linode's own Network Helper, not this project until now) routed it to
+# any OTHER subnet in the same VPC, so a packet to a sibling subnet (e.g.
+# a customer's client instance on a different VPC subnet than the NAT
+# nodes) fell through to the default route and was silently dropped,
+# even though var.private_subnet_ids above already opens Cloud Firewall
+# for exactly this. Confirmed live via a real cross-subnet ping and
+# natctl roster (8099) fetch, both restored by adding explicit routes.
+#
+# This lists EVERY subnet in the VPC (not just the ones an operator
+# happened to enumerate in private_subnet_ids), via linode_vpc_subnets --
+# deliberately auto-discovered rather than hand-maintained, so a future
+# sibling subnet is routable with no separate list to remember to update.
+# This is purely a routing convenience, not a new security boundary:
+# Cloud Firewall/nftables still gate actual access via the
+# private_subnet_ids-derived rules above, unchanged -- a route to a
+# subnet nothing else permits is inert. See docs/ARCHITECTURE.md's
+# write-up of this finding.
+data "linode_vpc_subnets" "all" {
+  vpc_id = var.vpc_id
+}
+
 # Default-deny Cloud Firewall applied to every NAT node. v2 (active-active
 # fleet): each node is fully independent, so there's no peer/VRRP/BGP/
 # conntrackd traffic to allow anymore — just the exporter/healthz port

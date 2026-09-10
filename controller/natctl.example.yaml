@@ -190,6 +190,20 @@ pools:
 
 prometheus_url: http://<observability-instance-ip>:9090
 
+# Found live 2026-09-09: a node's VPC interface only ever gets a kernel
+# route for its OWN directly-connected subnet -- nothing routes it to any
+# OTHER subnet in the same VPC by default, so a packet to a sibling
+# subnet (e.g. a customer's client instance on a different VPC subnet)
+# fell through to the default route and was silently dropped, even
+# though Cloud Firewall already allows it (private_subnet_ids controls
+# access, not routability). Terraform auto-discovers this list for you
+# (every subnet in the VPC, via the linode_vpc_subnets data source) and
+# writes it here -- hand-authoring a natctl.yaml outside Terraform should
+# list every subnet in this account's VPC. Optional; omitting it (or
+# leaving it []) just means no sibling-subnet routes get added, same as
+# before this key existed.
+vpc_sibling_subnet_cidrs: []
+
 linode:
   api_base: https://api.linode.com/v4
   # Read from $LINODE_TOKEN if unset here.
