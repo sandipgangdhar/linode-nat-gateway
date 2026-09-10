@@ -59,6 +59,19 @@ half-working state.
   node's own range -- there is no reservation system for
   manually-assigned clients, only a live ARP-probe collision check at
   apply time (see `configure-vlan-address.sh`'s own header comment).
+- **Use the pool's WIDE VLAN CIDR prefix length on `--vlan-ip`, not
+  whatever prefix happens to fit your address** -- found live,
+  2026-09-11: applying e.g. `/24` when the pool's real `vlan_cidr` is a
+  `/22` still "succeeds" with no error from either script, but
+  `client-agent` then fails to install its route at all (`ip nexthop`
+  rejects it with `Error: Nexthop has invalid gateway`, since this
+  client's own kernel-connected route doesn't cover the wider block a
+  NAT node's address can live in) -- silent from the install script's
+  own output, only visible in `journalctl -u lng-client-agent`. Fix by
+  re-applying the same address with the correct wide prefix:
+  `./configure-vlan-address.sh --vlan-ip <same-address>/<wide-prefix>
+  --vlan-iface <iface> && systemctl restart lng-client-agent`. See
+  `docs/RUNBOOK.md`'s "Onboard a client instance" for the full writeup.
 - **Know your pool's roster URL — and whether that's a VPC or VLAN
   address depends on where natctl itself runs, not on the client:**
   - **Default (single dedicated control-plane host)**: natctl runs on
