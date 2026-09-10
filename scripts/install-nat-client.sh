@@ -383,6 +383,20 @@ EOF
 systemctl daemon-reload
 systemctl enable --now lng-client-agent
 
+# Found live 2026-09-10: `systemctl enable --now` returns as soon as the
+# unit is started, not once client-agent has actually fetched the roster
+# and applied its own ECMP route -- confirmed live, the "Summary of
+# changes" below showed no route change even though a real one had, in
+# fact, just landed a couple of seconds later. client-agent's own
+# initial fetch is a plain (non-long-poll) GET, so this is normally
+# quick; poll briefly for the route to actually change before capturing
+# "after", rather than reporting a stale snapshot as if it were final.
+for _ in $(seq 1 20); do
+  CURRENT_DEFAULT_ROUTE="$(ip route show default 2>/dev/null || true)"
+  [[ "${CURRENT_DEFAULT_ROUTE}" != "${LNG_ORIGINAL_DEFAULT_ROUTE:-}" ]] && break
+  sleep 0.5
+done
+
 fi  # LNG_INSTALL_CLIENT_AGENT
 
 # Found live 2026-09-10: a real, itemized record of what this run
