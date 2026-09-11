@@ -102,8 +102,9 @@ pools:
     # This pool's own small, wholly-owned VLAN sub-block (nested inside
     # vlan_cidr above) -- floor+elastic nodes' addresses are selected from
     # HERE, not vlan_cidr itself (see terraform/environments/example/
-    # main.tf's vlan_cidr_shared_reserved). fleet.py's _provision()
-    # refuses to hand a new elastic node an address outside this block.
+    # variables.tf's pools variable, vlan_cidr_reserved field). fleet.py's
+    # _provision() refuses to hand a new elastic node an address outside
+    # this block.
     vlan_reserved_cidr: "192.168.100.0/24"
     # Addresses the operator already owns (reused from a prior deployment
     # on this account, or reserved out-of-band ahead of time) --

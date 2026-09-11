@@ -1,44 +1,49 @@
 # main.tf (terraform/environments/example)
 #
-# The wired-up, end-to-end example environment: one VPC, a shared NAT pool
-# (the Terraform-managed floor), an optional dedicated pool for a
-# higher-value tenant, and the single observability/control-plane instance
-# that runs natctl + Prometheus + Grafana. This is the file to read to see
-# how all the individual modules (vpc, nat-fleet, observability) compose
-# into one working deployment -- `terraform apply` here is the fastest way
-# to stand up the whole solution end-to-end.
+# The wired-up, end-to-end example environment: one VPC, any number of NAT
+# pools (each a Terraform-managed floor; natctl adds elastic capacity above
+# it), and the single observability/control-plane instance that runs
+# natctl + Prometheus + Grafana. This is the file to read to see how all
+# the individual modules (vpc, nat-fleet, observability) compose into one
+# working deployment -- `terraform apply` here is the fastest way to stand
+# up the whole solution end-to-end.
 #
 # -----------------------------------------------------
 # What this file wires together:
 #
-# 1) module.vpc                 - Creates the three Cloud Firewalls (NAT
-#    node + control plane + client) attached to YOUR existing
-#    VPC/subnet(s) -- this automation does not create the VPC or its
-#    subnet(s) itself, see that module's header comment and
-#    docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §9.1 (Prerequisites) -- create
-#    the VPC and at least one subnet yourself first, this project only
-#    ever reads them back.
-# 2) locals (natctl_private_ip / vlan_*_shared / vlan_*_dedicated_acme /
-#    vlan_cidr_*_reserved) - Deterministic addressing so every module
-#    below can reference natctl's IP, each pool's VLAN, and each pool's
-#    own reserved sub-block without a cross-module dependency cycle.
-# 3) module.nat_fleet_shared     - The default pool every tenant uses
-#    unless assigned elsewhere.
-# 4) module.nat_fleet_dedicated_acme - An optional second pool
-#    demonstrating isolated/reserved capacity for one tenant (toggle with
-#    var.enable_dedicated_pool_example).
-# 5) locals.natctl_pool_shared / natctl_pool_dedicated_acme / natctl_pools /
-#    natctl_config_yaml - Composes the full natctl.yaml (natctl.example.yaml
-#    shape) as a Terraform value, so natctl's elastic-node provisioning
-#    knows about both pools.
-# 6) module.observability        - The natctl + Prometheus + Grafana
-#    instance, given the composed natctl_config_yaml above.
+# 1) module.vpc            - Creates the three Cloud Firewalls (NAT node +
+#    control plane + client) attached to YOUR existing VPC/subnet(s) --
+#    this automation does not create the VPC or its subnet(s) itself, see
+#    that module's header comment and docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+#    §9.1 (Prerequisites) -- create the VPC and at least one subnet
+#    yourself first, this project only ever reads them back.
+# 2) locals (pool_pairs_same_vlan / pool_reserved_int / observability_vlan_ip) -
+#    Deterministic addressing and the cross-pool bookkeeping the two check
+#    blocks below need, computed once so every module below can reference
+#    it without a cross-module dependency cycle.
+# 3) module.nat_fleet[each pool key] - One nat-fleet module instance per
+#    entry in var.pools -- see variables.tf's pools description for the
+#    full per-pool field list. Add, rename, or remove a pool entirely by
+#    editing that one map; this file never needs touching for that.
+# 4) locals.natctl_pools / natctl_config_yaml - Composes the full
+#    natctl.yaml (natctl.example.yaml shape) as a Terraform value, so
+#    natctl's elastic-node provisioning knows about every pool.
+# 5) module.observability   - The natctl + Prometheus + Grafana instance,
+#    given the composed natctl_config_yaml above.
 #
-# This environment does not create client instances -- a customer's own
-# automation creates their client instances, and
+# This environment does not create client instances at all -- a
+# customer's own automation creates their client instances, and
 # scripts/install-nat-client.sh configures an already-existing instance
 # to become a working client. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
 # §9.3 (Onboarding a Client Instance).
+#
+# This environment always runs COMPILED agent binaries, not Python source
+# -- every module call below sets agent_distribution = "binary" and wires
+# the matching *_bin_url values from module.artifacts (this repo's own
+# standalone, binary-only copy of that module). The *_py_url values are
+# still threaded through as harmless, unused placeholders, kept only
+# because nat-fleet/observability's own variables.tf still declare them as
+# required inputs.
 #
 # -----------------------------------------------------
 # Usage:
@@ -47,7 +52,7 @@
 #   docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §9.1) -- this automation does
 #   not create one for you.
 # - Copy terraform.tfvars.example to terraform.tfvars, fill in your Linode
-#   API token/SSH key/region/vpc_id/public_subnet_id, then
+#   API token/SSH key/region/vpc_id/public_subnet_id/pools, then
 #   `terraform init && terraform apply`.
 # - See outputs.tf for what to do next (client-agent install URLs, Grafana
 #   URL).
@@ -57,9 +62,11 @@
 # -----------------------------------------------------
 # Best Practices:
 #
-# - Keep every pool's private_ip_offset/vlan_ip_offset/elastic_ip_offset_start
-#   ranges non-overlapping -- this file's comments show the exact ranges in
-#   use so a new pool can pick a clear one.
+# - Keep every pool's private_ip_offset (VPC-side) non-overlapping across
+#   ALL pools, and every pool's vlan_cidr_reserved non-overlapping against
+#   every OTHER pool sharing the same vlan_label -- both are enforced at
+#   plan time (see the two check blocks below), so a mistake fails loudly
+#   rather than silently colliding.
 # - Treat this environment as a template to copy, not a shared environment
 #   to keep extending indefinitely -- create a new environments/<name>/
 #   directory per real deployment instead.
@@ -116,169 +123,150 @@ locals {
   # In natctl_on_node_enabled mode, buddy-sync and its OWN pool-aware
   # natctl instance are ALWAYS co-located on the exact same node (that's
   # the definition of this mode -- natctl runs on every NAT node) -- so
-  # localhost is unambiguously correct here, and structurally avoids a
-  # real failure mode a single hardcoded remote address would hit: with
-  # more than one pool, a hardcoded address pointing at one pool's own
-  # node would leave every OTHER pool's buddy-sync fetching a roster from
-  # a natctl instance that's never even heard of that pool, since
-  # roster/leader state is per-pool and baked into each node's own
-  # boot-time config -- every such roster fetch 404s outright. The
+  # localhost is unambiguously correct, trivially simple, and
+  # structurally immune to a real failure mode a single shared remote
+  # address would otherwise have: since user_data/cloud-init config is
+  # baked in once at each node's own creation time and never refreshed, a
+  # single hardcoded node address (e.g. one specific pool's first floor
+  # node) only ever knows about its OWN pool -- pointing every pool's
+  # buddy-sync at it means any OTHER pool's roster fetch 404s outright,
+  # silently breaking that pool's buddy IP-failover assignment even
+  # though its own leader election and autoscaling are working fine. The
   # single-dedicated-host branch (natctl_on_node_enabled = false) keeps
-  # the real remote address instead -- there, buddy-sync (on NAT nodes)
-  # and natctl (on the separate observability host) are never co-located,
-  # so localhost would be wrong there specifically; that mode also only
-  # ever runs a single natctl process serving every pool, so this failure
-  # mode doesn't apply to it at all.
+  # the real remote address -- there, buddy-sync (on NAT nodes) and
+  # natctl (on the separate observability host) are never co-located, so
+  # localhost would be wrong there specifically; that mode also only ever
+  # runs a single natctl process serving every pool, so it never has this
+  # problem to begin with.
   natctl_roster_base_url = (
     var.natctl_on_node_enabled
     ? "http://localhost:8099"
     : "http://${local.natctl_private_ip}:8099"
   )
 
-  # VLAN CIDRs for the private client fleet — v4 moved client traffic off
-  # VPC and onto VLAN (VPC can't transit-route to non-VPC destinations,
-  # see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §1.2). Linode VLANs have no standalone
-  # Terraform resource/subnet object (unlike VPC subnets above) — a VLAN is
-  # just a label, and its address space is whatever CIDR you choose here
-  # and pass to every attached instance's ipam_address. One VLAN per pool,
-  # matching nat-fleet's one-vlan_label-per-fleet granularity. These are a
-  # completely separate address space from the VPC subnets above on
-  # purpose — VLAN (L2) and VPC (L3) are unrelated fabrics here. Sourced
-  # from variables.tf (overridable from terraform.tfvars) instead of
-  # hardcoded here.
-  vlan_label_shared                 = var.vlan_label_shared
-  vlan_cidr_shared                  = var.vlan_cidr_shared
-  vlan_cidr_shared_reserved         = var.vlan_cidr_shared_reserved
-  vlan_label_dedicated_acme         = var.vlan_label_dedicated_acme
-  vlan_cidr_dedicated_acme          = var.vlan_cidr_dedicated_acme
-  vlan_cidr_dedicated_acme_reserved = var.vlan_cidr_dedicated_acme_reserved
+  # A stable numeric rank per pool key (its position in the sorted key
+  # list) -- HCL's < operator only works on numbers, not strings, so
+  # comparing pool keys directly to dedupe pairs below isn't possible;
+  # comparing their ranks is.
+  pool_rank = { for i, k in sort(keys(var.pools)) : k => i }
 
-  # Single source of truth for every pool's addressing offsets, rather
-  # than separate hardcoded literals scattered across the
-  # nat_fleet_shared/nat_fleet_dedicated_acme module calls (vlan_ip_offset,
-  # private_ip_offset) and the natctl_pool_shared/natctl_pool_dedicated_acme
-  # locals (elastic_ip_offset_start) below.
-  vlan_ip_offset                         = 20 # shared by both pools -- see each module call's private_ip_offset/vlan_ip_offset for why this is safe (separate address spaces)
-  elastic_ip_offset_start_shared         = 100
-  elastic_ip_offset_start_dedicated_acme = 150
-  # The observability host's own static VLAN address (when it
-  # joins the shared pool's VLAN -- see module.observability's vlan_label/
-  # vlan_ip below) sits at a fixed offset just below where floor nodes
-  # start -- comfortably clear of both the floor range (vlan_ip_offset+)
-  # and the elastic range (elastic_ip_offset_start_shared+) by
-  # construction, no separate collision check needed for a single fixed
-  # offset the way floor/elastic's own ranges need one.
-  observability_vlan_ip_offset = local.vlan_ip_offset - 1
-
-  # Named here (rather than two separate hardcoded "2" literals -- one on
-  # module.nat_fleet_dedicated_acme's node_count below, one on
-  # natctl_pool_dedicated_acme's min_nodes further down) so the
-  # floor-vs-elastic-offset check block below, the module call, and
-  # natctl's own min_nodes all reference the exact same number instead of
-  # a human keeping three copies in sync by hand.
-  dedicated_acme_pool_floor_nodes = 2
-  dedicated_acme_pool_max_nodes   = 6 # mirrors module.nat_fleet_dedicated_acme's node_count=2 floor + natctl_pool_dedicated_acme's max_nodes=6 below (not a variable -- this example pool's ceiling is fixed, unlike the shared pool's shared_pool_max_nodes)
-
-  # Same-VLAN mode -- vlan_label_shared and vlan_label_dedicated_acme
-  # are ALLOWED to be the same VLAN label (some customers already run one
-  # VLAN per account for both NAT gateway traffic and VPN traffic, and
-  # standing up a second VLAN just for this example's dedicated pool isn't
-  # practical for them). When both pools share one physical VLAN, the
-  # only thing that actually needs coordinating is that their two
-  # RESERVED sub-blocks (vlan_cidr_shared_reserved/
-  # vlan_cidr_dedicated_acme_reserved) don't overlap with each other --
-  # see the "vlan_cidr_reserved_no_overlap_same_vlan" check block below.
-  # Everything outside those small, wholly-owned blocks is free address
-  # space neither pool's own automation ever touches.
-  same_vlan_mode = var.enable_dedicated_pool_example && var.vlan_label_shared == var.vlan_label_dedicated_acme
-
-  # Plain-integer (base-256) encodings of each reserved sub-block's own
-  # network/broadcast address, for the same-VLAN overlap check below --
-  # Terraform's built-in cidrhost() only gives you an address AS AN OFFSET
-  # WITHIN one CIDR, it has no function to compare two DIFFERENT CIDRs'
-  # ranges against each other. Same technique terraform/modules/nat-fleet's
-  # own vlan_reserved_cidr_nested_in_vlan_cidr check uses. The
-  # enable_dedicated_pool_example guard is needed because cidrhost() has no
-  # short-circuit -- a disabled pool's own CIDR still needs a
-  # never-overflowing placeholder rather than the real formula.
-  _shared_reserved_int = [
-    for h in [cidrhost(local.vlan_cidr_shared_reserved, 0), cidrhost(local.vlan_cidr_shared_reserved, -1)] :
-    sum([for i, o in split(".", h) : tonumber(o) * pow(256, 3 - i)])
+  # Every pool paired with every OTHER pool that shares its vlan_label --
+  # the actual set of pairs that need reserved-CIDR overlap checking
+  # below. setproduct() gives every ordered pair (including self-pairs
+  # and both (a,b)/(b,a) orderings); filtering by rank keeps exactly one
+  # unordered pair per combination, and drops self-pairs entirely (a pool
+  # never needs checking against itself).
+  pool_pairs_same_vlan = [
+    for pair in setproduct(keys(var.pools), keys(var.pools)) : pair
+    if local.pool_rank[pair[0]] < local.pool_rank[pair[1]] && var.pools[pair[0]].vlan_label == var.pools[pair[1]].vlan_label
   ]
-  _dedicated_acme_reserved_int = (
-    var.enable_dedicated_pool_example
-    ? [
-      for h in [cidrhost(local.vlan_cidr_dedicated_acme_reserved, 0), cidrhost(local.vlan_cidr_dedicated_acme_reserved, -1)] :
+
+  # Plain-integer (base-256) encodings of each pool's own reserved
+  # sub-block's network/broadcast address, for the overlap check below --
+  # Terraform's built-in cidrhost() only gives you an address AS AN
+  # OFFSET WITHIN one CIDR, it has no function to compare two DIFFERENT
+  # CIDRs' ranges against each other. Same technique
+  # terraform/modules/nat-fleet's own vlan_reserved_cidr_nested_in_vlan_cidr
+  # check uses.
+  pool_reserved_int = {
+    for k, p in var.pools : k => [
+      for h in [cidrhost(p.vlan_cidr_reserved, 0), cidrhost(p.vlan_cidr_reserved, -1)] :
       sum([for i, o in split(".", h) : tonumber(o) * pow(256, 3 - i)])
     ]
-    : [0, 0] # placeholder, unused when the dedicated-acme pool is disabled
-  )
+  }
+
+  # Every pair from pool_pairs_same_vlan whose reserved sub-blocks
+  # actually overlap -- empty when everything's fine. Named individually
+  # (not just a boolean) so the check block below can enumerate exactly
+  # which pools collided, not just that "something" did.
+  overlapping_reserved_pool_pairs = [
+    for pair in local.pool_pairs_same_vlan : "${pair[0]} <-> ${pair[1]}"
+    if !(
+      local.pool_reserved_int[pair[0]][1] < local.pool_reserved_int[pair[1]][0] ||
+      local.pool_reserved_int[pair[1]][1] < local.pool_reserved_int[pair[0]][0]
+    )
+  ]
+
+  # Every pair of pools (regardless of vlan_label -- they all share this
+  # environment's one public_subnet_id on the VPC side) whose
+  # private_ip_offset ranges [offset, offset+floor_nodes-1] actually
+  # overlap. Unlike the VLAN-side reserved-CIDR check above, this one
+  # applies to every pool pair unconditionally, not just same-VLAN pairs
+  # -- the VPC subnet is shared no matter what each pool's own VLAN looks
+  # like.
+  all_pool_pairs = [
+    for pair in setproduct(keys(var.pools), keys(var.pools)) : pair
+    if local.pool_rank[pair[0]] < local.pool_rank[pair[1]]
+  ]
+  overlapping_vpc_offset_pool_pairs = [
+    for pair in local.all_pool_pairs : "${pair[0]} <-> ${pair[1]}"
+    if !(
+      var.pools[pair[0]].private_ip_offset + var.pools[pair[0]].floor_nodes <= var.pools[pair[1]].private_ip_offset ||
+      var.pools[pair[1]].private_ip_offset + var.pools[pair[1]].floor_nodes <= var.pools[pair[0]].private_ip_offset
+    )
+  ]
+
+  # Every pool whose own floor range reaches its own elastic_ip_offset_start
+  # -- a pool's own floor count against its own elastic start, entirely
+  # self-contained, nothing to do with any OTHER pool.
+  pools_with_floor_reaching_elastic_offset = [
+    for k, p in var.pools : k
+    if p.vlan_ip_offset + p.floor_nodes > p.elastic_ip_offset_start
+  ]
 
   # The observability host's own VLAN address, as a full "host/prefix"
   # string ready to pass straight into module.observability -- host from
-  # vlan_cidr_shared_reserved (this project's own sub-block), prefix from
-  # vlan_cidr_shared itself (the wide, real VLAN CIDR every node actually
-  # configures its interface with -- see that variable's own comment for
-  # why the prefix must stay wide, not narrowed to the reserved sub-block).
-  observability_vlan_ip = "${cidrhost(local.vlan_cidr_shared_reserved, local.observability_vlan_ip_offset)}/${split("/", local.vlan_cidr_shared)[1]}"
+  # var.observability_vlan_pool's own vlan_cidr_reserved (that pool's own
+  # sub-block), prefix from that same pool's vlan_cidr itself (the wide,
+  # real VLAN CIDR every node actually configures its interface with --
+  # see that variable's own comment for why the prefix must stay wide,
+  # not narrowed to the reserved sub-block). Fixed offset one below where
+  # that pool's own floor nodes start -- comfortably clear of both the
+  # floor range and the elastic range by construction, no separate
+  # collision check needed for a single fixed offset the way floor/
+  # elastic's own ranges need one. Empty string when observability_vlan_pool
+  # is "" (opting out of a VLAN interface entirely).
+  observability_vlan_ip = (
+    var.observability_vlan_pool != ""
+    ? "${cidrhost(var.pools[var.observability_vlan_pool].vlan_cidr_reserved, var.pools[var.observability_vlan_pool].vlan_ip_offset - 1)}/${split("/", var.pools[var.observability_vlan_pool].vlan_cidr)[1]}"
+    : ""
+  )
 }
 
-# Each pool owns a small, wholly-owned reserved sub-block instead of a
-# computed ceiling inside a shared range, so the only thing that still
-# needs plan-time validation is same-VLAN mode's own cross-pool concern --
-# do the two
-# pools' reserved sub-blocks overlap on the physical VLAN they now share?
-# When same_vlan_mode is false (the default -- separate VLANs), this check
-# is always true and does nothing.
-check "vlan_cidr_reserved_no_overlap_same_vlan" {
+# Every pair of pools sharing one physical VLAN must keep their own
+# reserved sub-blocks from overlapping -- when no two pools share a
+# vlan_label, pool_pairs_same_vlan is empty and this check does nothing.
+check "pool_reserved_cidrs_no_overlap_same_vlan" {
   assert {
-    condition = !local.same_vlan_mode || (
-      local._shared_reserved_int[1] < local._dedicated_acme_reserved_int[0] ||
-      local._dedicated_acme_reserved_int[1] < local._shared_reserved_int[0]
-    )
-    error_message = "vlan_label_shared == vlan_label_dedicated_acme (same-VLAN mode), but vlan_cidr_shared_reserved (${local.vlan_cidr_shared_reserved}) and vlan_cidr_dedicated_acme_reserved (${local.vlan_cidr_dedicated_acme_reserved}) overlap -- both pools' floor+elastic nodes would draw addresses from the same space on the same physical VLAN, a real collision risk. Pick non-overlapping reserved sub-blocks for the two pools."
+    condition     = length(local.overlapping_reserved_pool_pairs) == 0
+    error_message = "These pool pairs share a vlan_label but have overlapping vlan_cidr_reserved sub-blocks: ${join(", ", local.overlapping_reserved_pool_pairs)}. Both pools' floor+elastic nodes would draw addresses from the same space on the same physical VLAN, a real collision risk. Pick non-overlapping reserved sub-blocks for every pool on the same VLAN."
   }
 }
 
-# Plan-time validation that a pool's own FLOOR node count can never
-# grow large enough to collide with that same pool's elastic node range.
-# Floor nodes occupy
-# offsets [vlan_ip_offset, vlan_ip_offset + floor_nodes - 1] within their
-# VLAN CIDR; elastic nodes start at a fixed elastic_ip_offset_start (100
-# for shared, 150 for dedicated-acme). The 80-address gap between them
-# (20..100) is generous headroom for realistic floor node counts, but
-# nothing previously stopped an operator from setting
-# shared_pool_floor_nodes to something large enough to walk into that
-# gap -- Terraform would have applied it silently, producing a real
-# floor-node/elastic-node VLAN IP collision the first time natctl
-# provisioned an elastic node. Unlike the same-VLAN check above, this
-# has nothing to do with same_vlan_mode -- it's a pool's own floor count
-# against its own elastic start, always checked.
-check "shared_pool_floor_nodes_below_elastic_offset" {
+# Every pair of pools' VPC-side private_ip_offset ranges must not overlap,
+# regardless of VLAN -- all pools share this environment's one
+# public_subnet_id.
+check "pool_vpc_offsets_no_overlap" {
   assert {
-    condition     = local.vlan_ip_offset + var.shared_pool_floor_nodes <= local.elastic_ip_offset_start_shared
-    error_message = "shared_pool_floor_nodes (${var.shared_pool_floor_nodes}) would give the shared pool's floor nodes VLAN offsets ${local.vlan_ip_offset}..${local.vlan_ip_offset + var.shared_pool_floor_nodes - 1}, which reaches or passes elastic_ip_offset_start_shared (${local.elastic_ip_offset_start_shared}) -- elastic nodes' own static VLAN IPs start there, so this would be a real IP collision the first time natctl provisions an elastic node. Lower shared_pool_floor_nodes, or raise elastic_ip_offset_start_shared in locals (and re-check shared_pool_own_ceiling_offset/vlan_reserved_ceiling_shared, which move with it) before applying."
+    condition     = length(local.overlapping_vpc_offset_pool_pairs) == 0
+    error_message = "These pool pairs have overlapping private_ip_offset ranges on the shared VPC subnet: ${join(", ", local.overlapping_vpc_offset_pool_pairs)}. Both pools' nodes would get the same VPC (eth1) address, a real collision. Give every pool a non-overlapping private_ip_offset range (offset..offset+floor_nodes-1)."
   }
 }
 
-check "dedicated_acme_pool_floor_nodes_below_elastic_offset" {
+# Plan-time validation that a pool's own FLOOR node count can never grow
+# large enough to collide with that same pool's elastic node range. Floor
+# nodes occupy offsets [vlan_ip_offset, vlan_ip_offset+floor_nodes-1]
+# within their own vlan_cidr_reserved; elastic nodes start at that pool's
+# own elastic_ip_offset_start. Nothing stops an operator from setting
+# floor_nodes large enough to walk into that gap -- Terraform would apply
+# it silently otherwise, producing a real floor-node/elastic-node VLAN IP
+# collision the first time natctl provisions an elastic node.
+check "pool_floor_nodes_below_elastic_offset" {
   assert {
-    condition = !var.enable_dedicated_pool_example || (
-      local.vlan_ip_offset + local.dedicated_acme_pool_floor_nodes <= local.elastic_ip_offset_start_dedicated_acme
-    )
-    error_message = "dedicated_acme_pool_floor_nodes (${local.dedicated_acme_pool_floor_nodes}) would give the dedicated-acme pool's floor nodes VLAN offsets ${local.vlan_ip_offset}..${local.vlan_ip_offset + local.dedicated_acme_pool_floor_nodes - 1}, which reaches or passes elastic_ip_offset_start_dedicated_acme (${local.elastic_ip_offset_start_dedicated_acme}). Raise elastic_ip_offset_start_dedicated_acme in locals before increasing dedicated_acme_pool_floor_nodes."
+    condition     = length(local.pools_with_floor_reaching_elastic_offset) == 0
+    error_message = "These pools have floor_nodes large enough that their floor VLAN offsets reach their own elastic_ip_offset_start: ${join(", ", local.pools_with_floor_reaching_elastic_offset)}. This would be a real IP collision the first time natctl provisions an elastic node for that pool. Lower floor_nodes, or raise elastic_ip_offset_start, for the affected pool(s)."
   }
 }
-
-# This project no longer allocates addresses for client instances it
-# doesn't create -- a customer's own automation creates their client
-# instances, and each pool's floor+elastic nodes live inside a small,
-# wholly-owned sub-block nested in its VLAN CIDR (vlan_cidr_shared_reserved/
-# vlan_cidr_dedicated_acme_reserved above); a customer's own automation is
-# expected to never assign an address inside that sub-block, by
-# convention, not a computed window inside a shared range. See
-# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §3.4 (Static VLAN Addressing) and
-# §9.3 (Onboarding a Client Instance).
 
 locals {
   # terraform/modules/artifacts needs the Object Storage S3 region/
@@ -294,10 +282,10 @@ locals {
   natctl_object_storage_region = trimsuffix(trimprefix(var.natctl_object_storage_endpoint, "https://"), ".linodeobjects.com")
 }
 
-# Uploads exporter.py/buddy_sync.py/the natctl package to Object
-# Storage ONCE for the whole environment, so every pool's nodes (floor and
-# elastic alike) and the observability instance can fetch them at boot
-# instead of embedding their content inline -- see
+# Uploads the compiled agent binaries (natctl/nat-exporter/buddy-sync) to
+# Object Storage ONCE for the whole environment, so every pool's nodes
+# (floor and elastic alike) and the observability instance can fetch them
+# at boot instead of embedding their content inline -- see
 # terraform/modules/artifacts/main.tf's header comment for why this is
 # required, not optional (Linode's 16384-byte decoded cloud-init limit).
 # Reuses the SAME bucket/credentials natctl_object_storage_* already
@@ -314,23 +302,24 @@ module "artifacts" {
 
 locals {
   # Short aliases for module.artifacts's outputs -- referenced from BOTH
-  # the nat_fleet_shared/dedicated_acme/observability module calls below
-  # AND the natctl_pool_shared/dedicated_acme maps further down (the
-  # latter feed natctl_config_yaml, for natctl's OWN elastic-node
-  # cloud-init renderer -- kept behaviorally identical to the Terraform
-  # floor-node template by hand, since they render the same
-  # three-interface + FRR layout via two different mechanisms).
+  # module.nat_fleet below AND the natctl_pools composition further down
+  # (the latter feeds natctl_config_yaml, for natctl's OWN elastic-node
+  # cloud-init renderer -- it renders the same three-interface + FRR
+  # layout as the Terraform floor-node path by a completely different
+  # mechanism (Python vs. a Terraform template), so the two must be kept
+  # behaviorally in sync by hand whenever either changes).
   exporter_py_url   = module.artifacts.exporter_py_url
   buddy_sync_py_url = module.artifacts.buddy_sync_py_url
   natctl_file_urls  = module.artifacts.natctl_file_urls
-  # CUSTOMER REPO: this environment always runs compiled agents, not
-  # Python source -- see terraform/modules/artifacts (customer-repo
+
+  # This environment always runs compiled agents, not Python source -- see
+  # terraform/modules/artifacts (this repo's standalone, binary-only
   # variant) and controller/natctl/cloud_init.py's/
-  # ansible/cloud-init/*.tftpl's agent_distribution handling (dev repo).
-  # exporter_py_url/buddy_sync_py_url/natctl_file_urls above are
-  # harmless, unused placeholders in this mode -- kept only because
-  # nat-fleet/observability's variables.tf still declare them as required
-  # inputs; every actual fetch uses the *_bin_url values below instead.
+  # ansible/cloud-init/*.tftpl's agent_distribution handling upstream.
+  # exporter_py_url/buddy_sync_py_url/natctl_file_urls above are harmless,
+  # unused placeholders in this mode -- kept only because nat-fleet/
+  # observability's variables.tf still declare them as required inputs;
+  # every actual fetch uses the *_bin_url values below instead.
   agent_distribution = "binary"
   exporter_bin_url   = module.artifacts.exporter_bin_url
   buddy_sync_bin_url = module.artifacts.buddy_sync_bin_url
@@ -341,7 +330,7 @@ locals {
 
   # Static, non-secret systemd unit files + requirements.txt -- see
   # terraform/modules/artifacts/main.tf's header comment for why these are
-  # now also fetched at boot instead of embedded per-pool.
+  # also fetched at boot instead of embedded per-pool.
   nat_exporter_service_url    = module.artifacts.nat_exporter_service_url
   lng_buddy_sync_service_url  = module.artifacts.lng_buddy_sync_service_url
   conntrackd_peer_service_url = module.artifacts.conntrackd_peer_service_url
@@ -349,50 +338,58 @@ locals {
   natctl_requirements_txt_url = module.artifacts.natctl_requirements_txt_url
 }
 
-# --- Shared pool: the default pool every tenant's traffic uses unless ---
-# --- assigned to a dedicated pool. This is the Terraform-managed FLOOR; ---
-# --- natctl adds elastic capacity above it (see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.1). ---
-module "nat_fleet_shared" {
-  source = "../../modules/nat-fleet"
+# One nat-fleet module instance per pool defined in var.pools -- see
+# variables.tf's pools description for the full per-pool field list. A
+# pool is the unit of both scaling and isolation: the default pool every
+# tenant uses unless assigned elsewhere, or a tenant's own dedicated pool
+# demonstrating isolated/reserved capacity -- same module either way, not
+# separate code (see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.1, "Two
+# Tiers of Capacity").
+module "nat_fleet" {
+  source   = "../../modules/nat-fleet"
+  for_each = var.pools
 
-  fleet_label        = "lng-shared"
-  pool_name          = "shared"
+  fleet_label        = each.value.fleet_label
+  pool_name          = each.key
   region             = var.region
   vpc_id             = module.vpc.vpc_id
   public_subnet_id   = module.vpc.public_subnet_id
   public_subnet_cidr = module.vpc.public_subnet_cidr
-  # VLAN CIDR (private client fleet), not a VPC subnet — see the
-  # vlan_cidr_shared local above.
-  private_subnet_cidrs = [local.vlan_cidr_shared]
-  # See terraform/modules/vpc's all_subnet_cidrs output and
-  # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §3.3's "A VPC-attached instance
-  # now reaches every subnet in its VPC" callout.
+  # VLAN CIDR (private client fleet), not a VPC subnet CIDR.
+  private_subnet_cidrs = [each.value.vlan_cidr]
+  # A VPC-attached instance only ever gets a kernel route to its own
+  # directly-connected subnet -- nothing routes it to any OTHER subnet in
+  # the same VPC automatically, not even Linode's own Network Helper.
+  # Every subnet in the environment's VPC is auto-discovered here
+  # (terraform/modules/vpc's all_subnet_cidrs output) and routed into
+  # this pool's nodes at boot as a routing convenience -- it does not
+  # change what Cloud Firewall itself permits.
   vpc_sibling_subnet_cidrs = module.vpc.all_subnet_cidrs
   firewall_id              = module.vpc.firewall_id
 
-  node_count        = var.shared_pool_floor_nodes
-  private_ip_offset = local.vlan_ip_offset # occupies .20-.20+floor_nodes-1; natctl's elastic nodes start at .100 (see natctl_config below)
-  instance_type     = var.nat_instance_type
+  node_count        = each.value.floor_nodes
+  private_ip_offset = each.value.private_ip_offset
+  instance_type     = each.value.instance_type
   authorized_keys   = var.authorized_keys
   root_pass         = var.root_pass
 
-  vlan_label         = local.vlan_label_shared
-  vlan_cidr          = local.vlan_cidr_shared
-  vlan_reserved_cidr = local.vlan_cidr_shared_reserved
-  vlan_ip_offset     = local.vlan_ip_offset # mirrors private_ip_offset above; separate address space so no collision risk
+  vlan_label         = each.value.vlan_label
+  vlan_cidr          = each.value.vlan_cidr
+  vlan_reserved_cidr = each.value.vlan_cidr_reserved
+  vlan_ip_offset     = each.value.vlan_ip_offset # POOL-LOCAL (within vlan_cidr_reserved) -- not private_ip_offset, a different address space
 
   ip_failover_enabled = var.ip_failover_enabled
   linode_bgp_dcid     = var.linode_bgp_dcid
 
   reserved_ip_enabled = var.reserved_ip_enabled
-  reserved_ip_pool    = var.shared_pool_reserved_ip_pool
+  reserved_ip_pool    = each.value.reserved_ip_pool
 
   placement_group_enabled = var.placement_group_enabled
   placement_group_policy  = var.placement_group_policy
 
-  natctl_roster_url = local.natctl_roster_base_url # buddy-sync + IP-failover opt-in — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3/§4.4
+  natctl_roster_url = local.natctl_roster_base_url # buddy-sync + IP-failover opt-in — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part IV (High Availability)
 
-  # Natctl-on-node (opt-in) — see variables.tf's natctl_on_node_enabled.
+  # natctl-on-node (opt-in) — see variables.tf's natctl_on_node_enabled.
   # natctl_config_yaml is defined further down (locals.natctl_config_yaml)
   # but Terraform resolves locals independently of source-file order, so
   # this forward reference is fine.
@@ -403,22 +400,19 @@ module "nat_fleet_shared" {
   object_storage_secret_key = var.natctl_object_storage_secret_key
 
   # Fetched-at-boot artifact URLs -- see module.artifacts above and
-  # terraform/modules/artifacts/main.tf's header comment.
+  # terraform/modules/artifacts/main.tf's header comment. This environment
+  # always runs compiled agents -- see local.agent_distribution's own
+  # comment above for why exporter_py_url/buddy_sync_py_url/
+  # natctl_file_urls below are harmless, unused placeholders and the
+  # actual fetch uses the *_bin_url values that follow.
   exporter_py_url   = module.artifacts.exporter_py_url
   buddy_sync_py_url = module.artifacts.buddy_sync_py_url
   natctl_file_urls  = module.artifacts.natctl_file_urls
-  # CUSTOMER REPO: this environment always runs compiled agents, not
-  # Python source -- see terraform/modules/artifacts (customer-repo
-  # variant) and controller/natctl/cloud_init.py's/
-  # ansible/cloud-init/*.tftpl's agent_distribution handling (dev repo).
-  # exporter_py_url/buddy_sync_py_url/natctl_file_urls above are
-  # harmless, unused placeholders in this mode -- kept only because
-  # nat-fleet/observability's variables.tf still declare them as required
-  # inputs; every actual fetch uses the *_bin_url values below instead.
-  agent_distribution = "binary"
-  exporter_bin_url   = module.artifacts.exporter_bin_url
-  buddy_sync_bin_url = module.artifacts.buddy_sync_bin_url
-  natctl_bin_url     = module.artifacts.natctl_bin_url
+
+  agent_distribution = local.agent_distribution
+  exporter_bin_url   = local.exporter_bin_url
+  buddy_sync_bin_url = local.buddy_sync_bin_url
+  natctl_bin_url     = local.natctl_bin_url
 
   # Static, non-secret systemd unit files + requirements.txt.
   nat_exporter_service_url    = module.artifacts.nat_exporter_service_url
@@ -435,306 +429,163 @@ module "nat_fleet_shared" {
   object_storage_s3_region = local.natctl_object_storage_region
 }
 
-# --- Optional dedicated pool: isolated capacity for a specific tenant ---
-# --- instead of sharing the pool above. Same module, different pool_name ---
-# --- and a non-overlapping private_ip_offset in the same subnet. ---
-module "nat_fleet_dedicated_acme" {
-  source = "../../modules/nat-fleet"
-  count  = var.enable_dedicated_pool_example ? 1 : 0
-
-  fleet_label        = "lng-dedicated-acme"
-  pool_name          = "dedicated-acme-corp"
-  region             = var.region
-  vpc_id             = module.vpc.vpc_id
-  public_subnet_id   = module.vpc.public_subnet_id
-  public_subnet_cidr = module.vpc.public_subnet_cidr
-  # VLAN CIDR (private client fleet) — see vlan_cidr_dedicated_acme local.
-  private_subnet_cidrs = [local.vlan_cidr_dedicated_acme]
-  # See terraform/modules/vpc's all_subnet_cidrs output and
-  # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §3.3's "A VPC-attached instance
-  # now reaches every subnet in its VPC" callout.
-  vpc_sibling_subnet_cidrs = module.vpc.all_subnet_cidrs
-  firewall_id              = module.vpc.firewall_id
-
-  node_count        = local.dedicated_acme_pool_floor_nodes
-  private_ip_offset = 50 # non-overlapping with the shared pool's 20-31 and natctl's elastic ranges below
-  instance_type     = "g6-dedicated-8"
-  authorized_keys   = var.authorized_keys
-  root_pass         = var.root_pass
-
-  vlan_label         = local.vlan_label_dedicated_acme
-  vlan_cidr          = local.vlan_cidr_dedicated_acme
-  vlan_reserved_cidr = local.vlan_cidr_dedicated_acme_reserved
-  vlan_ip_offset     = local.vlan_ip_offset
-
-  ip_failover_enabled = var.ip_failover_enabled
-  linode_bgp_dcid     = var.linode_bgp_dcid
-
-  reserved_ip_enabled = var.reserved_ip_enabled
-  reserved_ip_pool    = var.dedicated_acme_pool_reserved_ip_pool
-
-  placement_group_enabled = var.placement_group_enabled
-  placement_group_policy  = var.placement_group_policy
-
-  natctl_roster_url = local.natctl_roster_base_url
-
-  # Natctl-on-node (opt-in) — see the matching block on
-  # module.nat_fleet_shared above for the full explanation.
-  natctl_on_node_enabled    = var.natctl_on_node_enabled
-  natctl_config_yaml        = var.natctl_on_node_enabled ? local.natctl_config_yaml : ""
-  linode_token              = var.natctl_on_node_enabled ? var.linode_token : ""
-  object_storage_access_key = var.natctl_object_storage_access_key
-  object_storage_secret_key = var.natctl_object_storage_secret_key
-
-  exporter_py_url   = module.artifacts.exporter_py_url
-  buddy_sync_py_url = module.artifacts.buddy_sync_py_url
-  natctl_file_urls  = module.artifacts.natctl_file_urls
-  # CUSTOMER REPO: this environment always runs compiled agents, not
-  # Python source -- see terraform/modules/artifacts (customer-repo
-  # variant) and controller/natctl/cloud_init.py's/
-  # ansible/cloud-init/*.tftpl's agent_distribution handling (dev repo).
-  # exporter_py_url/buddy_sync_py_url/natctl_file_urls above are
-  # harmless, unused placeholders in this mode -- kept only because
-  # nat-fleet/observability's variables.tf still declare them as required
-  # inputs; every actual fetch uses the *_bin_url values below instead.
-  agent_distribution = "binary"
-  exporter_bin_url   = module.artifacts.exporter_bin_url
-  buddy_sync_bin_url = module.artifacts.buddy_sync_bin_url
-  natctl_bin_url     = module.artifacts.natctl_bin_url
-
-  # Static, non-secret systemd unit files + requirements.txt.
-  nat_exporter_service_url    = module.artifacts.nat_exporter_service_url
-  lng_buddy_sync_service_url  = module.artifacts.lng_buddy_sync_service_url
-  conntrackd_peer_service_url = module.artifacts.conntrackd_peer_service_url
-  natctl_service_url          = module.artifacts.natctl_service_url
-  natctl_requirements_txt_url = module.artifacts.natctl_requirements_txt_url
-
-  # Per-node dynamic conf uploads -- see the matching block on
-  # module.nat_fleet_shared above for the full explanation.
-  object_storage_bucket    = var.natctl_object_storage_bucket
-  object_storage_s3_region = local.natctl_object_storage_region
-}
-
 locals {
   # natctl's own elastic-node provisioning (fleet.py + cloud_init.py) mirrors
   # the same three-interface layout (VLAN + FRR) as the Terraform floor
   # nodes above, so elastic capacity behaves identically to floor capacity
-  # from a NAT/failover standpoint. private_subnet_cidrs
-  # below is the VLAN CIDR (not a VPC subnet) for the same reason it is on
-  # the nat-fleet module calls above.
-  natctl_pool_shared = {
-    region               = var.region
-    vpc_id               = module.vpc.vpc_id
-    public_subnet_id     = module.vpc.public_subnet_id
-    public_subnet_cidr   = module.vpc.public_subnet_cidr
-    private_subnet_cidrs = [local.vlan_cidr_shared]
-    # vlan_label/vlan_cidr are both required here -- config.py's
-    # PoolConfig has no default for either (every node's eth2 joins this
-    # VLAN for the private client fleet regardless of ip_failover), and
-    # Config.load() raises TypeError: PoolConfig.__init__() missing 2
-    # required positional arguments at natctl startup if either is
-    # missing, for any pool. Mirrors module.nat_fleet_shared's own
-    # vlan_label/vlan_cidr arguments below (same source locals).
-    vlan_label = local.vlan_label_shared
-    vlan_cidr  = local.vlan_cidr_shared
-    # 2026-09-11 range-simplification refactor: this pool's floor+elastic
-    # nodes live inside this small, wholly-owned sub-block of the VLAN --
-    # fleet.py's _provision() uses this directly both to pick an elastic
-    # node's address and as its hard containment refuse-to-provision
-    # gate. See PoolConfig.vlan_reserved_cidr's own comment (config.py).
-    vlan_reserved_cidr = local.vlan_cidr_shared_reserved
-    # linode_firewall.id is a STRING in the Linode Terraform provider's
-    # schema, even though it's a numeric ID -- yamlencode() faithfully
-    # preserves that as a quoted YAML string ("99779873"), but
-    # config.py's PoolConfig.firewall_id is typed int, and the Linode
-    # API's POST /linode/instances rejects a string firewall_id outright
-    # ("Must be of type Integer") when natctl tries to provision an
-    # elastic node. tonumber() here, not a Python-side fix, since every
-    # OTHER numeric field pulled from this module (vpc_id,
-    # public_subnet_id) already comes through as a real number and this
-    # is the one exception.
-    firewall_id     = tonumber(module.vpc.firewall_id)
-    authorized_keys = var.authorized_keys
-    root_pass       = var.root_pass
-    # min_nodes/max_nodes deliberately not set here anymore -- Linode's
-    # Metadata Service user_data is read once at first boot with no API to
-    # update it on a running instance, so embedding a value here that
-    # changes on a routine operation (raising a pool's floor) made every
-    # such change indistinguishable, to Terraform, from "this resource
-    # needs replacing." Refreshed from Object Storage every reconcile pass
-    # instead (see linode_object_storage_object.pool_scaling_shared below).
-    instance_type                = var.nat_instance_type
-    elastic_ip_offset_start      = local.elastic_ip_offset_start_shared
-    conntrack_buddy_sync_enabled = true
-    # var.ip_failover_enabled/var.linode_bgp_dcid must be threaded into
-    # this pool's natctl config, not just its Terraform cloud-init --
-    # FRR itself gets the right dcid straight from nat_fleet_shared's own
-    # cloud-init rendering (a completely separate path), so each node
-    # correctly self-announces its own public IP as primary and BGP
-    # peering works even without this. But natctl also needs to know
-    # ip_failover is enabled for this pool, or it never computes
-    # ip_failover_self_ip/ip_failover_buddy_ips, so buddy-sync never gets
-    # a secondary announcement to add to any node's frr.conf -- a dead
-    # node's buddy is never actually configured to take over its IP, even
-    # with ip-sharing manually configured via the API. A silent failure of
-    # the documented HA mechanism, not just a config nicety.
-    ip_failover_enabled    = var.ip_failover_enabled
-    linode_bgp_dcid        = var.linode_bgp_dcid
-    reserved_ip_enabled    = var.reserved_ip_enabled
-    natctl_roster_base_url = local.natctl_roster_base_url
-    # Elastic nodes natctl provisions for this pool also get natctl
-    # installed on themselves (leader-election-eligible), matching the
-    # Terraform floor's natctl_on_node_enabled above — see
-    # config.py's PoolConfig.natctl_on_node_enabled docstring.
-    natctl_on_node_enabled = var.natctl_on_node_enabled
-    # Fetched-at-boot artifact URLs, mirroring
-    # module.nat_fleet_shared's exporter_py_url/buddy_sync_py_url/
-    # natctl_file_urls above -- natctl's own elastic-node cloud-init
-    # renderer (controller/natctl/cloud_init.py) needs the SAME URLs. See
-    # terraform/modules/artifacts/main.tf's header comment.
-    exporter_py_url   = local.exporter_py_url
-    buddy_sync_py_url = local.buddy_sync_py_url
-    natctl_file_urls  = local.natctl_file_urls
-    # CUSTOMER REPO: see the identical comment in module.artifacts's own
-    # locals alias block above -- this pool always runs compiled agents.
-    agent_distribution = "binary"
-    exporter_bin_url   = local.exporter_bin_url
-    buddy_sync_bin_url = local.buddy_sync_bin_url
-    natctl_bin_url     = local.natctl_bin_url
-    # Static, non-secret systemd unit files + requirements.txt --
-    # natctl's own elastic-node cloud-init renderer
-    # (controller/natctl/cloud_init.py) needs the SAME URLs. See
-    # terraform/modules/artifacts/main.tf's header comment.
-    nat_exporter_service_url    = module.artifacts.nat_exporter_service_url
-    lng_buddy_sync_service_url  = module.artifacts.lng_buddy_sync_service_url
-    conntrackd_peer_service_url = module.artifacts.conntrackd_peer_service_url
-    natctl_service_url          = module.artifacts.natctl_service_url
-    natctl_requirements_txt_url = module.artifacts.natctl_requirements_txt_url
-    # Bucket/region fleet.py uploads THIS pool's elastic nodes' own
-    # rendered nftables.conf into before fetching
-    # them at boot -- see controller/natctl/config.py's matching
-    # PoolConfig fields and controller/natctl/fleet.py's _provision().
-    object_storage_bucket    = var.natctl_object_storage_bucket
-    object_storage_s3_region = local.natctl_object_storage_region
-    autoscale = {
-      auto_provision_enabled = true
-      cooldown_seconds       = 300
+  # from a NAT/failover standpoint. One object per pool, built the same
+  # shape module.nat_fleet's own per-pool inputs use.
+  natctl_pools = {
+    for k, p in var.pools : k => {
+      region               = var.region
+      vpc_id               = module.vpc.vpc_id
+      public_subnet_id     = module.vpc.public_subnet_id
+      public_subnet_cidr   = module.vpc.public_subnet_cidr
+      private_subnet_cidrs = [p.vlan_cidr]
+      # vlan_label/vlan_cidr are required here -- config.py's PoolConfig
+      # has no default for either (every node's eth2 joins this VLAN for
+      # the private client fleet, regardless of ip_failover), so omitting
+      # them makes Config.load() raise TypeError: PoolConfig.__init__()
+      # missing 2 required positional arguments on every natctl start, for
+      # any pool. Mirrors module.nat_fleet's own vlan_label/vlan_cidr
+      # arguments above (same source values).
+      vlan_label = p.vlan_label
+      vlan_cidr  = p.vlan_cidr
+      # This pool's floor+elastic nodes live inside this small, wholly-owned
+      # sub-block of the VLAN -- fleet.py's _provision() uses this
+      # directly both to pick an elastic node's address and as its hard
+      # containment refuse-to-provision gate. See
+      # PoolConfig.vlan_reserved_cidr's own comment (config.py).
+      vlan_reserved_cidr = p.vlan_cidr_reserved
+      # linode_firewall.id is a STRING in the Linode Terraform provider's
+      # schema, even though it's a numeric ID -- yamlencode() faithfully
+      # preserves that as a quoted YAML string ("99779873"), but config.py's
+      # PoolConfig.firewall_id is typed int, and the Linode API's
+      # POST /linode/instances rejects a string firewall_id outright ("Must
+      # be of type Integer") when natctl tries to provision an elastic
+      # node. tonumber() here, not a Python-side fix, since every OTHER
+      # numeric field pulled from this module (vpc_id, public_subnet_id)
+      # already comes through as a real number and this is the one
+      # exception.
+      firewall_id     = tonumber(module.vpc.firewall_id)
+      authorized_keys = var.authorized_keys
+      root_pass       = var.root_pass
+      # min_nodes/max_nodes are DELIBERATELY NOT set here. This whole object
+      # gets embedded into every floor node's Metadata Service user_data
+      # (when natctl_on_node_enabled) and unconditionally into the
+      # observability host's -- since user_data is read once at boot and
+      # can never be updated in place, embedding a value that changes on
+      # every scaling operation would force Terraform to destroy and
+      # recreate every existing instance carrying it.
+      # PoolConfig.min_nodes/max_nodes now default to (3, 12) in config.py
+      # as a bootstrap fallback, and every natctl process refreshes the
+      # real values from the linode_object_storage_object.pool_scaling
+      # object below on every reconcile pass (FleetController.
+      # refresh_pool_scaling(), called first thing each pass in
+      # main.py's reconcile_once()) -- a plain in-place Object Storage PUT,
+      # entirely decoupled from any instance's own creation payload.
+      instance_type                = p.instance_type
+      elastic_ip_offset_start      = p.elastic_ip_offset_start
+      conntrack_buddy_sync_enabled = true
+      # var.ip_failover_enabled/var.linode_bgp_dcid must be threaded into
+      # this pool's natctl config explicitly, not just into FRR's own
+      # cloud-init rendering (a completely separate path) -- FRR alone gets
+      # each node self-announcing its own public IP and BGP peering
+      # working, but without natctl also knowing ip_failover is enabled for
+      # this pool, it never computes ip_failover_self_ip/
+      # ip_failover_buddy_ips, so buddy-sync never has a secondary
+      # announcement to add to any node's frr.conf -- a dead node's buddy
+      # is never actually configured to take over its IP, even with
+      # ip-sharing manually configured via the API. A silent failure of the
+      # whole HA mechanism if these two fields are left out, not just a
+      # config nicety.
+      ip_failover_enabled    = var.ip_failover_enabled
+      linode_bgp_dcid        = var.linode_bgp_dcid
+      reserved_ip_enabled    = var.reserved_ip_enabled
+      natctl_roster_base_url = local.natctl_roster_base_url
+      # Elastic nodes natctl provisions for this pool also get natctl
+      # installed on themselves (leader-election-eligible), matching the
+      # Terraform floor's natctl_on_node_enabled above — see
+      # config.py's PoolConfig.natctl_on_node_enabled docstring.
+      natctl_on_node_enabled = var.natctl_on_node_enabled
+      # Fetched-at-boot artifact URLs, mirroring module.nat_fleet's
+      # exporter_py_url/buddy_sync_py_url/natctl_file_urls above --
+      # natctl's own elastic-node cloud-init renderer
+      # (controller/natctl/cloud_init.py) needs the SAME URLs. This
+      # environment always runs compiled agents -- see local.
+      # agent_distribution's own comment above.
+      exporter_py_url   = local.exporter_py_url
+      buddy_sync_py_url = local.buddy_sync_py_url
+      natctl_file_urls  = local.natctl_file_urls
+
+      agent_distribution = local.agent_distribution
+      exporter_bin_url   = local.exporter_bin_url
+      buddy_sync_bin_url = local.buddy_sync_bin_url
+      natctl_bin_url     = local.natctl_bin_url
+      # Static, non-secret systemd unit files + requirements.txt --
+      # natctl's own elastic-node cloud-init renderer
+      # (controller/natctl/cloud_init.py) needs the SAME URLs. See
+      # terraform/modules/artifacts/main.tf's header comment.
+      nat_exporter_service_url    = module.artifacts.nat_exporter_service_url
+      lng_buddy_sync_service_url  = module.artifacts.lng_buddy_sync_service_url
+      conntrackd_peer_service_url = module.artifacts.conntrackd_peer_service_url
+      natctl_service_url          = module.artifacts.natctl_service_url
+      natctl_requirements_txt_url = module.artifacts.natctl_requirements_txt_url
+      # Bucket/region fleet.py uploads THIS pool's elastic nodes' own
+      # rendered nftables.conf into before fetching
+      # them at boot -- see controller/natctl/config.py's matching
+      # PoolConfig fields and controller/natctl/fleet.py's _provision().
+      object_storage_bucket    = var.natctl_object_storage_bucket
+      object_storage_s3_region = local.natctl_object_storage_region
+      autoscale = {
+        auto_provision_enabled = true
+        cooldown_seconds       = 300
+      }
     }
   }
-
-  natctl_pool_dedicated_acme = {
-    region               = var.region
-    vpc_id               = module.vpc.vpc_id
-    public_subnet_id     = module.vpc.public_subnet_id
-    public_subnet_cidr   = module.vpc.public_subnet_cidr
-    private_subnet_cidrs = [local.vlan_cidr_dedicated_acme]
-    # See natctl_pool_shared's identical comment above -- vlan_label/
-    # vlan_cidr are both required here too.
-    vlan_label = local.vlan_label_dedicated_acme
-    vlan_cidr  = local.vlan_cidr_dedicated_acme
-    # See natctl_pool_shared's identical comment above.
-    vlan_reserved_cidr = local.vlan_cidr_dedicated_acme_reserved
-    # See natctl_pool_shared's identical comment above -- linode_firewall.id
-    # needs the same tonumber() treatment here.
-    firewall_id     = tonumber(module.vpc.firewall_id)
-    authorized_keys = var.authorized_keys
-    root_pass       = var.root_pass
-    # See natctl_pool_shared's identical comment above (min_nodes/max_nodes
-    # deliberately not set here either, for the same reason).
-    instance_type                = "g6-dedicated-8"
-    elastic_ip_offset_start      = local.elastic_ip_offset_start_dedicated_acme
-    conntrack_buddy_sync_enabled = true
-    # var.ip_failover_enabled/var.linode_bgp_dcid must be threaded into
-    # this pool's natctl config, not just its Terraform cloud-init --
-    # FRR itself gets the right dcid straight from nat_fleet_shared's own
-    # cloud-init rendering (a completely separate path), so each node
-    # correctly self-announces its own public IP as primary and BGP
-    # peering works even without this. But natctl also needs to know
-    # ip_failover is enabled for this pool, or it never computes
-    # ip_failover_self_ip/ip_failover_buddy_ips, so buddy-sync never gets
-    # a secondary announcement to add to any node's frr.conf -- a dead
-    # node's buddy is never actually configured to take over its IP, even
-    # with ip-sharing manually configured via the API. A silent failure of
-    # the documented HA mechanism, not just a config nicety.
-    ip_failover_enabled    = var.ip_failover_enabled
-    linode_bgp_dcid        = var.linode_bgp_dcid
-    reserved_ip_enabled    = var.reserved_ip_enabled
-    natctl_roster_base_url = local.natctl_roster_base_url
-    natctl_on_node_enabled = var.natctl_on_node_enabled
-    exporter_py_url        = local.exporter_py_url
-    buddy_sync_py_url      = local.buddy_sync_py_url
-    natctl_file_urls       = local.natctl_file_urls
-    # CUSTOMER REPO: see the identical comment on natctl_pool_shared above.
-    agent_distribution = "binary"
-    exporter_bin_url   = local.exporter_bin_url
-    buddy_sync_bin_url = local.buddy_sync_bin_url
-    natctl_bin_url     = local.natctl_bin_url
-    # Static, non-secret systemd unit files + requirements.txt --
-    # natctl's own elastic-node cloud-init renderer
-    # (controller/natctl/cloud_init.py) needs the SAME URLs. See
-    # terraform/modules/artifacts/main.tf's header comment.
-    nat_exporter_service_url    = module.artifacts.nat_exporter_service_url
-    lng_buddy_sync_service_url  = module.artifacts.lng_buddy_sync_service_url
-    conntrackd_peer_service_url = module.artifacts.conntrackd_peer_service_url
-    natctl_service_url          = module.artifacts.natctl_service_url
-    natctl_requirements_txt_url = module.artifacts.natctl_requirements_txt_url
-    # Bucket/region fleet.py uploads THIS pool's elastic nodes' own
-    # rendered nftables.conf into before fetching
-    # them at boot -- see controller/natctl/config.py's matching
-    # PoolConfig fields and controller/natctl/fleet.py's _provision().
-    object_storage_bucket    = var.natctl_object_storage_bucket
-    object_storage_s3_region = local.natctl_object_storage_region
-    autoscale = {
-      auto_provision_enabled = true
-      cooldown_seconds       = 300
-    }
-  }
-
-  natctl_pools = merge(
-    { shared = local.natctl_pool_shared },
-    var.enable_dedicated_pool_example ? { "dedicated-acme-corp" = local.natctl_pool_dedicated_acme } : {},
-  )
 
   # file_sd_path is only meaningful when natctl and Prometheus share a
   # filesystem, i.e. the original single-dedicated-host layout
   # (natctl_on_node_enabled = false, module.observability runs natctl too).
   # Once natctl runs on every NAT node instead, Prometheus (wherever it
   # lives) should scrape natctl's GET /file_sd HTTP endpoint on any node
-  # instead of reading a local file -- that endpoint returns the exact
-  # same target-group JSON shape Prometheus's file_sd_configs expects,
-  # computed fresh from live fleet discovery each request.
+  # instead — see api.py's build_file_sd_groups(), which returns the same
+  # target-list shape a static file_sd file would, sourced from natctl's
+  # own live roster instead of a file this environment writes.
   natctl_config_yaml = yamlencode({
     reconcile_interval_seconds = 15
     api = {
       listen_host = "0.0.0.0"
       listen_port = 8099
-      # CUSTOMER REPO: lets a vlan_only/vpc_vlan client instance fetch
-      # the compiled client-agent binary over the fleet's own VLAN/VPC
-      # before it has any other network path -- see
-      # controller/natctl/api.py's GET /agents/client-agent (dev repo)
-      # and customer-repo-overlay/ansible/cloud-init/client-node.yaml.tftpl.
+      # Lets a vlan_only/vpc_vlan client instance fetch the compiled
+      # client-agent binary over the fleet's own VLAN/VPC before it has
+      # any other network path -- see controller/natctl/api.py's GET
+      # /agents/client-agent (upstream) and this repo's own
+      # ansible/cloud-init/client-node.yaml.tftpl.
       client_agent_bin_url = local.client_agent_bin_url
     }
     pools = local.natctl_pools
-    # Must resolve to wherever Prometheus actually runs, not assume
-    # "http://localhost:9090" -- that's only correct in the
-    # single-dedicated-host layout (natctl_on_node_enabled=false, where
-    # natctl and Prometheus run on the SAME instance -- module.observability).
-    # Once natctl_on_node_enabled is true, this same composed YAML gets
+    # Must NOT be hardcoded to "http://localhost:9090" -- that's only
+    # correct in the original single-dedicated-host layout
+    # (natctl_on_node_enabled=false, where natctl and Prometheus run on
+    # the SAME instance -- module.observability). Once
+    # natctl_on_node_enabled is true, this same composed YAML gets
     # copied onto every NAT node, none of which run Prometheus locally --
     # Prometheus (module.observability, when create_observability_instance
-    # is true) lives on a separate host at local.natctl_private_ip. Getting
-    # this wrong makes natctl's own health-check conntrack query fail with
-    # connection refused, which can wrongly decide a freshly-provisioned
-    # elastic node has "failed health checks" and drain/delete it minutes
-    # after it came up healthy.
+    # is true) lives on a separate host at local.natctl_private_ip. Get
+    # this wrong and natctl's own health-check conntrack query against
+    # "localhost:9090" fails with connection refused, which can feed into
+    # wrongly deciding a freshly-provisioned elastic node has "failed
+    # health checks" and draining/deleting it minutes after it came up
+    # healthy.
     prometheus_url = "http://${local.natctl_private_ip}:9090"
-    # A VPC-attached instance only ever gets a kernel route to its OWN
-    # directly-connected subnet -- so an elastic node's eth1 needs the
-    # same sibling-subnet routes floor nodes get. A top-level field (not
-    # per-pool) since it's a property of the VPC itself -- see
-    # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §3.3's "A VPC-attached
-    # instance now reaches every subnet in its VPC" callout.
+    # A VPC-attached instance only ever gets a
+    # kernel route to its OWN directly-connected subnet -- so an elastic
+    # node's eth1 needs the same sibling-subnet routes floor nodes now
+    # get (nat-fleet's vpc_sibling_subnet_cidrs above), applied by
+    # cloud_init.py's render_cloud_init() at provision time. A top-level
+    # field (not per-pool) since it's a property of the VPC itself, not
+    # any one pool -- see config.py's Config.vpc_sibling_subnet_cidrs.
     vpc_sibling_subnet_cidrs = module.vpc.all_subnet_cidrs
     linode = {
       api_base = "https://api.linode.com/v4"
@@ -748,11 +599,11 @@ locals {
     # values) even though var.natctl_object_storage_access_key/secret_key
     # exist — they resolve from NATCTL_OBJECT_STORAGE_ACCESS_KEY/
     # NATCTL_OBJECT_STORAGE_SECRET_KEY in each node's own /etc/natctl/env
-    # instead (wired in module.nat_fleet_shared/dedicated_acme's
-    # object_storage_access_key/secret_key arguments above), since this
-    # composed YAML gets copied to every NAT node once natctl_on_node_enabled
-    # is true and shouldn't carry secrets directly — see config.py's
-    # LeaderElectionConfig docstring.
+    # instead (wired in module.nat_fleet's object_storage_access_key/
+    # secret_key arguments above), since this composed YAML gets copied
+    # to every NAT node once natctl_on_node_enabled is true and shouldn't
+    # carry secrets directly — see config.py's LeaderElectionConfig
+    # docstring.
     # A single object literal (not a two-branch conditional returning
     # differently-shaped objects) deliberately -- Terraform's ?: requires
     # both branches to unify to one structural type, and an
@@ -776,54 +627,44 @@ locals {
   #   unless you've said you already have monitoring elsewhere.
   # Only false (instance skipped entirely) when BOTH natctl runs on the NAT
   # nodes themselves AND you've opted out of this environment's own
-  # monitoring stack -- in that case, point your own Prometheus at any
-  # node's GET /file_sd endpoint (natctl_roster_base_url's address) for
-  # live target discovery instead of the bundled stack this module would
-  # otherwise provision.
+  # monitoring stack -- meaning you're bringing your own Prometheus, which
+  # should then point at natctl_roster_base_url's GET /file_sd endpoint on
+  # any node instead of scraping a dedicated instance this environment
+  # never creates in that case.
   create_observability_instance = !var.natctl_on_node_enabled || var.run_monitoring_stack
 }
 
 # min_nodes/max_nodes live here instead of inside natctl_config_yaml -- a plain, separate
 # resource whose content changing is a harmless in-place Object Storage
 # PUT, with zero relationship to any linode_instance's own user_data.
-# PRIVATE (no acl argument), read via natctl's own authenticated boto3
-# client, never curl'd at boot.
-resource "linode_object_storage_object" "pool_scaling_shared" {
-  bucket     = var.natctl_object_storage_bucket
-  region     = local.natctl_object_storage_region
-  access_key = var.natctl_object_storage_access_key
-  secret_key = var.natctl_object_storage_secret_key
-
-  key = "natctl/pool-scaling/shared.json"
-  content = jsonencode({
-    min_nodes = var.shared_pool_floor_nodes
-    max_nodes = var.shared_pool_max_nodes
-    source    = "terraform"
-  })
-  etag = md5(jsonencode({
-    min_nodes = var.shared_pool_floor_nodes
-    max_nodes = var.shared_pool_max_nodes
-    source    = "terraform"
-  }))
-}
-
-resource "linode_object_storage_object" "pool_scaling_dedicated_acme" {
-  count = var.enable_dedicated_pool_example ? 1 : 0
+# Every natctl process (floor-node-resident or the observability host)
+# reads this every reconcile pass (FleetController.refresh_pool_scaling())
+# instead of relying on a boot-time-embedded value. Terraform-driven only
+# by design -- terraform.tfvars stays the single source of truth for
+# these two values -- no live natctl_cli override exists for this one,
+# unlike other settings that support one.
+# PRIVATE (no acl argument, same default-private treatment
+# object_storage.py's read_json_object()/write_json_object() already use
+# for the reserved-IP ownership manifest) -- read via natctl's own
+# authenticated boto3 client, never curl'd at boot the way the
+# public-read artifacts are. One object per pool, keyed by pool name.
+resource "linode_object_storage_object" "pool_scaling" {
+  for_each = var.pools
 
   bucket     = var.natctl_object_storage_bucket
   region     = local.natctl_object_storage_region
   access_key = var.natctl_object_storage_access_key
   secret_key = var.natctl_object_storage_secret_key
 
-  key = "natctl/pool-scaling/dedicated-acme-corp.json"
+  key = "natctl/pool-scaling/${each.key}.json"
   content = jsonencode({
-    min_nodes = local.dedicated_acme_pool_floor_nodes
-    max_nodes = local.dedicated_acme_pool_max_nodes
+    min_nodes = each.value.floor_nodes
+    max_nodes = each.value.max_nodes
     source    = "terraform"
   })
   etag = md5(jsonencode({
-    min_nodes = local.dedicated_acme_pool_floor_nodes
-    max_nodes = local.dedicated_acme_pool_max_nodes
+    min_nodes = each.value.floor_nodes
+    max_nodes = each.value.max_nodes
     source    = "terraform"
   }))
 }
@@ -839,9 +680,8 @@ module "observability" {
   authorized_keys = var.authorized_keys
   root_pass       = var.root_pass
 
-  # .5 in the public/NAT-node subnet — clear of the shared pool's floor
-  # range (.20+), the dedicated pool's floor range (.50+), and both pools'
-  # natctl elastic ranges (.100+, .150+) configured above. Same value as
+  # .5 in the public/NAT-node subnet — clear of every pool's own floor and
+  # elastic ranges (see variables.tf's pools description). Same value as
   # local.natctl_private_ip above, kept as one local so it's impossible for
   # this and the buddy-sync/client-agent roster URL to drift apart. Only
   # actually reachable/meaningful when create_observability_instance is
@@ -849,23 +689,27 @@ module "observability" {
   private_ip = local.natctl_private_ip
   vpc_prefix = split("/", module.vpc.public_subnet_cidr)[1]
   # This host's VPC interface only ever gets a kernel route for its OWN
-  # directly-connected subnet -- a client on ANY other VPC subnet can't
-  # reach (or get a reply from) natctl's roster API (8099) here in the
-  # default single-control-plane layout without this, even though Cloud
-  # Firewall's private_subnet_ids rule already allows it. See
-  # terraform/modules/vpc's all_subnet_cidrs output (auto-discovered, not
-  # hand-maintained) and docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §3.3's "A
-  # VPC-attached instance now reaches every subnet in its VPC" callout.
+  # directly-connected subnet -- without this, a client on ANY other VPC
+  # subnet couldn't reach (or get a reply from) natctl's roster API
+  # (8099) here in the default single-control-plane layout, even though
+  # Cloud Firewall's private_subnet_ids rule already allows it -- the
+  # kernel would simply have no route to send the reply back over. See
+  # terraform/modules/vpc's all_subnet_cidrs output (auto-discovered,
+  # not hand-maintained).
   vpc_sibling_subnet_cidrs = module.vpc.all_subnet_cidrs
 
-  # Observability's own genuine VLAN interface + reserved
-  # static address -- needed when natctl_on_node_enabled = false, since
-  # this dedicated host is then the only place natctl runs at all, and
-  # natctl needs a VLAN-side presence for the same reasons every NAT node
-  # does. Joins the SHARED pool's VLAN specifically (the default pool
-  # every tenant uses) -- see terraform/modules/observability/main.tf's
-  # dynamic "interface" block and variables.tf's vlan_label/vlan_ip.
-  vlan_label = local.vlan_label_shared
+  # Observability's own genuine VLAN interface + reserved static address --
+  # needed when natctl_on_node_enabled = false, since this dedicated host
+  # is then the only place natctl runs at all, and natctl needs a
+  # VLAN-side presence for the same reasons every NAT node does. Joins
+  # var.observability_vlan_pool's own VLAN specifically (see that
+  # variable's own description) -- see
+  # terraform/modules/observability/main.tf's dynamic "interface" block
+  # and variables.tf's vlan_label/vlan_ip. Empty strings (both variables)
+  # when observability_vlan_pool is "", skipping the VLAN interface
+  # entirely -- that module's own dynamic block is gated on vlan_label
+  # being non-empty.
+  vlan_label = var.observability_vlan_pool != "" ? var.pools[var.observability_vlan_pool].vlan_label : ""
   vlan_ip    = local.observability_vlan_ip
 
   grafana_admin_password = var.grafana_admin_password
@@ -880,11 +724,11 @@ module "observability" {
 
   # Fetched-at-boot artifact URLs -- see module.artifacts above and
   # terraform/modules/artifacts/main.tf's header comment. Only actually
-  # consumed when run_natctl is true, but harmless to always pass.
-  natctl_file_urls = local.natctl_file_urls
-  # CUSTOMER REPO: see the identical comment in module.artifacts's own
-  # locals alias block above -- this host always runs a compiled natctl.
-  agent_distribution = "binary"
+  # consumed when run_natctl is true, but harmless to always pass. This
+  # host always runs a compiled natctl -- see local.agent_distribution's
+  # own comment above.
+  natctl_file_urls   = local.natctl_file_urls
+  agent_distribution = local.agent_distribution
   natctl_bin_url     = local.natctl_bin_url
 
   # Static, non-secret systemd unit file + requirements.txt -- see
@@ -900,40 +744,50 @@ module "observability" {
   # this host stops running natctl itself -- it wasn't given its own
   # NATCTL_SELF_NODE_ID/NATCTL_SELF_LINODE_ID identity, and running natctl
   # in two places at once (here AND on every NAT node) would be redundant.
-  # See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.3/§2.4 for the two
-  # control-plane placements.
+  # See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.3/§2.4 for the
+  # natctl-on-node placement mode this toggle switches to.
   run_natctl = !var.natctl_on_node_enabled
 
   # When natctl_on_node_enabled, run_natctl above is false, so this host
   # never runs write_file_sd() -- Prometheus's file_sd_configs-based
-  # nat_exporter job then has zero targets, permanently, unless pointed
-  # at natctl's own GET /file_sd HTTP endpoint instead in that case.
+  # nat_exporter job would then have zero targets, permanently. Point
+  # Prometheus at natctl's own GET /file_sd HTTP endpoint instead in
+  # that case.
   #
-  # A single hardcoded node does NOT answer identically for the whole
-  # fleet -- each instance's own `user_data`/cloud-init config is baked
-  # in once at creation time and never refreshed, so a node created
-  # before a second pool was ever enabled has no idea that pool exists
-  # and answers /file_sd for its own pool only. Polling ONE TARGET PER
-  # ENABLED POOL instead of one target for the whole fleet fixes this --
-  # each pool's own first floor node is, by construction, always aware
-  # of its own pool (it was created as part of enabling it), so this
-  # guarantees full coverage regardless of any other node's own config
-  # age. Prometheus's http_sd_configs supports multiple entries under one
-  # job (ansible/templates/prometheus.yml.tftpl loops over this list),
-  # each independently polled and merged -- not a single URL with a list
+  # Polling a SINGLE hardcoded node does NOT answer identically for the
+  # whole fleet: every instance's own `user_data`/cloud-init config is
+  # baked in once at each node's own creation time and never refreshed,
+  # so a node created before a second pool was ever enabled has no idea
+  # that pool exists and answers /file_sd for its own pool only -- a
+  # single hardcoded target only ever covers the pool(s) that existed
+  # when that specific node was created. Polling ONE TARGET PER POOL
+  # instead of one target for the whole fleet avoids this -- each pool's
+  # own first floor node is, by construction, always aware of its own
+  # pool (it was created as part of enabling it), so this guarantees
+  # full coverage regardless of any other node's own config age.
+  # Prometheus's http_sd_configs supports multiple entries under one job
+  # (ansible/templates/prometheus.yml.tftpl loops over this list), each
+  # independently polled and merged -- not a single URL with a list
   # value.
-  natctl_http_sd_targets = var.natctl_on_node_enabled ? compact(concat(
-    [try("${values(module.nat_fleet_shared.node_vpc_ips)[0]}:8099", "")],
-    [for m in module.nat_fleet_dedicated_acme : "${values(m.node_vpc_ips)[0]}:8099"],
-  )) : []
+  natctl_http_sd_targets = var.natctl_on_node_enabled ? [
+    for k, m in module.nat_fleet : "${values(m.node_vpc_ips)[0]}:8099"
+    if length(m.node_vpc_ips) > 0
+  ] : []
 
   # Reuse an existing Prometheus/Grafana instead of standing up a
-  # second one -- see variables.tf's run_monitoring_stack. When false,
-  # point your own Prometheus at any node's GET /file_sd endpoint for
-  # live target discovery instead of this module's bundled stack.
+  # second one -- see variables.tf's run_monitoring_stack. Set it false
+  # and give the three prometheus_remote_write_* values below to have
+  # natctl's own metrics forwarded to your existing Prometheus instead.
   run_monitoring_stack             = var.run_monitoring_stack
   prometheus_remote_write_url      = var.customer_prometheus_remote_write_url
   prometheus_remote_write_username = var.customer_prometheus_remote_write_username
   prometheus_remote_write_password = var.customer_prometheus_remote_write_password
 }
 
+# This environment does not create client instances -- see
+# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §9.3 for the actual onboarding
+# flow (scripts/install-nat-client.sh, run against an instance the
+# customer's own automation already created). module.vpc.client_firewall_id
+# and module.artifacts.client_agent_bin_url exist independently of client
+# instance creation -- see those modules' own comments for what they're
+# each for.

@@ -55,8 +55,8 @@ silent half-working state.
   ```
   (power the instance off first if replacing an existing interface).
 - **Pick a VLAN address from outside your pool's dedicated reserved
-  sub-block** (`vlan_cidr_shared_reserved`/`vlan_cidr_dedicated_acme_reserved`
-  in `terraform.tfvars` -- that block belongs to this pool's own
+  sub-block** (that pool's own `vlan_cidr_reserved` field in the `pools`
+  map, `terraform.tfvars` -- that block belongs to this pool's own
   floor/elastic/observability nodes only) so it can't collide with a
   node's own range -- there is no reservation system or collision check
   for manually-assigned clients at all; your own automation is fully

@@ -1346,7 +1346,7 @@ dedicated-acme-corp: 3 node(s), 3 healthy</pre>
         <pre class="code">./natctl-cli drain --config natctl.yaml --pool shared --node-id shared-elastic-103</pre>
         <p><strong>Why:</strong> you want a specific elastic node gone now, rather than waiting for the autoscaler to eventually decide it's no longer needed. <strong>When:</strong> rolling a patch across the fleet (10.4 below), moving load off a node ahead of planned maintenance elsewhere on it, or simply correcting a scale-out you no longer want.</p>
         <p>The named node is excluded from the roster immediately — new connections stop landing on it at once — and deleted once its live connection count actually empties out, or once <code>drain_timeout_seconds</code> elapses, whichever comes first. Existing connections are allowed to finish; nothing is severed.</p>
-        <p>It refuses outright on a Terraform floor node, by design — floor capacity is Terraform's to manage, not natctl's (Part V, 5.1). Lower the floor count instead (<code>terraform apply -var 'shared_pool_floor_nodes=&lt;n-1&gt;'</code>) if you actually want to remove permanent capacity.</p>
+        <p>It refuses outright on a Terraform floor node, by design — floor capacity is Terraform's to manage, not natctl's (Part V, 5.1). Lower the floor count instead (edit that pool's <code>floor_nodes</code> field in <code>terraform.tfvars</code>'s <code>pools</code> map, then <code>terraform apply</code>) if you actually want to remove permanent capacity.</p>
 
         <h3><code>resize</code> — change a node's instance plan in place</h3>
         <pre class="code">./natctl-cli resize --config natctl.yaml --pool shared \
@@ -1379,14 +1379,14 @@ dedicated-acme-corp: 3 node(s), 3 healthy</pre>
 
         <h3>Raise the floor</h3>
         <ol>
-          <li>From the Terraform environment directory: <pre class="code">terraform apply -var 'shared_pool_floor_nodes=&lt;new-count&gt;'</pre></li>
+          <li>Edit the target pool's <code>floor_nodes</code> field in <code>terraform.tfvars</code>'s <code>pools</code> map, then from the Terraform environment directory: <pre class="code">terraform apply</pre> (<code>pools</code> is a map, so a single-field CLI <code>-var</code> override isn't practical here — edit the file directly.)</li>
           <li>Confirm the new node(s) reach a <code>running</code> state and pass their own health check (Part VII).</li>
         </ol>
         <p>Every connected client picks up the new node automatically on its next roster refresh — no other action is needed anywhere.</p>
 
         <h3>Adjust elastic bounds (<code>min_nodes</code> / <code>max_nodes</code>)</h3>
         <ol>
-          <li>From the Terraform environment directory: <pre class="code">terraform apply -var 'shared_pool_max_nodes=&lt;new-value&gt;'</pre> (or <code>shared_pool_floor_nodes</code> for the pool's minimum — the same variable "Raise the floor" above uses).</li>
+          <li>Edit that pool's <code>max_nodes</code> field in <code>terraform.tfvars</code>'s <code>pools</code> map (or <code>floor_nodes</code> for the pool's minimum — the same field "Raise the floor" above uses), then from the Terraform environment directory: <pre class="code">terraform apply</pre></li>
         </ol>
         <p>This writes the new value to a small, dedicated object the control plane rereads every reconcile pass — the very next pass, roughly 15 seconds later, is already sizing against it. No restart, and — unlike changing the floor node count's own boot-time settings below — no existing node of any kind is touched: the apply is a plain, in-place update to that one object, nothing else.</p>
 

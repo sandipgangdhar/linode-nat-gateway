@@ -83,7 +83,7 @@ variable "vpc_sibling_subnet_cidrs" {
 }
 
 variable "vlan_label" {
-  description = "Which VLAN this host joins, so a \"vlan_only\" client (no VPC interface at all) can reach the roster API in the default single-dedicated-host layout -- without this the instance has no VLAN interface at all, and such a client structurally cannot reach it. Pass the shared pool's own vlan_label_shared (the default pool every tenant uses); a dedicated pool on a genuinely separate VLAN is unaffected. Default \"\" skips the VLAN interface entirely."
+  description = "Which VLAN this host joins, so a \"vlan_only\" client (no VPC interface at all) can reach the roster API in the default single-dedicated-host layout -- without this the instance has no VLAN interface at all, and such a client structurally cannot reach it. Pass the target pool's own vlan_label (see the environment's observability_vlan_pool choice -- typically the default pool every tenant uses); a dedicated pool on a genuinely separate VLAN is unaffected. Default \"\" skips the VLAN interface entirely."
   type        = string
   default     = ""
 }

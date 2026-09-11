@@ -36,16 +36,16 @@ linode_token = "REPLACE_ME"
 region        = "us-east"
 
 # --------------------------------------------------------------------------
-# Bring your own VPC -- REQUIRED. This automation no longer creates the
-# VPC or its subnet(s) itself (v11 -- see terraform/modules/vpc/main.tf's
+# Bring your own VPC -- REQUIRED. This automation does not create the
+# VPC or its subnet(s) itself (see terraform/modules/vpc/main.tf's
 # header comment). Create these first yourself, e.g. via linode-cli:
 #
 #   linode-cli vpcs create --label lng-example --region us-east
 #   linode-cli vpcs subnets-create <vpc_id> --label public-nat --ipv4 10.0.0.0/24
 #
 # public_subnet_id's CIDR needs enough headroom for every pool's
-# private_ip_offset range -- 10.0.0.0/24 comfortably fits this example's
-# shared (starts at .20) and dedicated-acme (starts at .50) pools.
+# private_ip_offset range COMBINED -- 10.0.0.0/24 comfortably fits this
+# example's two pools (common starts at .20, acme at .50).
 # --------------------------------------------------------------------------
 vpc_id           = 0 # REPLACE_ME with your VPC's numeric id
 public_subnet_id = 0 # REPLACE_ME with your public subnet's numeric id
@@ -77,9 +77,8 @@ public_subnet_id = 0 # REPLACE_ME with your public subnet's numeric id
 # should be allowed through the firewall, which is what private_subnet_ids
 # below still controls.
 # private_subnet_ids = {
-#   "private-app-1"    = 0 # REPLACE_ME
-#   "private-app-2"    = 0 # REPLACE_ME
-#   "private-app-acme" = 0 # REPLACE_ME -- only if enable_dedicated_pool_example is true
+#   "private-app-1" = 0 # REPLACE_ME
+#   "private-app-2" = 0 # REPLACE_ME
 # }
 
 authorized_keys = [
@@ -87,6 +86,8 @@ authorized_keys = [
 ]
 
 root_pass = "REPLACE_ME_WITH_A_STRONG_PASSWORD"
+
+grafana_admin_password = "REPLACE_ME"
 
 # --------------------------------------------------------------------------
 # REQUIRED -- no default, deliberately. Every
@@ -99,116 +100,81 @@ root_pass = "REPLACE_ME_WITH_A_STRONG_PASSWORD"
 # --------------------------------------------------------------------------
 admin_cidrs = ["REPLACE_ME/32"] # e.g. ["203.0.113.4/32"]
 
-# Terraform-managed floor for the shared pool. Start minimal (1) and raise
-# it once real load justifies it; natctl also scales elastic capacity above
-# this floor automatically, up to shared_pool_max_nodes — see
-# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.1.
-shared_pool_floor_nodes = 1
-shared_pool_max_nodes   = 12
-
-# Set to false if you don't need a dedicated-capacity example pool.
-enable_dedicated_pool_example = true
-
-nat_instance_type = "g6-dedicated-4"
-
-grafana_admin_password = "REPLACE_ME"
-
 # --------------------------------------------------------------------------
-# VLAN (private client fleet) -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
-# §1.2/§1.3. Every node in a pool joins the matching vlan_label as a member of this
-# same L2 segment -- this is NOT a VPC subnet and has no separate
-# Terraform resource (a VLAN is just a label + whatever CIDR every
-# attached instance's ipam_address agrees to use).
+# Pools -- every NAT-fleet pool this environment provisions. See
+# variables.tf's pools description for the full field-by-field
+# breakdown. This example shows two pools sharing ONE physical VLAN
+# ("same-VLAN mode" -- both pools' vlan_label values match): "common", the
+# default pool every tenant uses unless assigned elsewhere, and "acme", a
+# tenant needing isolated capacity. Add a third pool (on this same VLAN
+# or a genuinely separate one) by adding another entry to this map --
+# main.tf never needs touching for that. Remove "acme" entirely if you
+# only need one pool.
 #
-# 2026-09-11 range-simplification refactor: two CIDRs per pool now,
-# deliberately simple to reason about and to communicate to a customer:
-#
-#   vlan_cidr_shared          -- the FULL, real VLAN (e.g. a customer's
-#                                 whole /16). Every node's interface is
-#                                 actually configured with THIS prefix
-#                                 length, so routing works across the
-#                                 whole VLAN, including whatever a
-#                                 customer's own automation does outside
-#                                 this project's own corner of it.
-#   vlan_cidr_shared_reserved -- a small sub-block NESTED inside the
-#                                 above, wholly owned by this pool's own
-#                                 floor+elastic nodes (and the
-#                                 observability host, which also joins
-#                                 this VLAN -- see below). Nothing else
-#                                 (a customer's own clients, another pool
-#                                 sharing the same physical VLAN) should
-#                                 ever be assigned an address inside it --
-#                                 tell the customer "everything from X
-#                                 onward is yours" as a clean, round
-#                                 boundary, rather than sizing this
-#                                 precisely; generous slack here is
-#                                 harmless.
-#
-# Defaults below reproduce this environment's original address layout, so
-# leaving these commented out/unset changes nothing; override only if you
-# need a different address space.
-#
-# vlan_cidr_shared and vlan_cidr_dedicated_acme are always allowed to
-# overlap or nest -- separate VLAN labels are fully isolated L2 domains on
-# Linode regardless of numeric CIDR overlap. When they're the SAME value
-# ("same-VLAN mode" -- e.g. one account-wide VLAN shared with VPN
-# traffic), the only thing that needs coordinating is that
-# vlan_cidr_shared_reserved and vlan_cidr_dedicated_acme_reserved don't
-# overlap with EACH OTHER -- main.tf's "vlan_cidr_reserved_no_overlap_same_vlan"
-# check enforces this at plan time.
-#
-# Example, same-VLAN mode:
-#   vlan_label_shared                 = "lng-vlan-account"
-#   vlan_cidr_shared                  = "10.128.0.0/12"
-#   vlan_cidr_shared_reserved         = "10.128.0.0/24"
-#   vlan_label_dedicated_acme         = "lng-vlan-account"   # SAME as vlan_label_shared
-#   vlan_cidr_dedicated_acme          = "10.128.1.0/24"
-#   vlan_cidr_dedicated_acme_reserved = "10.128.1.0/27"
+# Whichever pools you define, two things are validated at `terraform
+# plan` time, not left to chance:
+#   - Any two pools sharing a vlan_label must have non-overlapping
+#     vlan_cidr_reserved sub-blocks (main.tf's
+#     pool_reserved_cidrs_no_overlap_same_vlan check).
+#   - Every pool's private_ip_offset range (VPC side) must not overlap
+#     any other pool's, regardless of VLAN (main.tf's
+#     pool_vpc_offsets_no_overlap check) -- all pools share this
+#     environment's one public_subnet_id.
 # --------------------------------------------------------------------------
-# vlan_label_shared                 = "lng-vlan-shared"
-# vlan_cidr_shared                  = "192.168.100.0/22"
-# vlan_cidr_shared_reserved         = "192.168.100.0/24" # nested inside vlan_cidr_shared above
-# vlan_label_dedicated_acme         = "lng-vlan-acme"   # only relevant if enable_dedicated_pool_example is true
-# vlan_cidr_dedicated_acme          = "192.168.105.0/24" # only relevant if enable_dedicated_pool_example is true
-# vlan_cidr_dedicated_acme_reserved = "192.168.105.0/27" # nested inside vlan_cidr_dedicated_acme above
+pools = {
+  common = {
+    fleet_label             = "lng-common"
+    floor_nodes             = 1 # start minimal, raise once real load justifies it -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.1
+    max_nodes               = 12
+    instance_type           = "g6-dedicated-4"
+    vlan_label              = "lng-vlan-shared"
+    vlan_cidr               = "192.168.100.0/22" # the FULL, real VLAN -- every node's interface uses THIS prefix length
+    vlan_cidr_reserved      = "192.168.100.0/24" # nested inside vlan_cidr above -- this pool's own small, wholly-owned sub-block
+    private_ip_offset       = 20 # VPC side -- must be globally unique across all pools (they share one public_subnet_id)
+    vlan_ip_offset          = 20 # VLAN side -- POOL-LOCAL to vlan_cidr_reserved above, safe to reuse 20 in every pool
+    elastic_ip_offset_start = 100 # also POOL-LOCAL to vlan_cidr_reserved -- plenty of room in a /24 (256 addresses)
+    # reserved_ip_pool      = ["203.0.113.10", "203.0.113.11"] # optional -- addresses you ALREADY OWN, see variables.tf
+  }
+  acme = {
+    fleet_label             = "lng-acme"
+    floor_nodes             = 2
+    max_nodes               = 6
+    instance_type           = "g6-dedicated-8"
+    vlan_label              = "lng-vlan-shared" # SAME as common's -- same-VLAN mode. Use a different label for a genuinely separate VLAN instead.
+    vlan_cidr               = "192.168.100.0/22" # SAME wide VLAN as common -- only the reserved sub-block below needs to differ
+    vlan_cidr_reserved      = "192.168.105.0/27" # must not overlap common's 192.168.100.0/24 above -- only 32 addresses, so the two offsets below must stay small
+    private_ip_offset       = 50 # VPC side -- must not overlap common's 20 (floor_nodes=1) above
+    vlan_ip_offset          = 20 # VLAN side -- POOL-LOCAL to vlan_cidr_reserved above (a /27), same small number as common's, safe since it's a separate address space
+    elastic_ip_offset_start = 25 # must fit within this pool's own /27 alongside vlan_ip_offset+floor_nodes (20-21) and up to max_nodes-floor_nodes=4 elastic slots (25-28) -- a /27 only has 32 addresses total
+  }
+}
+
+# Which pool's VLAN the observability host joins directly (only meaningful
+# when natctl_on_node_enabled is false, below) -- see variables.tf's
+# observability_vlan_pool. Must be a key in pools above, or "" to skip
+# joining any VLAN entirely.
+observability_vlan_pool = "common"
 
 # --------------------------------------------------------------------------
 # Reserved IPs -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.6. Opt-in (default false). When
 # true, every node's primary public IP (floor AND natctl-provisioned
-# elastic nodes) is a Linode Reserved IP that survives an instance
-# replacement -- turn this on if any downstream service IP-whitelists this
-# fleet's egress addresses. Linode's Reserved IP feature is account-gated
-# ("IP reservation is not currently available to all users") -- confirm
-# it's enabled for your account before setting this true, or
-# linode_networking_ip will fail outright on apply.
+# elastic nodes, every pool) is a Linode Reserved IP that survives an
+# instance replacement -- turn this on if any downstream service
+# IP-whitelists this fleet's egress addresses. Linode's Reserved IP
+# feature is account-gated ("IP reservation is not currently available to
+# all users") -- confirm it's enabled for your account before setting
+# this true, or linode_networking_ip will fail outright on apply.
 # --------------------------------------------------------------------------
 # reserved_ip_enabled = true
 
 # --------------------------------------------------------------------------
-# Bring-your-own reserved IPs -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
-# §4.6. Opt-in, only
-# meaningful when reserved_ip_enabled above is true. Addresses you
-# ALREADY OWN (reused from a prior deployment on this account, or
-# reserved out-of-band ahead of time) -- assigned BY POSITION to this
-# pool's floor nodes (first entry -> first floor node by creation
-# order, and so on). Any floor node beyond the length of this list
-# still gets a freshly-created reservation, exactly as if this variable
-# were left at its default []. Must not exceed the pool's floor node
-# count -- Terraform fails plan loudly if it does, rather than silently
-# leaving excess addresses unused. Every supplied address must actually
-# be a Reserved IP you already own on this account/region.
-# --------------------------------------------------------------------------
-# shared_pool_reserved_ip_pool         = ["203.0.113.10", "203.0.113.11"]
-# dedicated_acme_pool_reserved_ip_pool = ["203.0.113.20"]
-
-# --------------------------------------------------------------------------
 # Anti-affinity placement groups -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
 # §4.5. Opt-in (default false).
-# When true, floor nodes are spread across Linode Placement Groups
-# (anti_affinity:local) so Akamai avoids co-locating them on the same
-# physical host -- closes the "correlated physical-host failure takes out
-# both buddy pair members" gap that buddy conntrack sync + BGP IP failover
-# alone don't cover. Floor nodes
+# When true, every pool's floor nodes are spread across Linode Placement
+# Groups (anti_affinity:local) so Akamai avoids co-locating them on the
+# same physical host -- closes the "correlated physical-host failure
+# takes out both buddy pair members" gap that buddy conntrack sync + BGP
+# IP failover alone don't cover. Floor nodes
 # only -- natctl-provisioned elastic nodes are not covered. A pool over 5
 # floor nodes gets multiple groups (Akamai's 5-Linode-per-group cap) in
 # contiguous creation-order blocks, which only fully protects pairs that
@@ -244,7 +210,7 @@ natctl_object_storage_secret_key = "REPLACE_ME"
 # fencing (power off the previous leader, poll for confirmed offline,
 # only then claim leadership -- see controller/natctl/leader_election.py
 # and docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.3/§2.4), on every NAT node
-# instead. Leave commented out / false to keep
+# in every pool instead. Leave commented out / false to keep
 # the original single-dedicated-host layout (module.observability runs
 # natctl). Read the guide's leader-election section before enabling
 # this in production -- fencing briefly interrupts a node's own NAT
