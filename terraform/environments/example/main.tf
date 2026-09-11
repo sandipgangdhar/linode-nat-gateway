@@ -631,14 +631,19 @@ locals {
     # health checks" and draining/deleting it minutes after it came up
     # healthy.
     prometheus_url = "http://${local.natctl_private_ip}:9090"
-    # A VPC-attached instance only ever gets a
-    # kernel route to its OWN directly-connected subnet -- so an elastic
-    # node's eth1 needs the same sibling-subnet routes floor nodes now
-    # get (nat-fleet's vpc_sibling_subnet_cidrs above), applied by
-    # cloud_init.py's render_cloud_init() at provision time. A top-level
-    # field (not per-pool) since it's a property of the VPC itself, not
-    # any one pool -- see config.py's Config.vpc_sibling_subnet_cidrs.
-    vpc_sibling_subnet_cidrs = module.vpc.all_subnet_cidrs
+    # vpc_sibling_subnet_cidrs is DELIBERATELY NOT set here -- it used to
+    # be embedded directly (a top-level field, since it's a property of
+    # the VPC itself, not any one pool), which meant every subnet added
+    # to the VPC later required this whole object's user_data to be
+    # regenerated (observability host recreated, or every
+    # natctl_on_node_enabled floor/elastic node individually restarted
+    # with a hand-edited config). Config.vpc_sibling_subnet_cidrs now
+    # defaults to an empty list as a bootstrap fallback, and every natctl
+    # process refreshes the real value from
+    # linode_object_storage_object.vpc_sibling_subnets below on every
+    # reconcile pass (FleetController.refresh_vpc_sibling_subnets()) --
+    # same decoupling-from-user_data pattern §4.6 already uses for
+    # min_nodes/max_nodes.
     linode = {
       api_base = "https://api.linode.com/v4"
       token    = null # set via LINODE_TOKEN in /etc/natctl/env instead — see modules/observability
@@ -718,6 +723,33 @@ resource "linode_object_storage_object" "pool_scaling" {
     min_nodes = each.value.floor_nodes
     max_nodes = each.value.max_nodes
     source    = "terraform"
+  }))
+}
+
+# The Terraform-authoritative baseline for the whole-environment
+# VPC-sibling-subnets list -- see locals.natctl_config_yaml's comment
+# above for why this was pulled out of natctl.yaml's own embedded
+# content. One object per environment (not per pool, unlike
+# pool_scaling above) since this is a property of the whole VPC.
+# natctl_cli set-vpc-sibling-subnets can also write this same object
+# directly for an immediate, no-apply-needed update -- this resource
+# will overwrite that back to live VPC discovery on the next apply,
+# same relationship pool_scaling already has with its own live
+# override.
+resource "linode_object_storage_object" "vpc_sibling_subnets" {
+  bucket     = var.natctl_object_storage_bucket
+  region     = local.natctl_object_storage_region
+  access_key = var.natctl_object_storage_access_key
+  secret_key = var.natctl_object_storage_secret_key
+
+  key = "natctl/vpc-sibling-subnets.json"
+  content = jsonencode({
+    cidrs  = module.vpc.all_subnet_cidrs
+    source = "terraform"
+  })
+  etag = md5(jsonencode({
+    cidrs  = module.vpc.all_subnet_cidrs
+    source = "terraform"
   }))
 }
 
