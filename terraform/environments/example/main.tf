@@ -484,7 +484,15 @@ locals {
       # refresh_pool_scaling(), called first thing each pass in
       # main.py's reconcile_once()) -- a plain in-place Object Storage PUT,
       # entirely decoupled from any instance's own creation payload.
-      instance_type                = p.instance_type
+      instance_type = p.instance_type
+      # Both offsets are ABSOLUTE host offsets within vlan_reserved_cidr
+      # above, compared directly against each other (never summed) --
+      # see this file's own pool_floor_nodes_below_elastic_offset check
+      # and fleet.py's _provision(). Without vlan_ip_offset explicitly
+      # wired through here, PoolConfig would silently fall back to its
+      # own Python-side default (20) regardless of what this pool's
+      # vlan_ip_offset is actually set to in terraform.tfvars.
+      vlan_ip_offset               = p.vlan_ip_offset
       elastic_ip_offset_start      = p.elastic_ip_offset_start
       conntrack_buddy_sync_enabled = true
       # var.ip_failover_enabled/var.linode_bgp_dcid must be threaded into
