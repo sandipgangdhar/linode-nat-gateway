@@ -39,7 +39,8 @@
 # terraform/environments/example/main.tf only needed genuinely NEW
 # argument lines added for exporter_bin_url/buddy_sync_bin_url/
 # natctl_bin_url/client_agent_bin_url -- everything else needed zero
-# changes. See docs/PUBLISHING.md for the full reasoning.
+# changes, since every consumer of the unchanged names keeps working
+# without ever knowing whether it's pointed at source or a binary.
 #
 # -----------------------------------------------------
 # Author:
@@ -112,11 +113,11 @@ resource "linode_object_storage_object" "buddy_sync_bin" {
   etag   = filemd5(local.buddy_sync_bin_path)
 }
 
-# v21 (customer repo): served to client instances by natctl itself (GET
-# /agents/client-agent, controller/natctl/api.py in the dev repo), not
-# fetched directly by client-fleet nodes from Object Storage -- see
-# ApiConfig.client_agent_bin_url. natctl's own host fetches this ONCE at
-# its own startup and caches it locally from then on.
+# Served to client instances by natctl itself (GET /agents/client-agent,
+# controller/natctl/api.py in the dev repo), not fetched directly from
+# Object Storage by clients -- see ApiConfig.client_agent_bin_url.
+# natctl's own host fetches this ONCE at its own startup and caches it
+# locally from then on.
 resource "linode_object_storage_object" "client_agent_bin" {
   bucket     = var.bucket
   region     = var.s3_region

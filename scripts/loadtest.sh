@@ -64,17 +64,17 @@ while [[ $# -gt 0 ]]; do
     --connections) CONNECTIONS="$2"; shift 2 ;;
     --duration) DURATION="$2"; shift 2 ;;
     --target) TARGET="$2"; shift 2 ;;
-    # BUG FIX (found live, 2026-08-30): --disable-keepalive below means a
-    # fresh DNS lookup per request, not just a fresh TCP connection --
-    # confirmed live this can overwhelm a small client instance's own
-    # local resolver under real concurrency (500-way concurrency
-    # achieved only ~37 req/sec, almost all requests failing with
-    # "Temporary failure in name resolution", not just running slower).
-    # Optional: resolve the target's IP from wherever's invoking this
-    # script (see acceptance-tests/checks/check_05_autoscale.py, which
-    # resolves it before SSHing in) instead of trusting THIS host's own
-    # resolver, which may be less reliable. Falls back to local
-    # resolution below if not given.
+    # --disable-keepalive below means a fresh DNS lookup per request,
+    # not just a fresh TCP connection -- this can overwhelm a small
+    # client instance's own local resolver under real concurrency
+    # (500-way concurrency achieved only ~37 req/sec, almost all
+    # requests failing with "Temporary failure in name resolution", not
+    # just running slower). Optional: resolve the target's IP from
+    # wherever's invoking this script (see
+    # acceptance-tests/checks/check_05_autoscale.py, which resolves it
+    # before SSHing in) instead of trusting THIS host's own resolver,
+    # which may be less reliable. Falls back to local resolution below
+    # if not given.
     --target-ip) TARGET_IP="$2"; shift 2 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
@@ -89,15 +89,14 @@ command -v hey >/dev/null 2>&1 || {
 echo "Driving ${CONNECTIONS} concurrent connections against ${TARGET} for ${DURATION}s..."
 echo "Watch dashboards/nat-overview.json (conntrack utilization, PPS, throughput) during this run."
 
-# BUG FIX (found live, 2026-08-30, same investigation as the -disable-
-# keepalive fix below): forcing a fresh TCP connection per request also
-# means a fresh DNS lookup per request (no connection to cache it
-# against) -- confirmed live this overwhelms a small client instance's
-# own local resolver under real concurrency: a 500-concurrency run
-# achieved only ~37 req/sec, with the overwhelming majority of requests
-# failing outright ("Temporary failure in name resolution" /
-# context-deadline-exceeded waiting on a hung lookup), not just running
-# slower. Pin the target's hostname to its already-resolved IP in
+# Forcing a fresh TCP connection per request also means a fresh DNS
+# lookup per request (no connection to cache it against) -- this
+# overwhelms a small client instance's own local resolver under real
+# concurrency: a 500-concurrency run achieved only ~37 req/sec, with
+# the overwhelming majority of requests failing outright ("Temporary
+# failure in name resolution" / context-deadline-exceeded waiting on a
+# hung lookup), not just running slower. Pin the target's hostname to
+# its already-resolved IP in
 # /etc/hosts once, up front, instead of re-resolving it thousands of
 # times a minute -- every subsequent lookup (from hey or anything else)
 # now resolves instantly, locally, with zero network round-trips.
@@ -128,16 +127,15 @@ if [[ -n "$TARGET_HOST" ]]; then
   fi
 fi
 
-# BUG FIX (found live, 2026-08-30, roadmap/M7-acceptance-suite.md's
-# check_05 investigation): hey reuses each worker's TCP connection across
-# every request it sends (HTTP keep-alive) unless told not to -- so
-# raising --duration/request-count alone never increased the number of
-# DISTINCT connections opened, only --connections (concurrency) did.
-# Confirmed live: a 500-connection, 120s run completed 1,000,000 requests
-# at ~14,800 req/sec, yet natctl's own conntrack/port-headroom/throughput
-# metrics stayed essentially at baseline throughout, because only ~500
-# actual TCP connections (matching the concurrency, not the request
-# count) were ever open against the fleet at once. -disable-keepalive
+# hey reuses each worker's TCP connection across every request it sends
+# (HTTP keep-alive) unless told not to -- so raising --duration/request-
+# count alone never increases the number of DISTINCT connections opened,
+# only --connections (concurrency) does. A 500-connection, 120s run
+# completes 1,000,000 requests at ~14,800 req/sec, yet natctl's own
+# conntrack/port-headroom/throughput metrics stay essentially at baseline
+# throughout, because only ~500 actual TCP connections (matching the
+# concurrency, not the request count) are ever open against the fleet at
+# once. -disable-keepalive
 # forces a genuinely new TCP connection per request -- the realistic
 # scenario this check exists to simulate (many distinct clients/flows
 # through the NAT gateway, not one client reusing a handful of

@@ -11,8 +11,8 @@
 #
 # Why a template unit instead of one plain conntrackd.service: a
 # triangle's hub node holds TWO simultaneous conntrackd peer
-# relationships at once (see docs/ARCHITECTURE.md §3.6 "Odd node
-# counts"), each an entirely ordinary, independent unicast conntrackd
+# relationships at once (see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.2,
+# the 3-node triangle), each an entirely ordinary, independent unicast conntrackd
 # process -- distinct config file, lock file, control socket, and UDP
 # port per relationship (see buddy_sync.py's apply_conntrack_peers() for
 # how those paths/ports are derived). A template unit lets systemd manage

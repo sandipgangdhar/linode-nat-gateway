@@ -5,8 +5,7 @@
 # `python3 /opt/lng-client-agent/lng_client_agent.py`. Overwrites the dev
 # repo's source-mode lng-client-agent.service entirely -- the customer
 # repo only ever ships the compiled binary, no dual-mode support needed
-# here (see customer-repo-overlay/ansible/cloud-init/client-node.yaml.tftpl
-# and customer-repo-overlay/terraform/modules/client-fleet/main.tf).
+# here (see customer-repo-overlay/ansible/cloud-init/client-node.yaml.tftpl).
 #
 # -----------------------------------------------------
 # Author:

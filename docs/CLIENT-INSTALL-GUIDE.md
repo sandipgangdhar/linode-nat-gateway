@@ -10,9 +10,11 @@ instance" note is the condensed version of this same material; this
 file is the detailed one to reach for when you're doing it for the
 first time or something isn't working.
 
-Two separate scripts as of 2026-09-10 (previously one combined
-install-nat-client.sh): scripts/configure-vlan-address.sh applies the
-VLAN address, scripts/install-nat-client.sh sets up NAT routing.
+This project provides no VLAN-addressing tooling at
+all -- applying a client's static VLAN address is entirely your own
+automation's responsibility. scripts/install-nat-client.sh is the one
+script here: it verifies the address is really there, then sets up NAT
+routing.
 
 Author: Sandip Gangdhar (https://github.com/sandipgangdhar)
 (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
@@ -28,20 +30,20 @@ This project does not create client instances or attach their network
 interfaces -- your own automation does that. This guide starts once the
 instance exists and has its VLAN interface attached.
 
-## Two scripts, two jobs
+## VLAN addressing is yours; NAT routing is this script's
 
-VLAN addressing and NAT routing are genuinely separate concerns -- a
-client's address doesn't change when its routing does, and vice versa:
+This project provides no VLAN-addressing tooling -- getting a working
+static address onto the client's VLAN interface is entirely your own
+automation's job:
 
-| | Attach the VLAN interface | Choose the VLAN address | Apply the VLAN address | Set up NAT routing |
-|---|---|---|---|---|
-| **Who does it** | You / your automation (account-level, before running either script) | You / your automation (pick from the reserved window below -- no auto-assignment exists) | `scripts/configure-vlan-address.sh` | `scripts/install-nat-client.sh` |
+| | Attach the VLAN interface | Choose and apply the VLAN address | Set up NAT routing |
+|---|---|---|---|
+| **Who does it** | You / your automation (account-level) | You / your automation (pick from the reserved sub-block below -- no auto-assignment or collision check exists) | `scripts/install-nat-client.sh` |
 
-Run them in that order. `install-nat-client.sh` checks that its
-`--vlan-iface` already has a real address applied and fails fast,
-pointing you back at `configure-vlan-address.sh`, if it doesn't -- so
-running them out of order is caught immediately, not a silent
-half-working state.
+`install-nat-client.sh` checks that its `--vlan-iface` already has a
+real address applied and fails fast with a clear error if it doesn't --
+so a missing or not-yet-applied address is caught immediately, not a
+silent half-working state.
 
 ## Before you start
 
@@ -56,27 +58,28 @@ half-working state.
   sub-block** (`vlan_cidr_shared_reserved`/`vlan_cidr_dedicated_acme_reserved`
   in `terraform.tfvars` -- that block belongs to this pool's own
   floor/elastic/observability nodes only) so it can't collide with a
-  node's own range -- there is no reservation system for
-  manually-assigned clients, only a live ARP-probe collision check at
-  apply time (see `configure-vlan-address.sh`'s own header comment).
-- **Use the pool's WIDE VLAN CIDR prefix length on `--vlan-ip`, not
-  whatever prefix happens to fit your address** -- found live,
-  2026-09-11: applying e.g. `/24` when the pool's real `vlan_cidr` is a
-  `/22` still "succeeds" with no error from either script, but
-  `client-agent` then fails to install its route at all (`ip nexthop`
-  rejects it with `Error: Nexthop has invalid gateway`, since this
-  client's own kernel-connected route doesn't cover the wider block a
-  NAT node's address can live in) -- silent from the install script's
-  own output, only visible in `journalctl -u lng-client-agent`. Fix by
-  re-applying the same address with the correct wide prefix:
-  `./configure-vlan-address.sh --vlan-ip <same-address>/<wide-prefix>
-  --vlan-iface <iface> && systemctl restart lng-client-agent`. See
-  `docs/RUNBOOK.md`'s "Onboard a client instance" for the full writeup.
+  node's own range -- there is no reservation system or collision check
+  for manually-assigned clients at all; your own automation is fully
+  responsible for uniqueness.
+- **Apply it at the pool's WIDE VLAN CIDR prefix length, not whatever
+  prefix happens to fit your address** --
+  applying e.g. `/24` when the pool's real `vlan_cidr` is a `/22` still
+  "succeeds" with no error, but `client-agent` then fails to install its
+  route at all (`ip nexthop` rejects it with `Error: Nexthop has invalid
+  gateway`, since this client's own kernel-connected route doesn't cover
+  the wider block a NAT node's address can live in) -- silent from
+  `install-nat-client.sh`'s own output, only visible in
+  `journalctl -u lng-client-agent`. Fix by re-applying the same address
+  with the correct wide prefix (e.g. `ip addr add <same-address>/<wide-prefix>
+  dev <iface>` or whatever your own automation uses) then
+  `systemctl restart lng-client-agent`. See
+  `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html` §3.4 (Static VLAN Addressing)
+  for the full writeup.
 - **Know your pool's roster URL — and whether that's a VPC or VLAN
   address depends on where natctl itself runs, not on the client:**
   - **Default (single dedicated control-plane host)**: natctl runs on
     the `observability` instance, which has public + VPC interfaces
-    plus (since 2026-09-11) a **VLAN** interface on the shared pool's
+    plus a **VLAN** interface on the shared pool's
     own VLAN. **A client on that same VLAN can use its VLAN address
     directly**, `vlan_only` included:
     `http://<observability-instance-VLAN-ip>:8099/fleet/shared`. A
@@ -109,9 +112,9 @@ half-working state.
     a different VPC subnet than the fleet's own nodes is reachable
     out of the box. See `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html#c3-3`
     if this ever silently hangs instead of connecting.
-- **Run both scripts ON the target Linux instance itself** (SSH in, or
+- **Run this script ON the target Linux instance itself** (SSH in, or
   as its own user-data), never on the machine driving your automation --
-  they configure a Linux network stack directly and will fail with a
+  it configures a Linux network stack directly and will fail with a
   confusing error on anything else (see "Troubleshooting" below).
 
 ## Quick steps
@@ -119,10 +122,9 @@ half-working state.
 ```bash
 # on the client instance itself, as root
 
-# 1. Apply the VLAN address
-sudo ./configure-vlan-address.sh --vlan-ip 192.168.100.130/22
-#    (prints which interface it auto-detected -- pass --vlan-iface
-#     explicitly if that's ever wrong, e.g. on the ifupdown stack)
+# 1. Apply a static VLAN address yourself first (your own automation --
+#    this project provides no tooling for it), e.g.:
+ip addr add 192.168.100.130/22 dev eth0
 
 # 2. Set up NAT routing
 sudo ./install-nat-client.sh \
@@ -149,13 +151,12 @@ and troubleshooting.
 
 `install-nat-client.sh` fetches the **compiled** `client-agent` binary
 at install time (rather than Python source) -- no `python3` needed on
-the target instance for that step (`configure-vlan-address.sh` does
-still use `python3` for its own DNS/API-persistence logic). Copy both
-scripts onto the instance (`scp`, or bake them into your image/cloud-init
-per "Best practices" below), or paste them as that instance's own Linode
-user-data at create time, one after the other -- see each script's own
-header comment for the exact user-data variant (flags become exported
-env vars instead, since user-data scripts run with no arguments).
+the target instance for this script. Copy it onto the instance (`scp`,
+or bake it into your image/cloud-init per "Best practices" below), or
+paste it as that instance's own Linode user-data at create time, after
+your own VLAN-addressing step -- see the script's own header comment for
+the exact user-data variant (flags become exported env vars instead,
+since user-data scripts run with no arguments).
 
 ## natctl-on-node pools: multi-URL failover
 
@@ -187,30 +188,13 @@ pool, not one. See `client-agent/lng-client-agent.env.example`'s
 For a single-control-plane pool (the default, not `natctl_on_node_enabled`),
 one URL is fine -- there's only one natctl to point at either way.
 
-## What each script actually does
-
-**`configure-vlan-address.sh`:**
-
-1. **Detects the network stack** (systemd-networkd vs.
-   ifupdown/Network Helper) -- determines both how the address gets
-   applied and whether DNS auto-detection/reboot persistence apply.
-2. **Applies your `--vlan-ip`** to `--vlan-iface` (auto-detected if
-   omitted), persistently, after a live ARP-probe collision preflight
-   (`arping -D`) against that exact address on that exact VLAN segment
-   -- catches a collision with a NAT node or another client at the
-   moment it matters. Skipped if the interface already owns that
-   address, so re-running is safe.
-3. **Auto-detects DNS resolvers** on the systemd-networkd stack if
-   `--dns-servers` wasn't given (ignored on ifupdown -- Network Helper
-   already handles it there).
-4. **Persists the address across reboot on the ifupdown stack**, if
-   `--linode-api-token` was given -- see that flag's own header-comment
-   section for why a token is genuinely needed for this specific case.
+## What this script actually does
 
 **`install-nat-client.sh`:**
 
 1. **Verifies `--vlan-iface` already has a real address** -- fails fast
-   with a pointer back to `configure-vlan-address.sh` if not.
+   with a clear error if not (it never applies one itself; that's your
+   own automation's job).
 2. **Sets the kernel's ECMP hash policy** (`net.ipv4.fib_multipath_hash_policy=1`,
    persisted via `/etc/sysctl.d/99-lng-ecmp.conf`), unconditionally.
    Without this, the kernel's default hashes only source+destination IP
@@ -231,32 +215,20 @@ one URL is fine -- there's only one natctl to point at either way.
    takes over the default route. Pass `--force` to install it anyway (a
    deliberate dual-path egress policy).
 
-Both print a "Summary of changes" at the end (VLAN address/persistence
-status for the first; ECMP hash policy, default route before/after, and
-client-agent's install location for the second) -- a real, itemized
-record of what that run actually did.
+Prints a "Summary of changes" at the end (ECMP hash policy, default
+route before/after, and client-agent's install location) -- a real,
+itemized record of what that run actually did.
 
-Both are safe to re-run: every step is idempotent.
+Safe to re-run: every step is idempotent.
 
 ## All flags
-
-**`configure-vlan-address.sh`:**
-
-| Flag | Env var | Required | Default | Notes |
-|---|---|---|---|---|
-| `--vlan-ip <cidr>` | `LNG_VLAN_IP` | yes | — | This instance's static VLAN address, e.g. `192.168.100.251/22`. No collision reservation system beyond the live ARP probe. |
-| `--vlan-iface <name>` | `LNG_VLAN_IFACE` | no | auto-detect | Auto-detection picks the first addressless non-loopback interface; often wrong on the ifupdown stack (Network Helper pre-assigns it) -- pass explicitly there. |
-| `--linode-api-token <token>` | `LNG_LINODE_API_TOKEN` | no (required for a *durable* fix on ifupdown) | — | Ifupdown/Network Helper regenerates `/etc/network/interfaces` every boot; without this, the VLAN address reverts on reboot. Prefer the env var over the flag on a shared/logged shell. |
-| `--dns-servers "<ip1>,<ip2>"` | `LNG_DNS_SERVERS` | no | auto-detect (systemd-networkd only) | Ignored on ifupdown (Network Helper already handles DNS there). |
-| `--dns-search-domain <domain>` | `LNG_DNS_SEARCH_DOMAIN` | no | `members.linode.com` | |
-| `--dns-default-route true\|false` | `LNG_DNS_DEFAULT_ROUTE` | no | `true` | |
 
 **`install-nat-client.sh`:**
 
 | Flag | Env var | Required | Default | Notes |
 |---|---|---|---|---|
 | `--roster-url <url>` | `LNG_ROSTER_URL` | yes | — | natctl's roster URL for this client's pool. Comma-separated list supported (see above). |
-| `--vlan-iface <name>` | `LNG_VLAN_IFACE` | **yes** | — | Must already have a real address applied (`configure-vlan-address.sh`'s job) -- not auto-detected here, since by this point an addressless interface is a sign something upstream went wrong, not a useful hint. |
+| `--vlan-iface <name>` | `LNG_VLAN_IFACE` | **yes** | — | Must already have a real address applied by your own automation -- not auto-detected here, since by this point an addressless interface is a sign something upstream went wrong, not a useful hint. |
 | `--artifact-base-url <url>` | `LNG_ARTIFACT_BASE_URL` | no | fetched via natctl's roster API | Only needed to fetch `client-agent` directly from Object Storage instead (e.g. a `public_vlan`-mode client that would rather not depend on natctl's serving endpoint). |
 | `--fallback-probe-enabled true\|false` | `LNG_FALLBACK_PROBE_ENABLED` | no | `false` | Client trusts natctl's own computed health by default; enable for extra independent per-node probing (ANDed with natctl's view). Also settable fleet-wide, live, via `natctl-cli set-client-config` -- see OPERATIONS.md. |
 | `--fallback-probe-interval <3-60>` | `LNG_FALLBACK_PROBE_INTERVAL` | no | `30` | Only meaningful with the fallback probe enabled. |
@@ -282,10 +254,10 @@ applies:
 `client-agent` (`install-nat-client.sh`) only ever manages the default
 route -- installed precisely when nothing else on the instance already
 provides one (`vlan_only`, `vpc_vlan`), skipped when something else does
-(`public_vlan`, `public_vpc_vlan`). VLAN and VPC connected routes are
-always applied by `configure-vlan-address.sh`/the kernel-OS network
-stack directly, independent of `interface_mode`. Full mechanics:
-`docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html#c3-3`.
+(`public_vlan`, `public_vpc_vlan`). VLAN and VPC connected routes come
+from whatever applied the address (your own automation) and the
+kernel-OS network stack directly, independent of `interface_mode`. Full
+mechanics: `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html#c3-3`.
 
 ## Verification
 
@@ -312,9 +284,9 @@ macOS/BSD's sysctl error wording, not Linux's (Linux says `cannot stat
 ... No such file or directory` instead). It means the script ran on the
 wrong host — your laptop or automation runner, not the target Linux
 client instance. SSH into the actual instance and run it there, or
-deliver it as that instance's own user-data. Both scripts fail fast
-with a clear message for this (a `uname -s` preflight) instead of the
-cryptic sysctl error.
+deliver it as that instance's own user-data. `install-nat-client.sh`
+fails fast with a clear message for this (a `uname -s` preflight)
+instead of the cryptic sysctl error.
 
 **Script hangs on the roster fetch** — check the NAT node/observability
 instance's Cloud Firewall CIDR scoping for port 8099 before assuming
@@ -335,27 +307,26 @@ up-to-date `install-nat-client.sh`, or pass `--force` to install
 `client-agent` regardless of what the route table shows.
 
 **`install-nat-client.sh` errors immediately with "has no IPv4 address
-configured"** — this is the expected, intentional guard: it no longer
-applies the VLAN address itself, and refuses to proceed if
-`--vlan-iface` looks unaddressed rather than silently building a route
-through an interface that was never actually configured. Run
-`configure-vlan-address.sh` first.
+configured"** — this is the expected, intentional guard: it never
+applies the VLAN address itself (that's entirely your own automation's
+job), and refuses to proceed if `--vlan-iface` looks unaddressed rather
+than silently building a route through an interface that was never
+actually configured. Apply a real static address to that interface with
+your own automation, then re-run.
 
 **VLAN address never applies / `ip -4 addr show <iface>` shows nothing**
-— almost always means either `configure-vlan-address.sh` never ran (or
-errored partway, e.g. the ARP-probe preflight rejecting the address as
-already in use), or the instance's own VLAN interface was never
-actually attached at the Linode account level. Check:
+— either your own addressing automation never ran (or failed partway),
+or the instance's own VLAN interface was never actually attached at the
+Linode account level. Check:
 ```bash
 ip -4 -o addr show dev <vlan-iface>           # is the address actually applied?
-cat /etc/systemd/network/00-lng-vlan.network  # (systemd-networkd) confirm Address= is what you expect
-networkctl status <iface>                     # is systemd-networkd managing it, with the expected address?
-journalctl -u systemd-networkd -b
+networkctl status <iface>                     # (systemd-networkd) is it managing this interface, with the expected address?
+journalctl -u systemd-networkd -b             # (systemd-networkd) or check your own addressing tool's own logs
 ```
 If the interface never appears in `ip link` at all, it was never
 attached to this instance at the Linode account level — that's a step
-your own creation automation is responsible for, not something either
-script can fix from inside the guest OS.
+your own creation automation is responsible for, not something
+`install-nat-client.sh` can fix from inside the guest OS.
 
 **A freshly-started client shows zero routes even though nodes are
 healthy** — if this pool runs `natctl_on_node_enabled` and
@@ -372,9 +343,10 @@ pick up the fix.
 
 ## Best practices
 
-- Bake both scripts into your own instance image/cloud-init rather than
-  running them ad hoc over SSH at scale.
-- Safe to re-run either script against an already-configured instance.
+- Bake this script (after your own VLAN-addressing step) into your own
+  instance image/cloud-init rather than running it ad hoc over SSH at
+  scale.
+- Safe to re-run against an already-configured instance.
 - If you only want a one-off connectivity test against a single node
   (not full ECMP failover), a manual
   `ip route add <dest> via <nat-node-vlan-ip> dev <iface>` is simpler —
@@ -387,9 +359,8 @@ pick up the fix.
 - `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html#c3-3` — interface layout
   rationale and the full four-shape table; `#c2-2`/`#c2-3` for the
   roster/control-plane design this all sits on top of.
-- `scripts/configure-vlan-address.sh`, `scripts/install-nat-client.sh`
-  — each script's own header comment is the authoritative, most
-  detailed reference for every flag.
+- `scripts/install-nat-client.sh` — its own header comment is the
+  authoritative, most detailed reference for every flag.
 - `client-agent/install.sh`, `client-agent/lng-client-agent.env.example`
   — for installing `client-agent` directly, without
   `install-nat-client.sh`'s wrapper.

@@ -6,8 +6,8 @@
 # in the deliberate order the filenames encode: cheapest/least-disruptive
 # first, most disruptive/slowest last), loads config.yaml, runs each
 # check's run(cfg, report) function, and exits non-zero if anything
-# failed. This is the "one command" docs/RUNBOOK.md and this project's
-# README point operators at for post-deploy validation.
+# failed. This is the "one command" this project's own README points
+# operators at for post-deploy validation.
 #
 # -----------------------------------------------------
 # Parameters:

@@ -1,8 +1,8 @@
 # check_03_buddy_failover_drill.py (acceptance-tests/checks)
 #
 # Wraps scripts/node-failure-drill.sh (rather than reimplementing its
-# logic) to automate the exact manual drill docs/RUNBOOK.md already
-# documents: stop nat-exporter on one node (simulating it going
+# logic) to automate the same drill an operator would run by hand:
+# stop nat-exporter on one node (simulating it going
 # unhealthy without touching the instance itself), confirm the observing
 # client's client-agent removes it from its ECMP route within
 # `max_wait_seconds`, restore it, and confirm the client re-adds it. See
@@ -32,7 +32,7 @@
 #   failing one node doesn't also trip an unrelated autoscale event
 #   mid-drill -- see the wrapped script's own Best Practices section.
 # - Uses the SAME node-failure-drill.sh operators already run manually
-#   day-2 (docs/RUNBOOK.md) -- if this check's behavior ever needs to
+#   as a day-2 procedure -- if this check's behavior ever needs to
 #   change, change the script, not this wrapper, so manual and automated
 #   runs never drift apart.
 #
@@ -86,12 +86,12 @@ def run(cfg: Config, report: Reporter) -> None:
         # scripts/node-failure-drill.sh's own --node-ssh-host comment for
         # why: node_host is matched against the client's route table
         # (this branch's VLAN address), which is deliberately NOT
-        # SSH-reachable (roadmap/M2-security.md test case 2.8), so a real
-        # deployment on this branch needs a different address for the
-        # actual SSH calls (confirmed live, 2026-08-30,
-        # roadmap/M7-acceptance-suite.md -- omitting this falls back to
-        # node_host, for any topology where a single address serves both
-        # roles).
+        # SSH-reachable (the node's own nftables ruleset
+        # excludes SSH on the VLAN interface, and Cloud Firewall never
+        # covers VLAN traffic at all), so a real deployment on this branch
+        # needs a different address for the actual SSH calls -- omitting
+        # this falls back to node_host, for
+        # any topology where a single address serves both roles.
         node_ssh_host = drill.get("node_ssh_host")
 
         max_wait = int(drill.get("max_wait_seconds", DEFAULT_MAX_WAIT_SECONDS))

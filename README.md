@@ -40,7 +40,7 @@ A pool of independently-active NAT nodes per zone, each owning its own public eg
 - **Multi-tenant isolation, when you want it**: default shared pool for cost efficiency, or dedicated pools with reserved capacity for tenants that need isolation — both are the same Terraform module, just a different `pool_name`.
 - **Vertical scale**: swap instance plans, up to Akamai Cloud's 40 Gbps in / 12 Gbps out dedicated-CPU plans.
 - **Multi-IP egress**: each node can hold multiple public egress IPs to multiply available ephemeral ports (55K connections per IP per destination, same ceiling AWS documents).
-- **Static VLAN addressing for the client fleet**: since Linode VLANs carry no address-assignment mechanism of their own, a client instance's VLAN address is applied by `scripts/configure-vlan-address.sh` (run against an instance your own automation already created), with a live ARP-probe preflight guarding against reusing an address already in use; `scripts/install-nat-client.sh` then sets up NAT routing as a separate step. See OPERATIONS.md "Onboarding a client instance".
+- **Static VLAN addressing for the client fleet**: since Linode VLANs carry no address-assignment mechanism of their own, applying a client instance's static VLAN address is entirely your own automation's responsibility (this project provides no tooling for it); `scripts/install-nat-client.sh` then sets up NAT routing against the already-addressed instance. See OPERATIONS.md "Onboarding a client instance".
 - **Security**: default-deny Cloud Firewall templates on public/VPC interfaces, egress-only posture, minimal node-side attack surface, node-level flood/rate-limiting.
 - **Rich observability**: Prometheus metrics for NAT (conntrack utilization, port exhaustion, PPS, throughput, drop counters, node health) — plus fleet-aware scraping that tracks autoscaling automatically, pre-built Grafana dashboards, and alert rules.
 - **Infrastructure as code**: full Terraform module set for Akamai Cloud; reproducible, auditable, GitOps-friendly, and fully owned by you.
@@ -82,10 +82,11 @@ terraform init
 terraform apply
 
 # 2. Configure a client instance you already created (through your own
-#    automation -- this project doesn't create client instances, see
-#    OPERATIONS.md "Onboarding a client instance"): apply its static
-#    VLAN address, then install client-agent -- two separate steps.
-./scripts/configure-vlan-address.sh --vlan-ip <address>/<prefix>
+#    automation -- this project doesn't create client instances or apply
+#    their VLAN addresses, see OPERATIONS.md "Onboarding a client
+#    instance"). Apply a static VLAN address yourself first (outside
+#    this pool's reserved sub-block, at its wide VLAN CIDR prefix
+#    length), then install client-agent:
 ./scripts/install-nat-client.sh --vlan-iface eth0 \
   --roster-url "$(terraform -chdir=terraform/environments/example output -raw natctl_roster_url_shared)"
 # Running natctl_on_node_enabled? Pass every node's own address instead, comma-

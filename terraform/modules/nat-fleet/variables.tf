@@ -15,7 +15,7 @@
 #    image, egress_ips_per_node, conntrack_max, private_ip_offset.
 # 3) Access              - authorized_keys, root_pass.
 # 4) Buddy-sync / IP failover - natctl_roster_url, ip_failover_enabled,
-#    linode_bgp_dcid (see docs/ARCHITECTURE.md section 3.5/3.6).
+#    linode_bgp_dcid (see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3/§4.4).
 #
 # -----------------------------------------------------
 # Usage:
@@ -42,7 +42,7 @@ variable "fleet_label" {
 }
 
 variable "pool_name" {
-  description = "Pool identifier tenants are mapped to (\"shared\" or a dedicated tenant name). Tagged onto every node for natctl's fleet discovery — see docs/ARCHITECTURE.md §4."
+  description = "Pool identifier tenants are mapped to (\"shared\" or a dedicated tenant name). Tagged onto every node for natctl's fleet discovery — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.5 (Multi-Tenant Pools)."
   type        = string
   default     = "shared"
 }
@@ -56,7 +56,7 @@ variable "vpc_id" {
 }
 
 variable "public_subnet_id" {
-  description = "The VPC subnet every node's eth1 (VPC) interface lives in. Serves buddy-pair conntrackd sync traffic — see docs/ARCHITECTURE.md §3.5. This is NOT where the private client fleet lives anymore (see vlan_label) — VPC does not support routing a client's default gateway through a peer instance to reach non-VPC destinations, which is why v4 moved that job to VLAN. See docs/ARCHITECTURE.md §3.0 for the validated finding behind this."
+  description = "The VPC subnet every node's eth1 (VPC) interface lives in. Serves buddy-pair conntrackd sync traffic — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3. This is NOT where the private client fleet lives anymore (see vlan_label) — VPC does not support routing a client's default gateway through a peer instance to reach non-VPC destinations, which is why v4 moved that job to VLAN. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §1.2 for the validated finding behind this."
   type        = number
 }
 
@@ -66,17 +66,17 @@ variable "public_subnet_cidr" {
 }
 
 variable "vlan_label" {
-  description = "Name of the VLAN every node's eth2 interface joins, and that private client instances also join, for transparent NAT egress. VLANs aren't a standalone Terraform resource on Linode — they come into existence implicitly the first time any instance attaches an interface with this label, and disappear when the last one detaches. See docs/ARCHITECTURE.md §3.0."
+  description = "Name of the VLAN every node's eth2 interface joins, and that private client instances also join, for transparent NAT egress. VLANs aren't a standalone Terraform resource on Linode — they come into existence implicitly the first time any instance attaches an interface with this label, and disappear when the last one detaches. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §1.2/§3.4."
   type        = string
 }
 
 variable "vlan_cidr" {
-  description = "The FULL, real VLAN CIDR every node's interface is actually configured with (its prefix length is what ipam_address and the rendered cloud-init .network file both use) -- e.g. a customer's whole /16. 2026-09-11 range-simplification refactor: this is no longer where addresses are SELECTED from (see vlan_reserved_cidr below) -- it's purely the source of the prefix length, so routing still works to whatever's outside this fleet's own reserved sub-block (a customer's own clients elsewhere in the same VLAN)."
+  description = "The FULL, real VLAN CIDR every node's interface is actually configured with (its prefix length is what ipam_address and the rendered cloud-init .network file both use) -- e.g. a customer's whole /16. This is not where addresses are SELECTED from (see vlan_reserved_cidr below) -- it's purely the source of the prefix length, so routing still works to whatever's outside this fleet's own reserved sub-block (a customer's own clients elsewhere in the same VLAN)."
   type        = string
 }
 
 variable "vlan_reserved_cidr" {
-  description = "A small sub-block nested inside vlan_cidr, wholly owned by this fleet -- floor (and, via the identical field on PoolConfig, elastic) nodes' addresses are selected from HERE via cidrhost + vlan_ip_offset, not from vlan_cidr directly. Nothing else (a customer's own clients, another pool sharing the same physical VLAN) should ever be assigned an address inside this block -- see docs/RUNBOOK.md's onboarding guidance for the operator-facing convention this depends on. Replaces the old vlan_elastic_headroom_margin/client_static_vlan_reserved-derived ceiling."
+  description = "A small sub-block nested inside vlan_cidr, wholly owned by this fleet -- floor (and, via the identical field on PoolConfig, elastic) nodes' addresses are selected from HERE via cidrhost + vlan_ip_offset, not from vlan_cidr directly. Nothing else (a customer's own clients, another pool sharing the same physical VLAN) should ever be assigned an address inside this block -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §9.3 for the operator-facing convention this depends on (a customer picks their own client address from outside this block). Replaces the old vlan_elastic_headroom_margin/client_static_vlan_reserved-derived ceiling."
   type        = string
 }
 
@@ -87,12 +87,12 @@ variable "vlan_ip_offset" {
 }
 
 variable "private_subnet_cidrs" {
-  description = "CIDR(s) of the private client fleet on the VLAN that this pool is allowed to forward traffic for (the source-address allow-list in the NAT node's forward chain). Despite the name (kept for continuity with earlier versions), these are VLAN-side CIDRs in v4, not VPC subnets — see vlan_label/vlan_cidr above."
+  description = "CIDR(s) of the private client fleet on the VLAN that this pool is allowed to forward traffic for (the source-address allow-list in the NAT node's forward chain). Despite the name, these are VLAN-side CIDRs, not VPC subnets — see vlan_label/vlan_cidr above."
   type        = list(string)
 }
 
 variable "vpc_sibling_subnet_cidrs" {
-  description = "Found live 2026-09-09: every subnet's CIDR in this environment's VPC (not just this pool's own -- the whole VPC), routed into each floor node's eth1 so it can actually reach (and reply to) a sibling subnet, not just the one it's directly attached to. Unlike private_subnet_cidrs above, this is genuinely VPC-side -- pass module.vpc.all_subnet_cidrs (auto-discovered, see that module's own comment) here, not a hand-maintained list. Purely a routing convenience: Cloud Firewall/nftables (gated by the environment's own private_subnet_ids) remain the actual security boundary regardless of what's routable. Default [] preserves pre-existing behavior (no sibling routes) for any caller that hasn't wired this yet."
+  description = "Every subnet's CIDR in this environment's VPC (not just this pool's own -- the whole VPC), routed into each floor node's eth1 so it can actually reach (and reply to) a sibling subnet, not just the one it's directly attached to -- a VPC-attached instance only ever gets a kernel route to its own directly-connected subnet otherwise. Unlike private_subnet_cidrs above, this is genuinely VPC-side -- pass module.vpc.all_subnet_cidrs (auto-discovered, see that module's own comment) here, not a hand-maintained list. Purely a routing convenience: Cloud Firewall/nftables (gated by the environment's own private_subnet_ids) remain the actual security boundary regardless of what's routable. Default [] preserves pre-existing behavior (no sibling routes) for any caller that hasn't wired this yet."
   type        = list(string)
   default     = []
 }
@@ -102,7 +102,7 @@ variable "firewall_id" {
 }
 
 variable "node_count" {
-  description = "Floor (Terraform-managed baseline) node count for this fleet. Defaults to 1 -- start minimal and raise it (or lean on natctl's elastic autoscaling above the floor) once real load justifies more, rather than assuming multi-node capacity is needed up front. At 1 node, conntrack buddy-sync/buddy IP failover (if enabled for this pool) simply stay dormant until a second node exists -- see docs/ARCHITECTURE.md §3.5's \"Already self-adjusts to node count\" note. natctl may add more elastic nodes above this floor if autoscaling is enabled — see docs/ARCHITECTURE.md §4 and controller/natctl/fleet.py. Scaling this down is a normal `terraform apply`; natctl never removes floor nodes, only ones it provisioned itself."
+  description = "Floor (Terraform-managed baseline) node count for this fleet. Defaults to 1 -- start minimal and raise it (or lean on natctl's elastic autoscaling above the floor) once real load justifies more, rather than assuming multi-node capacity is needed up front. At 1 node, conntrack buddy-sync/buddy IP failover (if enabled for this pool) simply stay dormant until a second node exists, activating automatically once one joins. natctl may add more elastic nodes above this floor if autoscaling is enabled — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.1 and controller/natctl/fleet.py. Scaling this down is a normal `terraform apply`; natctl never removes floor nodes, only ones it provisioned itself."
   type        = number
   default     = 1
 }
@@ -120,7 +120,7 @@ variable "instance_type" {
 }
 
 variable "node_instance_type_overrides" {
-  description = "Optional per-node instance_type override, keyed by node_id (e.g. \"lng-shared-2\" => \"g6-dedicated-8\"). Any node_id not present here uses instance_type above. This is how Terraform represents a floor whose nodes have been individually vertically-scaled via natctl_cli's `resize` command without drift on the next `terraform apply` -- see docs/VERTICAL-SCALING.md. Left empty (default) for a uniform floor, the original behavior."
+  description = "Optional per-node instance_type override, keyed by node_id (e.g. \"lng-shared-2\" => \"g6-dedicated-8\"). Any node_id not present here uses instance_type above. This is how Terraform represents a floor whose nodes have been individually vertically-scaled via natctl_cli's `resize` command without drift on the next `terraform apply` -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.4 (Vertical Scaling). Left empty (default) for a uniform floor, the original behavior."
   type        = map(string)
   default     = {}
 }
@@ -146,19 +146,19 @@ variable "egress_ips_per_node" {
 }
 
 variable "reserved_ip_enabled" {
-  description = "Whether each node's primary eth0 public IP is a Linode Reserved IP (linode_networking_ip with reserved = true) instead of the ephemeral one Linode auto-assigns on instance creation. A reserved IP is allocated up front and stays the SAME address for as long as that node_id slot exists in this fleet, even across an instance replacement (e.g. a Terraform-forced recreate from changing instance_type/image) — the ephemeral default does not survive that. Solves the operational problem of downstream services that IP-whitelist this fleet's egress addresses: with this off, a node replacement silently changes the IP a whitelist entry depends on. Off by default because Linode's Reserved IP feature is account-gated (\"IP reservation is not currently available to all users\" — Linode's own provider docs) -- confirm it's enabled on your account (Cloud Manager, or ask Linode support) before turning this on; enabling it against an ineligible account fails the linode_networking_ip resource outright. Does NOT cover egress_ips_per_node's extra IPs (still ephemeral) or elastic (natctl-provisioned) nodes -- those are handled by natctl.yaml's own reserved_ip_enabled field (controller/natctl/config.py), kept as a SEPARATE toggle since elastic nodes are created by natctl's own Linode API calls, not this module. See docs/ARCHITECTURE.md and docs/RUNBOOK.md."
+  description = "Whether each node's primary eth0 public IP is a Linode Reserved IP (linode_networking_ip with reserved = true) instead of the ephemeral one Linode auto-assigns on instance creation. A reserved IP is allocated up front and stays the SAME address for as long as that node_id slot exists in this fleet, even across an instance replacement (e.g. a Terraform-forced recreate from changing instance_type/image) — the ephemeral default does not survive that. Solves the operational problem of downstream services that IP-whitelist this fleet's egress addresses: with this off, a node replacement silently changes the IP a whitelist entry depends on. Off by default because Linode's Reserved IP feature is account-gated (\"IP reservation is not currently available to all users\" — Linode's own provider docs) -- confirm it's enabled on your account (Cloud Manager, or ask Linode support) before turning this on; enabling it against an ineligible account fails the linode_networking_ip resource outright. Does NOT cover egress_ips_per_node's extra IPs (still ephemeral) or elastic (natctl-provisioned) nodes -- those are handled by natctl.yaml's own reserved_ip_enabled field (controller/natctl/config.py), kept as a SEPARATE toggle since elastic nodes are created by natctl's own Linode API calls, not this module. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.6."
   type        = bool
   default     = false
 }
 
 variable "reserved_ip_pool" {
-  description = "roadmap/M17-reserved-ip-pool-and-prereservation.md: reserved IPv4 addresses the operator ALREADY OWNS (reused from a prior deployment on this same account, or reserved out-of-band ahead of time), to hand to floor nodes instead of always minting a brand-new linode_networking_ip.reserved for every node. Assigned by POSITION: reserved_ip_pool[0] goes to local.node_ids[0] (this pool's first floor node by creation order), reserved_ip_pool[1] to the second, and so on -- any node_id beyond length(reserved_ip_pool) still gets a freshly-created reservation, exactly as before this variable existed. Only meaningful when reserved_ip_enabled is true; harmless (ignored) otherwise. Default [] (fully backward compatible -- identical behavior to before this variable existed). Must not exceed node_count in length -- see this module's reserved_ip_pool_fits_node_count check block, which fails plan loudly rather than silently leaving excess addresses unused. Every supplied address must actually be a Reserved IP you already own on this account and region; Terraform will fail the apply if it isn't (Linode rejects assigning a non-reserved or already-attached address this way)."
+  description = "Reserved IPv4 addresses the operator ALREADY OWNS (reused from a prior deployment on this same account, or reserved out-of-band ahead of time), to hand to floor nodes instead of always minting a brand-new linode_networking_ip.reserved for every node. Assigned by POSITION: reserved_ip_pool[0] goes to local.node_ids[0] (this pool's first floor node by creation order), reserved_ip_pool[1] to the second, and so on -- any node_id beyond length(reserved_ip_pool) still gets a freshly-created reservation, exactly as before this variable existed. Only meaningful when reserved_ip_enabled is true; harmless (ignored) otherwise. Default [] (fully backward compatible -- identical behavior to before this variable existed). Must not exceed node_count in length -- see this module's reserved_ip_pool_fits_node_count check block, which fails plan loudly rather than silently leaving excess addresses unused. Every supplied address must actually be a Reserved IP you already own on this account and region; Terraform will fail the apply if it isn't (Linode rejects assigning a non-reserved or already-attached address this way)."
   type        = list(string)
   default     = []
 }
 
 variable "placement_group_enabled" {
-  description = "roadmap/M16-anti-affinity-placement-groups.md: whether this pool's floor nodes are spread across Linode Placement Groups (placement_group_type = \"anti_affinity:local\") so Akamai avoids co-locating them on the same physical host -- closes the gap docs/COMPARISON.md documents (\"a correlated failure of both [buddy] pair members has nothing to fail over to\"). Off by default -- same opt-in pattern as reserved_ip_enabled. Akamai caps a placement group at 5 Linodes, so a pool with more than 5 floor nodes gets ceil(node_count / 5) groups in contiguous index blocks (node 0-4 in group 0, 5-9 in group 1, ...) rather than failing to apply -- see docs/ARCHITECTURE.md §3.6.2's \"Residual gap\" for what multi-group chunking does and doesn't protect against. Elastic (natctl-provisioned) nodes are NOT covered -- see this milestone's roadmap file for why that's deliberately out of scope."
+  description = "Whether this pool's floor nodes are spread across Linode Placement Groups (placement_group_type = \"anti_affinity:local\") so Akamai avoids co-locating them on the same physical host -- closes the gap that a correlated failure of both buddy-pair members has nothing to fail over to, since buddy conntrack sync and BGP IP failover alone only protect against one node dying, not both members of a pair going down together. Off by default -- same opt-in pattern as reserved_ip_enabled. Akamai caps a placement group at 5 Linodes, so a pool with more than 5 floor nodes gets ceil(node_count / 5) groups in contiguous index blocks (node 0-4 in group 0, 5-9 in group 1, ...) rather than failing to apply -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.5 for what multi-group chunking does and doesn't protect against (a buddy pair straddling a block boundary, e.g. nodes 4 and 5, has no anti-affinity protection between them -- a structural limitation of contiguous-block assignment, not a bug). Elastic (natctl-provisioned) nodes are NOT covered -- deliberately out of scope."
   type        = bool
   default     = false
 }
@@ -180,13 +180,13 @@ variable "tags" {
 }
 
 variable "natctl_roster_url" {
-  description = "Base URL of natctl's roster API reachable from this fleet's nodes, e.g. \"http://10.0.0.5:8099\" (no trailing slash, no /fleet/<pool> suffix — that's appended per-node). Wires up buddy-sync/ for conntrackd buddy-pair sync and (if ip_failover_enabled) buddy IP failover — see docs/ARCHITECTURE.md §3.5. Leave empty (the default) to disable both entirely for this fleet's Terraform-managed floor nodes. Must match the natctl_roster_base_url set for this pool in natctl.yaml so natctl-provisioned elastic nodes use the same value (see controller/natctl/cloud_init.py)."
+  description = "Base URL of natctl's roster API reachable from this fleet's nodes, e.g. \"http://10.0.0.5:8099\" (no trailing slash, no /fleet/<pool> suffix — that's appended per-node). Wires up buddy-sync/ for conntrackd buddy-pair sync and (if ip_failover_enabled) buddy IP failover — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3. Leave empty (the default) to disable both entirely for this fleet's Terraform-managed floor nodes. Must match the natctl_roster_base_url set for this pool in natctl.yaml so natctl-provisioned elastic nodes use the same value (see controller/natctl/cloud_init.py)."
   type        = string
   default     = ""
 }
 
 variable "ip_failover_enabled" {
-  description = "Whether nodes in this fleet run FRR (v5 — replaces lelastic, which was architecturally locked to one role per node) for BIDIRECTIONAL BGP-based IP Sharing: each node self-announces its own eth0 public IP AND backs up its buddy's, so a node's buddy can take over its IP on failure, making buddy-pair conntrack sync (natctl_roster_url above) actually deliver session survival rather than just unusable mirrored state — see docs/ARCHITECTURE.md §3.5/§3.6/§3.6.1 for why both pieces are needed together and how bidirectional coverage was validated live. Requires natctl_roster_url to be set. Requires linode_bgp_dcid below. IP Sharing availability varies by Linode data center — confirm your region supports it before enabling (https://techdocs.akamai.com/cloud-computing/docs/configure-failover-on-a-compute-instance)."
+  description = "Whether nodes in this fleet run FRR (v5 — replaces lelastic, which was architecturally locked to one role per node) for BIDIRECTIONAL BGP-based IP Sharing: each node self-announces its own eth0 public IP AND backs up its buddy's, so a node's buddy can take over its IP on failure, making buddy-pair conntrack sync (natctl_roster_url above) actually deliver session survival rather than just unusable mirrored state — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3/§4.4 for why both pieces are needed together and how bidirectional coverage was validated live. Requires natctl_roster_url to be set. Requires linode_bgp_dcid below. IP Sharing availability varies by Linode data center — confirm your region supports it before enabling (https://techdocs.akamai.com/cloud-computing/docs/configure-failover-on-a-compute-instance)."
   type        = bool
   default     = false
 }
@@ -201,14 +201,15 @@ variable "linode_bgp_dcid" {
 # natctl-on-node (opt-in): removes the requirement for a dedicated
 # control-plane host by running natctl itself on every node in THIS fleet,
 # safely, via leader election with STONITH-style fencing — see
-# controller/natctl/leader_election.py and docs/ARCHITECTURE.md's
-# leader-election section. Leave natctl_on_node_enabled at its default
+# controller/natctl/leader_election.py and
+# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.4 (Leader Election and
+# Fencing). Leave natctl_on_node_enabled at its default
 # (false) to keep the original single-dedicated-host layout unchanged
 # (terraform/modules/observability) — nothing below matters in that case.
 # ---------------------------------------------------------------------------
 
 variable "natctl_on_node_enabled" {
-  description = "Whether every node in this fleet also runs natctl itself (leader-elected, with STONITH fencing — see controller/natctl/leader_election.py), instead of relying on a separate terraform/modules/observability host for it. This fleet's nodes become natctl's identity (NATCTL_SELF_NODE_ID/NATCTL_SELF_LINODE_ID) as well as its execution target. Requires natctl_config_yaml and (for the fencing lock) object_storage_* below to all be set. See docs/ARCHITECTURE.md's leader-election section for the honestly-stated trade-offs (fencing briefly interrupts a node's own NAT traffic) before enabling this in production."
+  description = "Whether every node in this fleet also runs natctl itself (leader-elected, with STONITH fencing — see controller/natctl/leader_election.py), instead of relying on a separate terraform/modules/observability host for it. This fleet's nodes become natctl's identity (NATCTL_SELF_NODE_ID/NATCTL_SELF_LINODE_ID) as well as its execution target. Requires natctl_config_yaml and (for the fencing lock) object_storage_* below to all be set. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.4 for the honestly-stated trade-offs (fencing briefly interrupts a node's own NAT traffic) before enabling this in production."
   type        = bool
   default     = false
 }
@@ -221,7 +222,7 @@ variable "natctl_config_yaml" {
 }
 
 variable "linode_token" {
-  description = "Linode API Personal Access Token (linodes/vpc/networking read_write scopes — see docs/RUNBOOK.md), written to /etc/natctl/env on every node in this fleet. Required if natctl_on_node_enabled. NOTE this is a real security-scope change from the original layout: this credential now needs to exist on every NAT node rather than one tightly-firewalled control-plane host — see docs/ARCHITECTURE.md's leader-election section for this trade-off stated plainly."
+  description = "Linode API Personal Access Token (linodes/vpc/networking read_write scopes — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.5), written to /etc/natctl/env on every node in this fleet. Required if natctl_on_node_enabled. NOTE this is a real security-scope change from the original layout: this credential now needs to exist on every NAT node rather than one tightly-firewalled control-plane host — see §2.5 for this trade-off stated plainly."
   type        = string
   default     = ""
   sensitive   = true
@@ -242,7 +243,7 @@ variable "object_storage_secret_key" {
 }
 
 # ---------------------------------------------------------------------------
-# v9: fetched-at-boot artifact URLs (terraform/modules/artifacts) -- see
+# Fetched-at-boot artifact URLs (terraform/modules/artifacts) -- see
 # that module's main.tf header for the full "why" (Linode's 16384-byte
 # decoded cloud-init limit). Required, unconditionally -- unlike
 # object_storage_access_key/secret_key above, exporter_py_url/
@@ -293,16 +294,16 @@ variable "natctl_requirements_txt_url" {
   type        = string
 }
 
-# v21: "source" (default, every existing deployment) or "binary" -- picks
+# "source" (default, every existing deployment) or "binary" -- picks
 # between fetching exporter/buddy-sync/natctl as .py source run via python3
 # (the exporter_py_url/buddy_sync_py_url/natctl_file_urls variables above)
 # or as pre-compiled native executables (the three *_bin_url variables
-# below). See controller/natctl/cloud_init.py's matching v21 comment and
-# docs/PUBLISHING.md -- exists to support a customer-facing distribution of
-# this project that ships without Python source. Defaulting to "source"
-# means this is a no-op for every deployment that doesn't set it.
+# below). See controller/natctl/cloud_init.py's matching comment -- this
+# exists to support a customer-facing distribution of this project that
+# ships compiled binaries instead of Python source. Defaulting to
+# "source" means this is a no-op for every deployment that doesn't set it.
 variable "agent_distribution" {
-  description = "\"source\" (default) or \"binary\" -- see this file's v21 comment above nat-node.yaml.tftpl's matching agent_distribution template variable."
+  description = "\"source\" (default) or \"binary\" -- see this file's comment above and nat-node.yaml.tftpl's matching agent_distribution template variable."
   type        = string
   default     = "source"
 }
@@ -326,7 +327,7 @@ variable "natctl_bin_url" {
 }
 
 # ---------------------------------------------------------------------------
-# v10: per-node dynamic config uploads. nftables.conf differs per node
+# Per-node dynamic config uploads. nftables.conf differs per node
 # (vpc_ip, vlan_ip, cidrs, reserved_public_ip), so
 # unlike the static files above they can't be uploaded once by the shared
 # artifacts module -- this module uploads each node's own rendered content

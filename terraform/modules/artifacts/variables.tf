@@ -33,11 +33,11 @@ variable "secret_key" {
   sensitive   = true
 }
 
-# v21: compiled-binary uploads, additive and off by default -- see
-# main.tf's matching v21 comment and docs/PUBLISHING.md. The dev repo
-# never builds dist/ (no Nuitka step in its own CI), so this stays false
-# for every existing deployment; a release pipeline that DOES build the
-# three binaries sets it true and points dist_dir at them.
+# Compiled-binary uploads, additive and off by default -- see main.tf's
+# matching comment. The dev repo never builds dist/ (no Nuitka step in
+# its own CI), so this stays false for every existing deployment; a
+# release pipeline that DOES build the three binaries sets it true and
+# points dist_dir at them.
 variable "compiled_agents_enabled" {
   description = "Whether to additionally upload pre-compiled natctl/nat-exporter/buddy-sync binaries (from dist_dir) for agent_distribution == \"binary\" pools. False (default) uploads nothing here and leaves every other resource in this module completely unaffected."
   type        = bool

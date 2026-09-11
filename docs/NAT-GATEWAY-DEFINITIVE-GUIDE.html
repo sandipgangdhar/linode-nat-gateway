@@ -758,17 +758,15 @@ flowchart TB
           </tbody>
         </table></div>
 
-        <p>Whichever shape applies, the sequence is the same: attach the required interface(s) at the account level, then run two separate configuration scripts against the instance — one applies the static VLAN address, the other installs the routing agent only if the instance actually needs it, pointed at the pool's roster URL. Split deliberately, since VLAN addressing and NAT routing are genuinely separate concerns, and the second script verifies the first one's work rather than assuming it.</p>
+        <p>Whichever shape applies, the sequence is the same: attach the required interface(s) at the account level, apply a static VLAN address with your own automation (this project provides no tooling for that step at all — see 3.4), then run one configuration script against the instance to install the routing agent, pointed at the pool's roster URL. That script verifies the address is really there before doing anything else, rather than assuming it.</p>
 
         <div class="callout">
           <span class="co-label">Overriding the auto-detection: <code>--force</code></span>
           By default, the routing script skips installing the agent on an instance that already has its own path to the internet — "Public + VLAN" and "VPC (1:1 NAT) + VLAN" in the table above are left untouched. Pass <code>--force</code> to install and start the agent anyway, handing it the default route regardless of what other path the instance already has:
-          <pre class="code">./configure-vlan-address.sh --vlan-ip 192.168.100.130/22
-
-./install-nat-client.sh --vlan-iface eth0 \
+          <pre class="code">./install-nat-client.sh --vlan-iface eth0 \
   --roster-url http://&lt;control-plane-VPC-private-ip&gt;:8099/fleet/shared \
   --force</pre>
-          This is for a deliberate dual-path egress policy — a customer that wants every packet routed through the NAT fleet's pool of static IPs even though the instance technically has another way out. The routing script checks that the VLAN address is already applied and fails fast, pointing back at the address script, if it isn't.
+          This is for a deliberate dual-path egress policy — a customer that wants every packet routed through the NAT fleet's pool of static IPs even though the instance technically has another way out. The routing script checks that the VLAN address is already applied and fails fast if it isn't — it never applies one itself.
         </div>
 
         <div class="callout warn">
@@ -790,8 +788,8 @@ flowchart TB
       <section class="chapter" id="c3-4">
         <h2><span class="chno">3.4</span> Static VLAN Addressing</h2>
         <p>A VLAN carries no address-assignment mechanism of its own — there is nothing like DHCP running on it. Every address, on every node and every client, is a static assignment applied directly to the interface.</p>
-        <p>For client instances specifically, the address is chosen by an operator (or the operator's own provisioning automation) and applied by a short configuration step run directly against the already-existing instance. Immediately before applying it, that step runs a live duplicate-address probe against the exact address on the exact VLAN segment — a last-moment collision check that catches an address already answering on the segment, whether it belongs to a node or another client, at the one moment it actually matters, rather than relying on a human to remember to check first.</p>
-        <p>Rather than reserving a window of address space above wherever the fleet's own nodes happen to end, each pool instead owns a small, dedicated block of VLAN address space — nested inside the VLAN's full range — that only the fleet's own nodes (its scaling capacity, and the control-plane host when it's attached to that same VLAN, 2.3) ever draw an address from. A client address just needs to fall anywhere outside that block. This guarantees the fleet's own automatic address allocation can never wander into space meant for a manually assigned client, even though there is no per-client bookkeeping of which specific address outside that block is actually in use at any moment. The duplicate-address probe is what protects against colliding with another already-assigned client; the dedicated block is what protects against colliding with a future node.</p>
+        <p>For client instances specifically, the address is chosen and applied entirely by an operator's own provisioning automation, run directly against the already-existing instance — this project provides no tooling or live collision check for that step at all. Whatever automation applies it is fully responsible for confirming the address isn't already in use elsewhere on the segment before applying it.</p>
+        <p>Rather than reserving a window of address space above wherever the fleet's own nodes happen to end, each pool instead owns a small, dedicated block of VLAN address space — nested inside the VLAN's full range — that only the fleet's own nodes (its scaling capacity, and the control-plane host when it's attached to that same VLAN, 2.3) ever draw an address from. A client address just needs to fall anywhere outside that block. This guarantees the fleet's own automatic address allocation can never wander into space meant for a manually assigned client, even though there is no per-client bookkeeping of which specific address outside that block is actually in use at any moment. Avoiding a collision with another already-assigned client is entirely up to whatever automation applies the address; the dedicated block is what protects against colliding with a future node.</p>
 
         <div class="callout warn">
           <span class="co-label">The prefix length matters just as much as the address itself</span>
@@ -1287,7 +1285,7 @@ flowchart LR
 
       <section class="chapter" id="c9-3">
         <h2><span class="chno">9.3</span> Onboarding a Client Instance</h2>
-        <p>Once a private instance exists and has its VLAN interface attached at the account level, a single configuration step against that instance finishes the job: it applies the operator-supplied static VLAN address (after the duplicate-address safety probe described in Part III), installs and starts the routing agent only if the instance genuinely needs one, and points it at the correct pool's roster URL. The instance is now a fully participating client, spreading its egress traffic across every currently healthy node in that pool.</p>
+        <p>Once a private instance exists, has its VLAN interface attached at the account level, and has a real static VLAN address applied by your own automation (this project provides no tooling for that step, see 3.4), a single configuration step against that instance finishes the job: it verifies the address is really there, installs and starts the routing agent only if the instance genuinely needs one, and points it at the correct pool's roster URL. The instance is now a fully participating client, spreading its egress traffic across every currently healthy node in that pool.</p>
       </section>
 
       <!-- ============ PART X ============ -->

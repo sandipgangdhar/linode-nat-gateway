@@ -21,10 +21,8 @@
 # -----------------------------------------------------
 
 locals {
-  # v9: linode_instance's own `ip_address` attribute is deprecated by the
-  # Terraform Linode provider (confirmed via the provider's own deprecation
-  # warning on a live `terraform apply` -- "Refer to the provider
-  # documentation for details") in favor of `ipv4`, a list of this
+  # linode_instance's own `ip_address` attribute is deprecated by the
+  # Terraform Linode provider in favor of `ipv4`, a list of this
   # instance's public IPv4 addresses. tolist()/index 0 gets the same
   # single-string value ip_address used to provide -- this instance only
   # ever has one public interface (see main.tf's linode_instance.observability),

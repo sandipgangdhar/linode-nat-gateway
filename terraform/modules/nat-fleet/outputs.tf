@@ -16,10 +16,8 @@
 #                          cloud-init rendering) since outputs are not fed
 #                          back into the resources that produced them.
 # 5) node_linode_ids     - Linode numeric IDs per node, useful for
-#                          linode-cli / IP-Sharing calls (docs/RUNBOOK.md
-#                          "Enable buddy IP failover for a pool").
-# 6) placement_group_ids - M16 (roadmap/M16-anti-affinity-placement-groups.md):
-#                          this pool's placement group IDs when
+#                          linode-cli / IP-Sharing calls.
+# 6) placement_group_ids - This pool's placement group IDs when
 #                          placement_group_enabled is true; empty list
 #                          otherwise.
 #
@@ -50,7 +48,7 @@ output "node_private_ips" {
 }
 
 output "node_vpc_ips" {
-  description = "Each node's VPC (eth1) address -- what natctl itself listens on (:8099) and what natctl-api's firewall rule scopes to. Distinct from node_private_ips above (VLAN, for client-agent's ECMP nexthops) -- found needed live, 2026-09-02, while fixing a natctl_on_node_enabled deployment's Prometheus service-discovery gap (see terraform/environments/example/main.tf's natctl_http_sd_targets local / roadmap/M2-security.md's regression note, corrected for a second bug in roadmap/M28-full-production-readiness-pass.md's Phase 4 severe finding -- one target per enabled pool now, not one for the whole fleet)."
+  description = "Each node's VPC (eth1) address -- what natctl itself listens on (:8099) and what natctl-api's firewall rule scopes to. Distinct from node_private_ips above (VLAN, for client-agent's ECMP nexthops). Consumed by terraform/environments/example/main.tf's natctl_http_sd_targets local, one target per enabled pool, so Prometheus service discovery covers every pool's own nodes under natctl_on_node_enabled, not just one."
   value       = local.node_vpc_ips
 }
 
@@ -58,13 +56,12 @@ output "node_public_ips" {
   description = "Primary public IP per node, plus any extra egress IPs. Safe to compute here (unlike inside main.tf's cloud-init rendering) since outputs aren't fed back into the resources that produced them — see the cycle note in main.tf."
   value = {
     for node_id in local.node_ids : node_id => concat(
-      # v9: linode_instance's own `ip_address` attribute is deprecated by
-      # the Terraform Linode provider (confirmed via the provider's own
-      # deprecation warning on a live `terraform apply`) in favor of
-      # `ipv4`, a list of this instance's public IPv4 addresses -- each
-      # node here has exactly one public interface (see this module's
-      # linode_instance.node), so tolist(...) is always a single-element
-      # list, same value ip_address used to provide.
+      # linode_instance's own `ip_address` attribute is deprecated by the
+      # Terraform Linode provider in favor of `ipv4`, a list of this
+      # instance's public IPv4 addresses -- each node here has exactly
+      # one public interface (see this module's linode_instance.node),
+      # so tolist(...) is always a single-element list, same value
+      # ip_address used to provide.
       tolist(linode_instance.node[node_id].ipv4),
       [for k, ip in linode_instance_ip.extra_egress : ip.address if ip.linode_id == linode_instance.node[node_id].id]
     )
@@ -76,6 +73,6 @@ output "node_linode_ids" {
 }
 
 output "placement_group_ids" {
-  description = "M16: this pool's Placement Group IDs (one per up-to-5-node contiguous block) when placement_group_enabled is true; an empty list when it's false. See linode_placement_group.nodes in main.tf."
+  description = "This pool's Placement Group IDs (one per up-to-5-node contiguous block) when placement_group_enabled is true; an empty list when it's false. See linode_placement_group.nodes in main.tf."
   value       = linode_placement_group.nodes[*].id
 }

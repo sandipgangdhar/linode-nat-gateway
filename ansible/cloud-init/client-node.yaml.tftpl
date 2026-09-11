@@ -6,15 +6,15 @@
 # client-agent's Python SOURCE directly (gzip+base64) because
 # vlan_only/vpc_vlan instances have no internet path of their own until
 # client-agent itself brings up the default route -- a real constraint
-# found live (2026-08-02), not something this variant can skip. This
+# this variant can't skip either. This
 # variant keeps that same constraint in mind but fetches a pre-compiled
 # client-agent BINARY instead of embedding Python source -- see
 # controller/natctl/api.py's GET /agents/client-agent (served by natctl's
 # own roster API, which a client instance CAN already reach over its
 # VLAN/VPC connected route -- that route comes up automatically the
 # moment the interface gets its static address, independent of
-# client-agent -- see docs/RUNBOOK.md's "Interface modes and routing
-# behavior" in the dev repo for the underlying mechanism this depends on).
+# client-agent -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §3.3 for the
+# underlying mechanism this depends on).
 #
 # A compiled binary is multi-MB -- far too large to embed the way source
 # was (Linode's Instance Metadata API caps cloud-init user_data at 16384
@@ -34,12 +34,16 @@
 # -----------------------------------------------------
 # Usage:
 #
-# - Rendered per-instance by this overlay's terraform/modules/client-fleet
-#   main.tf, replacing the dev repo's combined_agent_bundle_raw/
-#   combined_agent_bundle_gz_b64/agent_bundle_extractor_py mechanism
-#   entirely -- see that file's own header comment.
+# - NOT currently rendered by any Terraform module in this repo (this
+#   project no longer creates client instances at all -- your own
+#   automation does, then runs scripts/install-nat-client.sh against it,
+#   see docs/CLIENT-INSTALL-GUIDE.md). Kept here as a reference for
+#   anyone who wants the same behaviors baked into their own instance's
+#   boot process -- adapt it into your own `templatefile()` call,
+#   supplying the variables referenced below (including
+#   lng_client_agent_service_content) yourself.
 # - Never edit this file's rendered output directly on a running
-#   instance -- change the template and re-provision instead.
+#   instance -- change your own template inputs and re-provision instead.
 #
 # -----------------------------------------------------
 # Author:
@@ -84,18 +88,17 @@ write_files:
       LNG_HEALTH_PROBE_TIMEOUT=1.5
       LNG_DRY_RUN=false
 
-  # REAL BUG found live, 2026-08-30 (M11 of the customer-repo live-test
-  # program): this file originally fetched the client-agent BINARY but
-  # never wrote its systemd unit anywhere, so `systemctl enable --now
-  # lng-client-agent` in runcmd below failed with "Unit file
-  # lng-client-agent.service does not exist" -- confirmed live, the
-  # binary landed correctly on disk but the service never started at
-  # all. The unit file is tiny, static, and non-secret, so -- unlike the
-  # binary itself -- there's no reason to fetch it separately; just embed
-  # it directly, same as the VLAN network config above. Content comes
-  # from client-agent/lng-client-agent.service (the customer repo's own
-  # binary-mode unit, already checked into this repo) via this overlay's
-  # terraform/modules/client-fleet/main.tf.
+  # Fetching the client-agent BINARY alone isn't enough -- `systemctl
+  # enable --now lng-client-agent` in runcmd below needs its systemd unit
+  # to already exist on disk, or it fails with "Unit file
+  # lng-client-agent.service does not exist" even though the binary
+  # itself landed correctly. The unit file is tiny, static, and
+  # non-secret, so -- unlike the binary itself -- there's no reason to
+  # fetch it separately; just embed it directly, same as the VLAN network
+  # config above. Content comes from client-agent/lng-client-agent.service
+  # (the customer repo's own binary-mode unit, already checked into this
+  # repo) -- whoever adapts this template into a real `templatefile()`
+  # call supplies it as the lng_client_agent_service_content variable.
   - path: /etc/systemd/system/lng-client-agent.service
     owner: root:root
     permissions: '0644'

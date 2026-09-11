@@ -22,22 +22,17 @@
 # 1) --node-host    - The NAT node's address AS IT APPEARS IN THE CLIENT'S
 #    ROUTE TABLE -- on this project's pure-nat-gateway branch, that's the
 #    node's VLAN (eth2) address (client-agent's ECMP nexthops are VLAN
-#    addresses, docs/ARCHITECTURE.md §3.0/§3.2), used ONLY for the
+#    addresses, docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §1.2/§3.2), used ONLY for the
 #    before/after `ip route show`/`ip nexthop show` grep match -- never
 #    SSHed into directly.
 # 2) --node-ssh-host - The address actually used to SSH into the node and
 #    run `systemctl stop/start nat-exporter` -- MUST be different from
 #    --node-host on this branch: the node's own nftables ruleset
 #    deliberately excludes SSH on the VLAN interface entirely
-#    (`iifname != "eth2" tcp dport 22 ... accept`, roadmap/M2-security.md
-#    test case 2.8), so passing the VLAN address here would just fail to
-#    connect -- confirmed live, 2026-08-30, roadmap/M7-acceptance-suite.md
-#    (a real bug: this parameter used to double as both the route-match
-#    target AND the SSH target, which only ever worked by coincidence on
-#    a topology where a node's "private IP" was a single address serving
-#    both roles). Use the node's VPC or public IP -- whichever this
-#    script's own caller can actually reach given the Cloud Firewall's
-#    admin_cidrs/VPC-subnet scoping (see that same M2 test case). Defaults
+#    (`iifname != "eth2" tcp dport 22 ... accept`), so passing the VLAN
+#    address here would just fail to connect. Use the node's VPC or
+#    public IP -- whichever this script's own caller can actually reach
+#    given the Cloud Firewall's admin_cidrs/VPC-subnet scoping. Defaults
 #    to --node-host if not given, for any topology where a single address
 #    genuinely does serve both roles.
 # 3) --client-host   - Private IP of a client instance running
@@ -58,8 +53,8 @@
 #   doesn't also violate min_nodes and trigger an unrelated autoscale
 #   event mid-drill.
 # - Exits non-zero on either failure mode (node not removed in time, node
-#   not rejoined in time) -- safe to wire into the automated test suite
-#   (see docs/RUNBOOK.md and the post-deploy test plan).
+#   not rejoined in time) -- safe to wire into an automated test suite,
+#   e.g. acceptance-tests/'s own node-failure check.
 #
 # -----------------------------------------------------
 # Author:

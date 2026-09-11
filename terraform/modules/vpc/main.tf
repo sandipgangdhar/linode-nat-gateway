@@ -1,20 +1,18 @@
 # main.tf (terraform/modules/vpc)
 #
-# v11: BYO VPC/subnets. This module used to create the Linode VPC and its
-# subnets itself (linode_vpc.this, linode_vpc_subnet.public/private) --
-# per an explicit decision to keep VPC (and VLAN) creation out of scope of
-# this automation, it no longer does. You bring an existing VPC and its
-# subnet(s) (Cloud Manager, linode-cli, or your own separate Terraform --
-# see docs/RUNBOOK.md "Bring your own VPC") and this module only reads
-# them back (via data sources, so it can still compute each subnet's real
-# CIDR for the firewall rules below without asking you to retype it) and
-# creates the three Cloud Firewalls that attach to your NAT/observability/
-# client instances (v14: added the client one). VLANs never had a standalone Terraform resource to begin with
-# (a VLAN is just a label -- see terraform/modules/nat-fleet's vlan_label/
-# vlan_cidr and terraform/environments/example/variables.tf's vlan_*
-# variables) so there was nothing to remove there beyond making those
-# already-implicit values real, overridable input variables instead of
-# hardcoded locals -- see environments/example/main.tf.
+# Bring-your-own VPC/subnets, by design -- VPC (and VLAN) creation is
+# deliberately out of scope for this automation. You bring an existing
+# VPC and its subnet(s) (Cloud Manager, linode-cli, or your own separate
+# Terraform -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §9.1) and this
+# module only reads them back (via data sources, so it can still compute
+# each subnet's real CIDR for the firewall rules below without asking
+# you to retype it) and creates the three Cloud Firewalls that attach to
+# your NAT/observability/client instances. VLANs never had a standalone
+# Terraform resource to begin with (a VLAN is just a label -- see
+# terraform/modules/nat-fleet's vlan_label/vlan_cidr and
+# terraform/environments/example/variables.tf's vlan_* variables) so
+# those are plain, overridable input variables rather than hardcoded
+# locals -- see environments/example/main.tf.
 #
 # -----------------------------------------------------
 # Resources created:
@@ -22,10 +20,10 @@
 # 1) linode_firewall.nat_node    - Default-deny Cloud Firewall attached to
 #                                   every NAT node: allows the exporter
 #                                   port (9200), the natctl roster API
-#                                   (8099 -- BUG FIX, 2026-08-02: needed
-#                                   here too for natctl_on_node_enabled,
-#                                   not just on control_plane below), and
-#                                   SSH. Outbound is unrestricted because
+#                                   (8099 -- needed here too for
+#                                   natctl_on_node_enabled, not just on
+#                                   control_plane below), and SSH.
+#                                   Outbound is unrestricted because
 #                                   these instances exist to perform
 #                                   egress NAT.
 # 2) linode_firewall.control_plane - Default-deny Cloud Firewall attached to
@@ -33,15 +31,15 @@
 #                                   the roster API (8099), Grafana/
 #                                   Prometheus/Alertmanager UI ports
 #                                   (3000/9090/9093), and SSH.
-# 3) linode_firewall.client        - v14: Default-deny Cloud Firewall for
-#                                   client instances. As of M20
-#                                   (2026-09-02) this project no longer
-#                                   creates those instances itself -- a
-#                                   customer attaches this firewall (its
-#                                   id is a Terraform output) to whatever
-#                                   they create via their own automation.
-#                                   SSH only -- client-agent needs no
-#                                   inbound port at all.
+# 3) linode_firewall.client        - Default-deny Cloud Firewall for
+#                                   client instances. This project
+#                                   doesn't create those instances
+#                                   itself -- a customer attaches this
+#                                   firewall (its id is a Terraform
+#                                   output) to whatever they create via
+#                                   their own automation. SSH only --
+#                                   client-agent needs no inbound port
+#                                   at all.
 #
 # Data sources (not resources -- nothing here is created or destroyed by
 # Terraform):
@@ -58,23 +56,24 @@
 #
 # - Create your VPC and its public subnet (plus any private subnets you
 #   need) yourself first -- Cloud Manager, linode-cli, or a separate,
-#   one-time Terraform config are all fine, this module has no opinion.
-#   See docs/RUNBOOK.md "Bring your own VPC" for the exact linode-cli
-#   commands and the CIDR-planning constraints nat-fleet/observability
-#   already assume (their cidrhost()-based static addressing needs the
-#   subnet's CIDR to have enough headroom for every pool's offset range).
+#   one-time Terraform config are all fine, this module has no opinion
+#   (see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §9.1). Mind the
+#   CIDR-planning constraints nat-fleet/observability already assume
+#   (their cidrhost()-based static addressing needs the subnet's CIDR to
+#   have enough headroom for every pool's offset range).
 # - Pass the resulting vpc_id/public_subnet_id/private_subnet_ids into this
 #   module (see terraform/environments/example/main.tf).
 # - Called once per environment to create the three Cloud Firewalls every
-#   nat-fleet pool, the observability instance, and every client-fleet group
+#   nat-fleet pool, the observability instance, and every client instance
 #   attach to.
 # - Cloud Firewall only filters the public and VPC interfaces -- it does
 #   NOT filter VLAN traffic at all. The node's own nftables ruleset
 #   (ansible/templates/nftables.conf.tftpl) is the only access control for
-#   VLAN (eth2) traffic. See docs/ARCHITECTURE.md section 3.7.
-# - Tighten the SSH and Grafana/Prometheus/Alertmanager inbound rules to
-#   your admin CIDR before going to production; they default to
-#   0.0.0.0/0 so the example environment works out of the box.
+#   VLAN (eth2) traffic. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §8.1
+#   (The Firewall Model).
+# - SSH and Grafana/Prometheus/Alertmanager inbound rules are scoped to
+#   var.admin_cidrs, which is required with no default -- you must set it
+#   explicitly to your own admin CIDR(s) before this will even apply.
 #
 # -----------------------------------------------------
 # Best Practices:
@@ -120,13 +119,13 @@ terraform {
   }
 }
 
-# roadmap/M18-firewall-label-collision.md: Akamai enforces Cloud Firewall
+# Akamai enforces Cloud Firewall
 # labels as unique ACCOUNT-WIDE, not scoped to this Terraform state -- so
 # if state is ever lost or reset while these three firewalls survive on
 # the account, the next `apply` hard-fails with
-# `[400] Label must be unique among your Cloud Firewalls` (live-hit,
-# 2026-09-01). One random suffix, shared across all three labels below,
-# fixes this by construction rather than just detecting it: losing state
+# `[400] Label must be unique among your Cloud Firewalls`. One random
+# suffix, shared across all three labels below, fixes this by
+# construction rather than just detecting it: losing state
 # also loses THIS resource, so the next `apply` after a state loss mints
 # a NEW suffix and the freshly-created firewalls can never collide with
 # whatever orphaned ones the lost-state run left behind. No `keepers` --
@@ -168,8 +167,8 @@ resource "terraform_data" "label_length_check" {
   }
 }
 
-# v11: read-only lookups against your existing VPC subnet(s) -- confirmed
-# against the Linode Terraform provider's own data-source docs
+# Read-only lookups against your existing VPC subnet(s) -- per the
+# Linode Terraform provider's own data-source docs
 # (registry.terraform.io/providers/linode/linode/latest/docs/data-sources/
 # vpc_subnet): vpc_id + id in, label/ipv4/ipv6/etc back out. Fetching the
 # CIDR this way (rather than adding a public_subnet_cidr input variable)
@@ -188,15 +187,14 @@ data "linode_vpc_subnet" "private" {
   id     = each.value
 }
 
-# Found live 2026-09-09: a Linode instance's VPC interface only ever gets
-# a kernel route for its OWN directly-connected subnet -- nothing (not
-# Linode's own Network Helper, not this project until now) routed it to
-# any OTHER subnet in the same VPC, so a packet to a sibling subnet (e.g.
-# a customer's client instance on a different VPC subnet than the NAT
-# nodes) fell through to the default route and was silently dropped,
+# A Linode instance's VPC interface only ever gets a kernel route for
+# its OWN directly-connected subnet -- nothing (not Linode's own Network
+# Helper, not this project without the routes below) routes it to any
+# OTHER subnet in the same VPC, so a packet to a sibling subnet (e.g. a
+# customer's client instance on a different VPC subnet than the NAT
+# nodes) falls through to the default route and is silently dropped,
 # even though var.private_subnet_ids above already opens Cloud Firewall
-# for exactly this. Confirmed live via a real cross-subnet ping and
-# natctl roster (8099) fetch, both restored by adding explicit routes.
+# for exactly this.
 #
 # This lists EVERY subnet in the VPC (not just the ones an operator
 # happened to enumerate in private_subnet_ids), via linode_vpc_subnets --
@@ -205,8 +203,7 @@ data "linode_vpc_subnet" "private" {
 # This is purely a routing convenience, not a new security boundary:
 # Cloud Firewall/nftables still gate actual access via the
 # private_subnet_ids-derived rules above, unchanged -- a route to a
-# subnet nothing else permits is inert. See docs/ARCHITECTURE.md's
-# write-up of this finding.
+# subnet nothing else permits is inert.
 data "linode_vpc_subnets" "all" {
   vpc_id = var.vpc_id
 }
@@ -228,12 +225,13 @@ resource "linode_firewall" "nat_node" {
   # the observability instance in this same VPC subnet). This does NOT
   # cover the VLAN client fleet's access to 9200 (client-agent instances
   # probe /healthz directly) — Cloud Firewall does not filter VLAN traffic
-  # at all (confirmed against Linode's docs, see docs/ARCHITECTURE.md
-  # §3.7), so that path is gated entirely by nftables on the node itself
+  # at all (confirmed against Linode's docs -- see
+  # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §8.1), so that path is gated
+  # entirely by nftables on the node itself
   # (ansible/templates/nftables.conf.tftpl), not here. var.private_subnet_ids
   # (this module's own VPC subnets) intentionally isn't included below
   # anymore — v4 moved the private client fleet off VPC and onto VLAN, see
-  # docs/ARCHITECTURE.md §3.0.
+  # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §1.2.
   inbound {
     label    = "nat-exporter"
     action   = "ACCEPT"
@@ -242,19 +240,19 @@ resource "linode_firewall" "nat_node" {
     ipv4     = [data.linode_vpc_subnet.public.ipv4]
   }
 
-  # BUG FIX (found live, 2026-08-02): natctl's roster API (8099) was only
-  # ever opened on the SEPARATE control_plane firewall below -- fine when
-  # natctl runs on the dedicated observability host, but when
-  # natctl_on_node_enabled is true, natctl runs directly ON the NAT nodes
-  # instead (this firewall, not control_plane), and nothing opened 8099
-  # here. Confirmed live: a client-fleet instance's client-agent could
-  # reach a NAT node's exporter (9200, already allowed above) but every
-  # roster fetch against that same node's 8099 timed out -- Cloud
-  # Firewall silently dropping it, not a natctl/DNS/routing problem.
-  # Matches control_plane's own natctl-api rule exactly (same port, same
-  # VPC-internal-only source restriction) -- harmless to always add here
-  # too: when natctl_on_node_enabled is false, nothing listens on 8099 on
-  # a NAT node either, so this rule simply goes unused in that case.
+  # natctl's roster API (8099) must be opened here too, not just on the
+  # SEPARATE control_plane firewall below -- fine when natctl runs on the
+  # dedicated observability host, but when natctl_on_node_enabled is
+  # true, natctl runs directly ON the NAT nodes instead (this firewall,
+  # not control_plane), and without this rule a client instance's
+  # client-agent can reach a NAT node's exporter (9200, already allowed
+  # above) while every roster fetch against that same node's 8099 times
+  # out -- Cloud Firewall silently dropping it, not a natctl/DNS/routing
+  # problem. Matches control_plane's own natctl-api rule exactly (same
+  # port, same VPC-internal-only source restriction) -- harmless to
+  # always add here too: when natctl_on_node_enabled is false, nothing
+  # listens on 8099 on a NAT node either, so this rule simply goes
+  # unused in that case.
   inbound {
     label    = "natctl-api"
     action   = "ACCEPT"
@@ -263,15 +261,12 @@ resource "linode_firewall" "nat_node" {
     ipv4     = concat([data.linode_vpc_subnet.public.ipv4], [for s in data.linode_vpc_subnet.private : s.ipv4])
   }
 
-  # BUG FIX (found live, 2026-08-29, roadmap/M3-ha-failover.md): Cloud
-  # Firewall never had ANY rule for conntrackd buddy-pair sync -- its
-  # inbound_policy=DROP catch-all silently blocked this UDP traffic at
-  # the network level, upstream of and independent from nftables' own
-  # matching rule (ansible/templates/nftables.conf.tftpl /
-  # cloud_init.py's render_nftables(), both fixed in the same commit).
-  # Confirmed live: raw `nc -u` between two nodes' VPC IPs, on a port
-  # inside this exact range, delivered nothing until this rule was added
-  # -- nftables' own rule alone was necessary but not sufficient.
+  # Cloud Firewall needs its own rule for conntrackd buddy-pair sync, not
+  # just nftables' own matching rule (ansible/templates/nftables.conf.tftpl
+  # / cloud_init.py's render_nftables()) -- without this, Cloud Firewall's
+  # inbound_policy=DROP catch-all silently blocks this UDP traffic at the
+  # network level, upstream of and independent from nftables entirely, so
+  # nftables' own rule alone is necessary but not sufficient.
   # buddy_sync.py's _conntrack_peer_port() derives each relationship's
   # actual port as CONNTRACKD_BASE_PORT (3780) + hash%CONNTRACKD_PORT_RANGE
   # (1000), i.e. 3780-4779 inclusive -- see that module for why a single
@@ -285,7 +280,7 @@ resource "linode_firewall" "nat_node" {
     ipv4     = [data.linode_vpc_subnet.public.ipv4]
   }
 
-  # SSH for operator access — scoped to var.admin_cidrs (roadmap/M2-security.md)
+  # SSH for operator access — scoped to var.admin_cidrs
   inbound {
     label    = "ssh"
     action   = "ACCEPT"
@@ -294,9 +289,9 @@ resource "linode_firewall" "nat_node" {
     ipv4     = var.admin_cidrs
   }
 
-  # roadmap/M2-security.md: Cloud Firewall does NOT auto-exempt ICMP from an
+  # Cloud Firewall does NOT auto-exempt ICMP from an
   # inbound_policy=DROP catch-all -- confirmed live during BGP-failover
-  # verification (M3), where an admin needed to ping a node's own public IP
+  # verification, where an admin needed to ping a node's own public IP
   # to observe a live failover and found it silently blocked. A genuine
   # operational need (diagnosing exactly this kind of failover), scoped the
   # same way as SSH -- not opened to the whole internet.
@@ -330,28 +325,24 @@ resource "linode_firewall" "control_plane" {
     action   = "ACCEPT"
     protocol = "TCP"
     ports    = "3000,9090,9093"
-    ipv4     = var.admin_cidrs # roadmap/M2-security.md -- was 0.0.0.0/0
+    ipv4     = var.admin_cidrs # was 0.0.0.0/0 (open to the entire internet) by default -- now required, no default
   }
 
-  # Real bug found live, 2026-09-02, verifying M24 against the live
-  # customer-repo deployment: with natctl_on_node_enabled, EVERY NAT
-  # node runs its own natctl instance, which queries THIS host's
-  # Prometheus directly for autoscale metrics (prometheus_client.py's
-  # PrometheusClient, used by fleet.py's evaluate_autoscale()) -- VPC
-  # -sourced traffic, not admin-sourced. The grafana-prometheus rule
-  # above only ever allowed var.admin_cidrs, so every natctl-on-node
-  # instance's Prometheus query has been timing out on every single
-  # reconcile pass since natctl_on_node_enabled was turned on --
-  # confirmed via a real natctl journalctl log on a live node
-  # (`HTTPConnectionPool(host='10.60.32.5', port=9090): ... Connection
-  # ... timed out`). PrometheusClient.scalar()'s fail-soft default
-  # (0.0) silently masked this: every autoscale metric has been reading
-  # a stuck 0.0 the entire time, meaning a real scale-out-worthy load
-  # spike would never have been detected, and a low-watermark scale-in
-  # metric misreading 0.0 as "very low utilization" could trigger an
-  # inappropriate scale-in. Only port 9090 (the query API) needs
-  # VPC-internal access -- 3000 (Grafana UI)/9093 (Alertmanager UI) are
-  # human-facing and correctly stay admin_cidrs-only.
+  # With natctl_on_node_enabled, EVERY NAT node runs its own natctl
+  # instance, which queries THIS host's Prometheus directly for
+  # autoscale metrics (prometheus_client.py's PrometheusClient, used by
+  # fleet.py's evaluate_autoscale()) -- VPC-sourced traffic, not
+  # admin-sourced. The grafana-prometheus rule above only allows
+  # var.admin_cidrs, so without this separate rule every natctl-on-node
+  # instance's Prometheus query would time out on every reconcile pass.
+  # PrometheusClient.scalar()'s fail-soft default (0.0) would silently
+  # mask this: every autoscale metric would read a stuck 0.0, meaning a
+  # real scale-out-worthy load spike would never be detected, and a
+  # low-watermark scale-in metric misreading 0.0 as "very low
+  # utilization" could trigger an inappropriate scale-in. Only port 9090
+  # (the query API) needs VPC-internal access -- 3000 (Grafana UI)/9093
+  # (Alertmanager UI) are human-facing and correctly stay
+  # admin_cidrs-only.
   inbound {
     label    = "prometheus-vpc-internal"
     action   = "ACCEPT"
@@ -369,16 +360,15 @@ resource "linode_firewall" "control_plane" {
   }
 }
 
-# v14: minimal firewall for client instances -- SSH only. Deliberately its
-# own firewall, not a reuse of nat_node's: client instances aren't NAT
-# nodes and need none of nat_node's ports (the exporter) open at all --
-# client-agent is outbound-only, no inbound port needed. As of M20
-# (2026-09-02) this project doesn't create client instances anymore, but
-# still creates and exposes this firewall (client_firewall_id output) for
-# a customer to attach to instances their own automation creates -- same
-# "coarse-grained, shared" reasoning as nat_node/control_plane above;
-# fine-grained restriction, if ever needed, belongs on the instance
-# itself.
+# Minimal firewall for client instances -- SSH only. Deliberately its own
+# firewall, not a reuse of nat_node's: client instances aren't NAT nodes
+# and need none of nat_node's ports (the exporter) open at all --
+# client-agent is outbound-only, no inbound port needed. This project
+# doesn't create client instances itself, but still creates and exposes
+# this firewall (client_firewall_id output) for a customer to attach to
+# instances their own automation creates -- same "coarse-grained,
+# shared" reasoning as nat_node/control_plane above; fine-grained
+# restriction, if ever needed, belongs on the instance itself.
 resource "linode_firewall" "client" {
   label = "${var.label}-client-fw-${random_id.fw_suffix.hex}"
 
@@ -390,6 +380,6 @@ resource "linode_firewall" "client" {
     action   = "ACCEPT"
     protocol = "TCP"
     ports    = "22"
-    ipv4     = var.admin_cidrs # roadmap/M2-security.md -- was 0.0.0.0/0
+    ipv4     = var.admin_cidrs # was 0.0.0.0/0 (open to the entire internet) by default -- now required, no default
   }
 }

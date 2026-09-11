@@ -7,8 +7,8 @@
 # container. Rendered by terraform/modules/observability/main.tf, which
 # embeds most config file content (Prometheus, Alertmanager, Grafana
 # datasource/dashboards-provisioning YAML, alert rules) directly into this
-# template's arguments -- but NOT the natctl Python package (v9) or the
-# pre-built Grafana dashboard JSON (v15), both of which are fetched at
+# template's arguments -- but NOT the natctl Python package or the
+# pre-built Grafana dashboard JSON, both of which are fetched at
 # boot from Object Storage instead (see the runcmd section and
 # terraform/modules/artifacts/main.tf's header comment for why: Linode's
 # Instance Metadata API caps cloud-init user_data at 16384 bytes decoded,
@@ -74,10 +74,10 @@
 # (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
 # -----------------------------------------------------
 
-# roadmap/M2-security.md test case 2.6 -- see ansible/cloud-init/
-# nat-node.yaml.tftpl's matching comment for why this is needed (confirmed
-# live against a real node: sshd's password auth defaults were still
-# enabled despite authorized_keys/root_pass both being set).
+# See ansible/cloud-init/nat-node.yaml.tftpl's matching comment for why
+# this is needed (confirmed live against a real node: sshd's password
+# auth defaults were still enabled despite authorized_keys/root_pass both
+# being set).
 ssh_pwauth: false
 package_update: true
 
@@ -126,14 +126,14 @@ write_files:
 %{ endif ~}
 
 %{ if run_natctl ~}
-  # v9: the natctl package itself (controller/natctl/*.py) is fetched at
+  # The natctl package itself (controller/natctl/*.py) is fetched at
   # boot from Object Storage (terraform/modules/artifacts), one curl per
   # file, not embedded here as content: -- see that module's main.tf
   # header comment (Linode's 16384-byte decoded cloud-init limit; this
   # instance's dashboards/alerts JSON already leaves little headroom on
   # its own, even before the ~230KB natctl package is considered).
-  # v10: requirements.txt and natctl.service (both static, non-secret) are
-  # now ALSO fetched the same way -- see runcmd below.
+  # requirements.txt and natctl.service (both static, non-secret) are
+  # also fetched the same way -- see runcmd below.
   - path: /etc/natctl/config.yaml
     owner: root:root
     permissions: '0600'
@@ -143,21 +143,19 @@ write_files:
   - path: /etc/natctl/env
     owner: root:root
     permissions: '0600'
-    # BUG FIX (found live, 2026-08-29, roadmap/M4-autoscaling.md): this
-    # file used to carry only LINODE_TOKEN -- but FleetController's
-    # object_storage_access_key/secret_key (needed for EVERY pool's
-    # elastic-node artifact uploads, e.g. fleet.py's _provision() ->
+    # This file carries LINODE_TOKEN plus FleetController's
+    # object_storage_access_key/secret_key -- needed for EVERY pool's
+    # elastic-node artifact uploads (e.g. fleet.py's _provision() ->
     # object_storage.py's upload_public_object(), unconditionally
     # whenever run_natctl is true, independent of leader_election/
-    # natctl_on_node_enabled) resolve from
+    # natctl_on_node_enabled), which resolve from
     # NATCTL_OBJECT_STORAGE_ACCESS_KEY/SECRET_KEY in this exact file
     # (main.py's build_controllers() -> LeaderElectionConfig.
-    # resolved_access_key()/resolved_secret_key()'s env-var fallback) --
-    # never written here, so every elastic-node provision attempt failed
-    # with a real S3 PutObject 400 (empty/invalid credentials). Mirrors
-    # ansible/cloud-init/nat-node.yaml.tftpl's identical write, which only
-    # ever ran in the OTHER placement mode (natctl_on_node_enabled=true) --
-    # this default single-dedicated-host mode never had it at all.
+    # resolved_access_key()/resolved_secret_key()'s env-var fallback).
+    # Without these keys written here, every elastic-node provision
+    # attempt fails with a real S3 PutObject 400 (empty/invalid
+    # credentials). Mirrors ansible/cloud-init/nat-node.yaml.tftpl's
+    # identical write for the natctl-on-node placement mode.
     content: |
       LINODE_TOKEN=${linode_token}
 %{ if object_storage_access_key != "" ~}
@@ -168,14 +166,15 @@ write_files:
 
 runcmd:
 %{ if length(vpc_sibling_subnet_cidrs) > 0 ~}
-  # Found live 2026-09-09: this host's VPC interface only ever gets a
-  # kernel route for its OWN directly-connected subnet -- nothing routed
-  # it to any OTHER subnet in the same VPC, so a client on a different
+  # This host's VPC interface only ever gets a
+  # kernel route for its OWN directly-connected subnet -- without these
+  # explicit routes, a client on a different
   # VPC subnet (the default single-control-plane layout's actual roster
-  # path -- see docs/RUNBOOK.md's "Onboard a client instance") couldn't
-  # reach, or get a reply from, natctl's roster API (8099) here, even
+  # path -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.2 "The Roster
+  # URL" and §9.3 "Onboarding a Client Instance") couldn't reach, or get
+  # a reply from, natctl's roster API (8099) here, even
   # though Cloud Firewall's private_subnet_ids rule already allows it.
-  # Same fix and same full-config-replacement mechanism as
+  # Same mechanism as
   # ansible/cloud-init/nat-node.yaml.tftpl's matching runcmd step (a
   # lower-numbered file wins outright over Linode's own boot-time
   # Network Helper for a given interface -- see that file's own comment
@@ -190,7 +189,7 @@ runcmd:
 %{ if run_monitoring_stack ~}
   - systemctl enable --now docker
   - mkdir -p /opt/lng-observability/file_sd
-  # v15: the dashboard JSON is fetched from Object Storage instead of
+  # The dashboard JSON is fetched from Object Storage instead of
   # embedded in write_files above (terraform/modules/artifacts, see this
   # file's header comment) -- done before `docker compose up -d` so
   # Grafana's file-provisioner (30s poll, ansible/templates/
@@ -201,11 +200,11 @@ runcmd:
   - cd /opt/lng-observability && docker compose up -d
 %{ endif ~}
 %{ if run_natctl ~}
-  # v9: fetch the natctl package from Object Storage before installing
+  # Fetch the natctl package from Object Storage before installing
   # its dependencies / starting it -- see the write_files comment above.
-  # v10: requirements.txt and natctl.service are fetched the same way --
+  # requirements.txt and natctl.service are fetched the same way --
   # daemon-reload is required since systemd hasn't seen the unit file
-  # until this curl step runs (unlike the v9-and-earlier write_files path).
+  # until this curl step runs.
 %{ if agent_distribution == "binary" ~}
   - mkdir -p /opt/natctl
   - curl -fsSL "${natctl_bin_url}" -o /opt/natctl/natctl

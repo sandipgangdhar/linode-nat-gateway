@@ -38,8 +38,11 @@
 #   sit in Active forever, no error surfaced (see PoolConfig's field
 #   comment in controller/natctl/config.py for the live incident this is
 #   based on). Set it false only if you specifically want to run the
-#   first pairing by hand and watch it converge -- see docs/RUNBOOK.md's
-#   "Enable buddy IP failover for a pool" procedure.
+#   first pairing by hand instead: confirm both nodes' FRR sessions show
+#   their own self-announcement first (`vtysh -c "show bgp summary"`),
+#   then run `linode-cli networking ip-share --linode_id <node> --ips
+#   <buddy's public ip>` in both directions, and watch sessions move
+#   from Active to Established before trusting it.
 #
 # -----------------------------------------------------
 # Author:
@@ -67,9 +70,9 @@ pools:
     vpc_id: 123456
     public_subnet_id: 789
     public_subnet_cidr: "10.0.0.0/24"
-    # v4: VLAN-side CIDR(s) for the private client fleet, not VPC — VPC
+    # VLAN-side CIDR(s) for the private client fleet, not VPC — VPC
     # can't transit-route to non-VPC destinations, see
-    # docs/ARCHITECTURE.md §3.0. Must match this pool's
+    # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §1.2. Must match this pool's
     # terraform/modules/nat-fleet vlan_cidr.
     private_subnet_cidrs:
       - "192.168.100.0/22"
@@ -90,8 +93,10 @@ pools:
     # Must match the natctl_roster_url Terraform variable given to this
     # pool's nat-fleet module (terraform/environments/example/main.tf),
     # so floor nodes (wired by Terraform) and elastic nodes (wired here)
-    # point their buddy-sync agent at the same roster endpoint. See
-    # buddy-sync/ and docs/ARCHITECTURE.md §5.
+    # point their buddy-sync agent (buddy-sync/) at the same roster
+    # endpoint -- a mismatch here means floor and elastic nodes in the
+    # same pool would sync connection state against two different
+    # roster views instead of one consistent one.
     conntrack_buddy_sync_enabled: true
     natctl_roster_base_url: "http://10.0.0.5:8099"
     # This pool's own small, wholly-owned VLAN sub-block (nested inside
@@ -100,10 +105,11 @@ pools:
     # main.tf's vlan_cidr_shared_reserved). fleet.py's _provision()
     # refuses to hand a new elastic node an address outside this block.
     vlan_reserved_cidr: "192.168.100.0/24"
-    # M17 (roadmap/M17-reserved-ip-pool-and-prereservation.md): addresses
-    # the operator already owns (reused from a prior deployment on this
-    # account, or reserved out-of-band ahead of time) -- _provision()
-    # prefers these over always minting a brand-new reservation. Only
+    # Addresses the operator already owns (reused from a prior deployment
+    # on this account, or reserved out-of-band ahead of time) --
+    # _provision() prefers these over always minting a brand-new
+    # reservation, verifying each one against the account's real
+    # unattached reserved IPs before trusting it. Only
     # meaningful when reserved_ip_enabled is true; harmless otherwise.
     # Verified against the account's actual unattached reserved IPs
     # before ever being trusted -- see PoolConfig.reserved_ip_pool.
@@ -117,8 +123,10 @@ pools:
     # prereserve_ips_to_max(). No cost guardrail beyond this flag itself
     # -- reserving ahead of need costs real money whether used or not.
     reserved_ip_prereserve_to_max: false
-    # M24 (roadmap/M24-scalable-roster-health-distribution.md): fleet-wide
-    # baseline for client-agent's opt-in fallback direct-probe behavior.
+    # Fleet-wide baseline for client-agent's opt-in fallback direct-probe
+    # behavior (client-agent trusts natctl's own reported node health by
+    # default; this lets an operator also require a client's own direct
+    # probe to agree before treating a node as usable).
     # null (the default for both) means "no opinion here, respect each
     # client's own local LNG_FALLBACK_PROBE_ENABLED/_INTERVAL env var" --
     # see PoolConfig.client_fallback_probe_enabled's own docstring
@@ -130,7 +138,7 @@ pools:
     client_fallback_probe_interval: null
     # Bidirectional buddy IP failover (FRR, v5 — replaces lelastic, which
     # was architecturally locked to one direction per pair) — see
-    # docs/ARCHITECTURE.md §3.6/§3.6.1. Requires conntrack_buddy_sync_enabled
+    # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.4. Requires conntrack_buddy_sync_enabled
     # + natctl_roster_base_url above. Look up linode_bgp_dcid for your
     # region from Linode's current failover docs
     # (https://www.linode.com/docs/products/compute/compute-instances/guides/failover/)
@@ -148,10 +156,10 @@ pools:
       conntrack_low_watermark: 0.30
       port_headroom_low_watermark: 0.15
       throughput_high_watermark: 0.85
-      cpu_high_watermark: 0.80   # busiest core's softirq/packet-processing saturation ratio, from nat_exporter -- scale-out only, no low-watermark equivalent (see docs/AUTOSCALING.md)
+      cpu_high_watermark: 0.80   # busiest core's softirq/packet-processing saturation ratio, from nat_exporter -- scale-out only, no low-watermark equivalent (see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.2)
       cooldown_seconds: 300
       drain_timeout_seconds: 180
-      unhealthy_replace_after_seconds: 900   # see docs/RUNBOOK.md "zombie node" handling -- covers a fresh elastic node's full cloud-init time, not just steady-state failures
+      unhealthy_replace_after_seconds: 900   # see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.7 "zombie node" handling -- covers a fresh elastic node's full cloud-init time, not just steady-state failures
       auto_provision_enabled: true   # fully automatic, bounded by min/max_nodes above
 
   # Example dedicated pool for a high-value/noisy tenant that needs isolated
@@ -190,13 +198,13 @@ pools:
 
 prometheus_url: http://<observability-instance-ip>:9090
 
-# Found live 2026-09-09: a node's VPC interface only ever gets a kernel
-# route for its OWN directly-connected subnet -- nothing routes it to any
-# OTHER subnet in the same VPC by default, so a packet to a sibling
-# subnet (e.g. a customer's client instance on a different VPC subnet)
-# fell through to the default route and was silently dropped, even
-# though Cloud Firewall already allows it (private_subnet_ids controls
-# access, not routability). Terraform auto-discovers this list for you
+# A node's VPC interface only ever gets a kernel route for its OWN
+# directly-connected subnet -- nothing routes it to any OTHER subnet in
+# the same VPC by default, so a packet to a sibling subnet (e.g. a
+# customer's client instance on a different VPC subnet) falls through to
+# the default route and is silently dropped, even though Cloud Firewall
+# already allows it (private_subnet_ids controls access, not
+# routability). Terraform auto-discovers this list for you
 # (every subnet in the VPC, via the linode_vpc_subnets data source) and
 # writes it here -- hand-authoring a natctl.yaml outside Terraform should
 # list every subnet in this account's VPC. Optional; omitting it (or

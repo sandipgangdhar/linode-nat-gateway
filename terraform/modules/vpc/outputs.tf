@@ -2,12 +2,13 @@
 #
 # Exposes the IDs/CIDRs that downstream modules (nat-fleet, observability)
 # and the environment root module need to attach instances to this VPC and
-# to reference its firewalls. v11: vpc_id/public_subnet_id/private_subnet_ids
-# are now pure passthroughs of the BYO input variables (this module creates
-# no VPC/subnet resources) -- public_subnet_cidr/private_subnet_cidrs come
-# from this module's own data-source lookups instead of a resource
-# attribute, so downstream modules don't need to know or care that the
-# subnet already existed rather than being created here.
+# to reference its firewalls. vpc_id/public_subnet_id/private_subnet_ids
+# are pure passthroughs of the bring-your-own-VPC input variables (this
+# module creates no VPC/subnet resources) -- public_subnet_cidr/
+# private_subnet_cidrs come from this module's own data-source lookups
+# instead of a resource attribute, so downstream modules don't need to
+# know or care that the subnet already existed rather than being created
+# here.
 #
 # -----------------------------------------------------
 # Outputs:
@@ -61,7 +62,9 @@ output "private_subnet_cidrs" {
 # Every subnet's CIDR in this VPC, auto-discovered -- see
 # data.linode_vpc_subnets.all's own comment for why. Consumed by
 # nat-fleet/observability to route each instance's VPC interface (eth1)
-# to every sibling subnet, closing the routing gap found live 2026-09-09.
+# to every sibling subnet -- a VPC-attached instance only ever gets a
+# kernel route to its own directly-connected subnet, never any other
+# subnet in the same VPC automatically, so this closes that gap.
 output "all_subnet_cidrs" {
   value = [for s in data.linode_vpc_subnets.all.vpc_subnets : s.ipv4]
 }
@@ -75,6 +78,6 @@ output "control_plane_firewall_id" {
 }
 
 output "client_firewall_id" {
-  description = "Attach to any client instance -- SSH only. As of M20 (2026-09-02) this project doesn't create client instances itself; a customer attaches this firewall to whatever they create via their own automation."
+  description = "Attach to any client instance -- SSH only. This project doesn't create client instances itself; a customer attaches this firewall to whatever they create via their own automation."
   value       = linode_firewall.client.id
 }

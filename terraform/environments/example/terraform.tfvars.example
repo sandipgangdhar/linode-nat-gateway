@@ -38,8 +38,7 @@ region        = "us-east"
 # --------------------------------------------------------------------------
 # Bring your own VPC -- REQUIRED. This automation no longer creates the
 # VPC or its subnet(s) itself (v11 -- see terraform/modules/vpc/main.tf's
-# header comment and docs/RUNBOOK.md "Bring your own VPC" for exactly how
-# to create these first, e.g. via linode-cli):
+# header comment). Create these first yourself, e.g. via linode-cli:
 #
 #   linode-cli vpcs create --label lng-example --region us-east
 #   linode-cli vpcs subnets-create <vpc_id> --label public-nat --ipv4 10.0.0.0/24
@@ -60,17 +59,17 @@ public_subnet_id = 0 # REPLACE_ME with your public subnet's numeric id
 # to 8099 dropped. Listing a subnet's id below adds its real CIDR to that
 # one firewall rule's allowlist (see data.linode_vpc_subnet.private + the
 # natctl-api inbound block in that file) -- nothing else. It does NOT
-# affect the NAT client fleet (that runs over VLAN, not VPC -- see
-# docs/ARCHITECTURE.md §3.0) and does NOT add the subnet to the nat_node
+# affect the NAT client fleet (that runs over VLAN, not VPC, since VPC
+# cannot transit-route to a non-VPC destination -- see
+# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §1.2) and does NOT add the subnet to the nat_node
 # firewall. Leave as {} (the default) if nothing outside the
 # NAT/observability nodes themselves needs to call that API.
 #
-# CORRECTED 2026-09-09 (found live): despite this comment's earlier
-# claim, Linode does NOT automatically route a VPC-attached instance to
+# Linode does NOT automatically route a VPC-attached instance to
 # any OTHER subnet in the same VPC -- only its own directly-connected one
 # gets a kernel route; everything else falls through to the default
 # route (out the PUBLIC interface, not the VPC) and is silently dropped,
-# even once Cloud Firewall allows it here. This project now fixes that
+# even once Cloud Firewall allows it here. This project fixes that
 # separately and automatically (every subnet in the VPC is auto-
 # discovered via linode_vpc_subnets and routed into every node's eth1 --
 # see terraform/modules/vpc's all_subnet_cidrs output) -- you do not need
@@ -90,7 +89,7 @@ authorized_keys = [
 root_pass = "REPLACE_ME_WITH_A_STRONG_PASSWORD"
 
 # --------------------------------------------------------------------------
-# REQUIRED (roadmap/M2-security.md) -- no default, deliberately. Every
+# REQUIRED -- no default, deliberately. Every
 # firewall this environment creates (nat_node, control_plane, client) scopes
 # SSH to exactly these CIDRs, and control_plane also scopes Grafana/
 # Prometheus/Alertmanager (3000/9090/9093) to them. This used to default to
@@ -103,7 +102,7 @@ admin_cidrs = ["REPLACE_ME/32"] # e.g. ["203.0.113.4/32"]
 # Terraform-managed floor for the shared pool. Start minimal (1) and raise
 # it once real load justifies it; natctl also scales elastic capacity above
 # this floor automatically, up to shared_pool_max_nodes — see
-# docs/ARCHITECTURE.md §4.
+# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.1.
 shared_pool_floor_nodes = 1
 shared_pool_max_nodes   = 12
 
@@ -115,8 +114,8 @@ nat_instance_type = "g6-dedicated-4"
 grafana_admin_password = "REPLACE_ME"
 
 # --------------------------------------------------------------------------
-# VLAN (private client fleet) -- see docs/ARCHITECTURE.md §3.0/§3.1.
-# Every node in a pool joins the matching vlan_label as a member of this
+# VLAN (private client fleet) -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+# §1.2/§1.3. Every node in a pool joins the matching vlan_label as a member of this
 # same L2 segment -- this is NOT a VPC subnet and has no separate
 # Terraform resource (a VLAN is just a label + whatever CIDR every
 # attached instance's ipam_address agrees to use).
@@ -152,7 +151,7 @@ grafana_admin_password = "REPLACE_ME"
 # vlan_cidr_shared and vlan_cidr_dedicated_acme are always allowed to
 # overlap or nest -- separate VLAN labels are fully isolated L2 domains on
 # Linode regardless of numeric CIDR overlap. When they're the SAME value
-# (v13, "same-VLAN mode" -- e.g. one account-wide VLAN shared with VPN
+# ("same-VLAN mode" -- e.g. one account-wide VLAN shared with VPN
 # traffic), the only thing that needs coordinating is that
 # vlan_cidr_shared_reserved and vlan_cidr_dedicated_acme_reserved don't
 # overlap with EACH OTHER -- main.tf's "vlan_cidr_reserved_no_overlap_same_vlan"
@@ -174,7 +173,7 @@ grafana_admin_password = "REPLACE_ME"
 # vlan_cidr_dedicated_acme_reserved = "192.168.105.0/27" # nested inside vlan_cidr_dedicated_acme above
 
 # --------------------------------------------------------------------------
-# Reserved IPs -- see docs/ARCHITECTURE.md. Opt-in (default false). When
+# Reserved IPs -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.6. Opt-in (default false). When
 # true, every node's primary public IP (floor AND natctl-provisioned
 # elastic nodes) is a Linode Reserved IP that survives an instance
 # replacement -- turn this on if any downstream service IP-whitelists this
@@ -186,8 +185,8 @@ grafana_admin_password = "REPLACE_ME"
 # reserved_ip_enabled = true
 
 # --------------------------------------------------------------------------
-# Bring-your-own reserved IPs -- see docs/ARCHITECTURE.md §3.8.1 /
-# roadmap/M17-reserved-ip-pool-and-prereservation.md. Opt-in, only
+# Bring-your-own reserved IPs -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+# §4.6. Opt-in, only
 # meaningful when reserved_ip_enabled above is true. Addresses you
 # ALREADY OWN (reused from a prior deployment on this account, or
 # reserved out-of-band ahead of time) -- assigned BY POSITION to this
@@ -203,16 +202,18 @@ grafana_admin_password = "REPLACE_ME"
 # dedicated_acme_pool_reserved_ip_pool = ["203.0.113.20"]
 
 # --------------------------------------------------------------------------
-# Anti-affinity placement groups -- see docs/ARCHITECTURE.md §3.6.2 /
-# roadmap/M16-anti-affinity-placement-groups.md. Opt-in (default false).
+# Anti-affinity placement groups -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+# §4.5. Opt-in (default false).
 # When true, floor nodes are spread across Linode Placement Groups
 # (anti_affinity:local) so Akamai avoids co-locating them on the same
 # physical host -- closes the "correlated physical-host failure takes out
-# both buddy pair members" gap docs/COMPARISON.md documents. Floor nodes
+# both buddy pair members" gap that buddy conntrack sync + BGP IP failover
+# alone don't cover. Floor nodes
 # only -- natctl-provisioned elastic nodes are not covered. A pool over 5
 # floor nodes gets multiple groups (Akamai's 5-Linode-per-group cap) in
 # contiguous creation-order blocks, which only fully protects pairs that
-# land inside the same block -- see the roadmap file's "Residual gap".
+# land inside the same block -- a structural limitation of contiguous-block
+# assignment, not a bug (it minimizes rather than eliminates the exposure).
 # --------------------------------------------------------------------------
 # placement_group_enabled = true
 # placement_group_policy  = "strict" # or "flexible" -- see variables.tf
@@ -224,8 +225,8 @@ grafana_admin_password = "REPLACE_ME"
 # boot instead of embedding their content directly in cloud-init --
 # Linode's Instance Metadata API hard-caps user_data at 16384 bytes
 # (decoded), and this project's own source files alone already exceed
-# that with no other features enabled. See docs/ARCHITECTURE.md's
-# "Fetched-at-boot artifacts" section and
+# that with no other features enabled. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+# §6.2 ("Fetched-at-Boot Artifacts") and
 # terraform/modules/artifacts/main.tf's header comment for the full
 # numbers. The SAME bucket/keys also back the leader-election lease when
 # natctl_on_node_enabled is true (see below) -- one bucket, dual purpose.
@@ -238,11 +239,14 @@ natctl_object_storage_bucket     = "lng-artifacts"
 natctl_object_storage_access_key = "REPLACE_ME"
 natctl_object_storage_secret_key = "REPLACE_ME"
 
-# v6: natctl-on-node (opt-in) -- removes the requirement for a dedicated
+# natctl-on-node (opt-in) -- removes the requirement for a dedicated
 # control-plane host by running natctl itself, leader-elected with STONITH
-# fencing, on every NAT node instead. Leave commented out / false to keep
+# fencing (power off the previous leader, poll for confirmed offline,
+# only then claim leadership -- see controller/natctl/leader_election.py
+# and docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.3/§2.4), on every NAT node
+# instead. Leave commented out / false to keep
 # the original single-dedicated-host layout (module.observability runs
-# natctl). See docs/RUNBOOK.md's natctl-on-node section before enabling
+# natctl). Read the guide's leader-election section before enabling
 # this in production -- fencing briefly interrupts a node's own NAT
 # traffic, and this is defense-in-depth, not mathematically perfect
 # mutual exclusion. Only this toggle is opt-in -- the Object Storage block
@@ -250,9 +254,9 @@ natctl_object_storage_secret_key = "REPLACE_ME"
 #
 # natctl_on_node_enabled = true
 
-# v6: already have Prometheus/Grafana (or a remote-write-compatible
+# Already have Prometheus/Grafana (or a remote-write-compatible
 # backend)? Set this to false to skip provisioning this project's own copy
-# entirely -- see docs/OBSERVABILITY.md "Bring your own monitoring". You
+# entirely. You
 # can also keep run_monitoring_stack = true (the default) and just add
 # customer_prometheus_remote_write_url to have the local Prometheus this
 # environment provisions forward samples into your existing backend too.
@@ -261,23 +265,3 @@ natctl_object_storage_secret_key = "REPLACE_ME"
 # customer_prometheus_remote_write_url      = "https://prometheus-blocks-prod-us-central1.grafana.net/api/prom/push"
 # customer_prometheus_remote_write_username = "REPLACE_ME"
 # customer_prometheus_remote_write_password = "REPLACE_ME"
-
-# --------------------------------------------------------------------------
-# roadmap/M20-remove-terraform-client-creation.md (2026-09-02): this
-# environment no longer creates client instances via Terraform -- the
-# v14/v15/v17.2 client_groups mechanism that used to be documented here
-# is removed. A customer's own automation creates their client
-# instances (their own Terraform, an autoscaling group, hand-provisioned
-# -- this project has no opinion); scripts/configure-vlan-address.sh +
-# scripts/install-nat-client.sh configure an already-existing instance to
-# become a working client. See docs/RUNBOOK.md's "Onboard a client
-# instance" section for the full walkthrough, including the four
-# interface_mode equivalents and how client-agent gets installed.
-#
-# 2026-09-11: client_static_vlan_reserved (a per-pool reserved-address
-# COUNT) is removed -- the VLAN block above already handles this more
-# simply. A manually-assigned client's address just needs to fall
-# OUTSIDE vlan_cidr_shared_reserved/vlan_cidr_dedicated_acme_reserved
-# (anywhere else in vlan_cidr_shared/vlan_cidr_dedicated_acme) -- no
-# separate reservation count to size or keep in sync.
-# --------------------------------------------------------------------------

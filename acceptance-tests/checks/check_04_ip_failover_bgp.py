@@ -1,7 +1,7 @@
 # check_04_ip_failover_bgp.py (acceptance-tests/checks)
 #
-# Automates the exact live test docs/ARCHITECTURE.md section 3.6.1
-# already documents having been run manually against two real Linodes:
+# Automates the exact live test docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+# §4.4 already documents having been run manually against two real Linodes:
 # a continuous ping against a buddy-paired node's public IP, `systemctl
 # stop frr` on that node, and a check that the buddy takes over the
 # advertisement with genuinely ZERO ping loss -- the single most
@@ -9,10 +9,10 @@
 # survives its own node dying, not just a monitoring dashboard saying
 # so). Then restarts frr and confirms the original node reclaims the IP.
 #
-# roadmap/M27-open-findings-and-load-verification.md: the restore step
-# (restarting frr on the primary) now targets `primary_restore_host` when
-# configured -- a BGP-independent address (its VPC-private IP, by
-# convention) -- instead of unconditionally reusing `primary_ssh_host`.
+# The restore step (restarting frr on the primary) targets
+# `primary_restore_host` when configured -- a BGP-independent address
+# (its VPC-private IP, by convention) -- instead of unconditionally
+# reusing `primary_ssh_host`.
 # Live-reproduced bug this closes: while frr is down, the primary's own
 # public IP is answered by its buddy (the entire point of the drill), so
 # SSHing to `primary_ssh_host` at that exact moment when it IS the public
@@ -37,9 +37,10 @@
 #    and repeats the ping/loss check to confirm the primary reclaims its
 #    own IP.
 # 5) FAILs if either direction's packet loss exceeds `max_acceptable_loss_percent`
-#    (default 0 -- matching the 0%/89-of-89 and 0%/44-of-44 results
-#    docs/ARCHITECTURE.md's live test actually recorded; this is a real
-#    bar, not a rounding allowance).
+#    (default 0 -- matching the genuinely zero packet loss this project's
+#    own live BGP failover testing recorded in both directions; this is a
+#    real bar, not a rounding allowance -- see
+#    docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.4).
 #
 # -----------------------------------------------------
 # Usage:
@@ -52,10 +53,10 @@
 # - THE most disruptive/important check in this suite -- it deliberately
 #   stops FRR (and therefore this node's BGP-advertised IP) on a real
 #   node. Confirm IP Sharing is actually configured for this pair in the
-#   Cloud Manager console first (docs/ARCHITECTURE.md section 3.6) --
-#   this check assumes the prerequisite authorization step already
+#   Cloud Manager console first (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+#   §4.4) -- this check assumes the prerequisite authorization step already
 #   happened; it does not perform it.
-# - As documented in section 3.6.1: ICMP survives this failover, but any
+# - ICMP survives this failover, but any
 #   open TCP connection through the killed node will NOT (conntrack state
 #   dies with the node) -- that is buddy-sync's conntrackd-mirroring
 #   problem (check 03), not this one's. Don't be surprised if this check
@@ -65,8 +66,8 @@
 #   actual buddy pairing already converged (see nat_conntrack_buddy_paired
 #   in Grafana, or roster's `ip_failover_buddy_ips` field -- a list, usually
 #   one entry, two for a "triangle" hub node on an odd-sized pool, see
-#   docs/ARCHITECTURE.md §3.6 "Odd node counts") -- this check assumes the
-#   pairing already exists, it does not create one.
+#   docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.2 "the 3-node triangle") --
+#   this check assumes the pairing already exists, it does not create one.
 #
 # -----------------------------------------------------
 # Author:
@@ -79,7 +80,7 @@
 Live BGP IP-failover check: kill FRR on a buddy-paired node's primary
 side, prove zero ping loss to its public IP during the failover, then
 restart FRR and prove a clean failback -- automating the manual drill
-documented in docs/ARCHITECTURE.md section 3.6.1.
+documented in docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.4.
 """
 from __future__ import annotations
 
@@ -202,6 +203,6 @@ def run(cfg: Config, report: Reporter) -> None:
         report.passed(
             CHECK_ID,
             f"{pool_name}: {failover_loss}% loss during failover, {failback_loss}% loss during failback to {primary_public_ip} "
-            f"(max acceptable: {max_loss}%) -- matches the live test recorded in docs/ARCHITECTURE.md section 3.6.1",
+            f"(max acceptable: {max_loss}%) -- matches this project's own live BGP-failover testing (zero loss, both directions)",
             started,
         )

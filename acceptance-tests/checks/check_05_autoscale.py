@@ -4,8 +4,9 @@
 # not just that the config values (min_nodes/max_nodes/cooldown_seconds)
 # are set correctly, but that a real load spike genuinely produces a new
 # `lng-elastic`-tagged node in the roster within a reasonable window. See
-# docs/ARCHITECTURE.md section 4.1 and docs/RUNBOOK.md for the mechanism
-# this exercises.
+# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.1/§5.2 for the mechanism this
+# exercises (two capacity tiers -- Terraform-managed floor, natctl-managed
+# elastic -- and the algorithm that decides when/how much to scale).
 #
 # -----------------------------------------------------
 # What this verifies (per pool with an `autoscale_drill` block):
@@ -40,8 +41,9 @@
 # - The new node it provisions does not get torn down automatically by
 #   this check -- natctl's own scale-in logic (cooldown_seconds) will
 #   eventually remove it once load subsides, exactly as it would for a
-#   real traffic spike. If you need it gone sooner, see docs/RUNBOOK.md's
-#   scale-in guidance.
+#   real traffic spike. If you need it gone sooner, drain it directly:
+#   `./natctl-cli drain --config natctl.yaml --pool <pool> --node-id <id>`
+#   (see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §10.3 "Common Procedures").
 #
 # -----------------------------------------------------
 # Author:
@@ -118,11 +120,10 @@ def run(cfg: Config, report: Reporter) -> None:
             report.failed(CHECK_ID, f"{pool_name}: could not read baseline node_count from roster: {exc}", started)
             continue
 
-        # BUG FIX (found live, 2026-08-30, roadmap/M7-acceptance-suite.md):
-        # loadtest.sh's -disable-keepalive fix (a fresh TCP connection per
-        # request, needed so request RATE -- not just concurrency --
+        # loadtest.sh's -disable-keepalive setting (a fresh TCP connection
+        # per request, needed so request RATE -- not just concurrency --
         # drives real conntrack pressure) means a fresh DNS lookup per
-        # request too. Confirmed live this can overwhelm a small client
+        # request too, which can overwhelm a small client
         # instance's own local resolver under real concurrency (almost
         # all requests failing with "Temporary failure in name
         # resolution", not just running slower). Resolve the target's IP

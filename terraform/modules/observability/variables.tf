@@ -77,13 +77,13 @@ variable "vpc_prefix" {
 }
 
 variable "vpc_sibling_subnet_cidrs" {
-  description = "Found live 2026-09-09: this host's VPC interface only ever gets a kernel route for its OWN directly-connected subnet -- nothing routed it to any OTHER subnet in the same VPC, so a client on a different VPC subnet couldn't reach (or get a reply from) natctl's roster API here, even though Cloud Firewall already allows it. Pass module.vpc.all_subnet_cidrs (auto-discovered, see that module's own comment) — purely a routing convenience, not a new security boundary. Default [] preserves pre-existing behavior (no sibling routes, and no eth1 override at all) for any caller that hasn't wired this yet."
+  description = "This host's VPC interface only ever gets a kernel route for its OWN directly-connected subnet -- nothing routes it to any OTHER subnet in the same VPC automatically, so a client on a different VPC subnet can't reach (or get a reply from) natctl's roster API here without this, even though Cloud Firewall already allows it. Pass module.vpc.all_subnet_cidrs (auto-discovered, see that module's own comment) — purely a routing convenience, not a new security boundary. Default [] preserves pre-existing behavior (no sibling routes, and no eth1 override at all) for any caller that hasn't wired this yet."
   type        = list(string)
   default     = []
 }
 
 variable "vlan_label" {
-  description = "2026-09-11: which VLAN this host joins, so a \"vlan_only\" client (no VPC interface at all) can reach the roster API in the default single-dedicated-host layout -- previously structurally impossible, this instance had no VLAN interface at all. Pass the shared pool's own vlan_label_shared (the default pool every tenant uses); a dedicated pool on a genuinely separate VLAN is unaffected. Default \"\" skips the VLAN interface entirely -- backward compatible for any caller that hasn't wired this yet."
+  description = "Which VLAN this host joins, so a \"vlan_only\" client (no VPC interface at all) can reach the roster API in the default single-dedicated-host layout -- without this the instance has no VLAN interface at all, and such a client structurally cannot reach it. Pass the shared pool's own vlan_label_shared (the default pool every tenant uses); a dedicated pool on a genuinely separate VLAN is unaffected. Default \"\" skips the VLAN interface entirely."
   type        = string
   default     = ""
 }
@@ -117,23 +117,24 @@ variable "linode_token" {
 }
 
 variable "run_natctl" {
-  description = "Whether THIS instance runs natctl itself, in addition to Prometheus/Grafana/Alertmanager. Default true preserves the original single-dedicated-host layout. Set to false once natctl runs on every NAT node instead (terraform/modules/nat-fleet's natctl_on_node_enabled) -- running natctl in two places at once is redundant, and (once leader_election.enabled) this host would need its own NATCTL_SELF_NODE_ID/NATCTL_SELF_LINODE_ID identity to participate safely, which this module does not set up. See docs/RUNBOOK.md's natctl-on-node section."
+  description = "Whether THIS instance runs natctl itself, in addition to Prometheus/Grafana/Alertmanager. Default true preserves the original single-dedicated-host layout. Set to false once natctl runs on every NAT node instead (terraform/modules/nat-fleet's natctl_on_node_enabled) -- running natctl in two places at once is redundant, and (once leader_election.enabled) this host would need its own NATCTL_SELF_NODE_ID/NATCTL_SELF_LINODE_ID identity to participate safely, which this module does not set up. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.3/§2.4."
   type        = bool
   default     = true
 }
 
 variable "natctl_http_sd_targets" {
-  description = "roadmap/M2-security.md regression fix (found live, 2026-09-02), corrected for a second real bug found live in M28 (roadmap/M28-full-production-readiness-pass.md's Phase 4 severe finding): one <vpc-ip>:8099 address PER ENABLED POOL for Prometheus to poll GET /file_sd on instead of reading a local file, for the run_natctl=false (natctl_on_node_enabled) case where nobody on THIS host ever writes that file. A single shared target does NOT answer for every pool -- a node's own knowledge of which pools exist is baked in at its own creation time and never refreshed, so a node created before a second pool was enabled has no idea that pool exists. One target per pool's own first floor node guarantees full coverage regardless of any other node's config age. Empty list (default) means \"use the local file_sd_configs path\" -- the original, still-correct behavior when run_natctl is true. See ansible/templates/prometheus.yml.tftpl for how this switches the nat_exporter scrape job's discovery mechanism."
+  description = "One <vpc-ip>:8099 address PER ENABLED POOL for Prometheus to poll GET /file_sd on instead of reading a local file, for the run_natctl=false (natctl_on_node_enabled) case where nobody on THIS host ever writes that file. A single shared target does NOT answer for every pool -- a node's own knowledge of which pools exist is baked in at its own creation time and never refreshed, so a node created before a second pool was enabled has no idea that pool exists. One target per pool's own first floor node guarantees full coverage regardless of any other node's config age. Empty list (default) means \"use the local file_sd_configs path\" -- the original, still-correct behavior when run_natctl is true. See ansible/templates/prometheus.yml.tftpl for how this switches the nat_exporter scrape job's discovery mechanism."
   type        = list(string)
   default     = []
 }
 
 # ---------------------------------------------------------------------------
-# v6: monitoring-stack opt-out -- if your organization already runs
+# Monitoring-stack opt-out -- if your organization already runs
 # Prometheus/Grafana (or a Prometheus-remote-write-compatible backend like
 # Grafana Cloud, Mimir, Thanos Receive, VictoriaMetrics), you don't need
-# this project to stand up a second one. See docs/OBSERVABILITY.md
-# "Bring your own monitoring".
+# this project to stand up a second one -- set this false and give the
+# prometheus_remote_write_* values below to forward samples into your
+# existing backend instead.
 # ---------------------------------------------------------------------------
 
 variable "run_monitoring_stack" {
@@ -168,22 +169,21 @@ variable "natctl_file_urls" {
 }
 
 variable "natctl_service_url" {
-  description = "Public URL (terraform/modules/artifacts' natctl_service_url output) fetched at boot instead of embedded inline -- v10, kept in sync with terraform/modules/nat-fleet's equivalent variable. Only actually consumed when run_natctl is true."
+  description = "Public URL (terraform/modules/artifacts' natctl_service_url output) fetched at boot instead of embedded inline -- kept in sync with terraform/modules/nat-fleet's equivalent variable. Only actually consumed when run_natctl is true."
   type        = string
   default     = ""
 }
 
 variable "natctl_requirements_txt_url" {
-  description = "Public URL (terraform/modules/artifacts' natctl_requirements_txt_url output) fetched at boot instead of embedded inline -- v10, kept in sync with terraform/modules/nat-fleet's equivalent variable. Only actually consumed when run_natctl is true."
+  description = "Public URL (terraform/modules/artifacts' natctl_requirements_txt_url output) fetched at boot instead of embedded inline -- kept in sync with terraform/modules/nat-fleet's equivalent variable. Only actually consumed when run_natctl is true."
   type        = string
   default     = ""
 }
 
-# v21: "source" (default) or "binary" -- kept in sync with
-# terraform/modules/nat-fleet's equivalent variable, see its v21 comment
-# and docs/PUBLISHING.md.
+# "source" (default) or "binary" -- kept in sync with
+# terraform/modules/nat-fleet's equivalent variable, see its comment.
 variable "agent_distribution" {
-  description = "\"source\" (default) or \"binary\" -- see terraform/modules/nat-fleet/variables.tf's matching v21 comment."
+  description = "\"source\" (default) or \"binary\" -- see terraform/modules/nat-fleet/variables.tf's matching comment."
   type        = string
   default     = "source"
 }
@@ -195,27 +195,26 @@ variable "natctl_bin_url" {
 }
 
 variable "nat_overview_json_url" {
-  description = "Public URL (terraform/modules/artifacts' nat_overview_json_url output) for dashboards/nat-overview.json, fetched at boot instead of embedded inline -- v15. Only actually consumed when run_monitoring_stack is true. Fetching this instead of embedding it means editing the dashboard JSON no longer forces this instance to be replaced on the next apply (user_data changes are ForceNew; a fetched-at-boot URL reference is a few dozen stable bytes regardless of the target content)."
+  description = "Public URL (terraform/modules/artifacts' nat_overview_json_url output) for dashboards/nat-overview.json, fetched at boot instead of embedded inline. Only actually consumed when run_monitoring_stack is true. Fetching this instead of embedding it means editing the dashboard JSON no longer forces this instance to be replaced on the next apply (user_data changes are ForceNew; a fetched-at-boot URL reference is a few dozen stable bytes regardless of the target content)."
   type        = string
   default     = ""
 }
 
-# BUG FIX (found live, 2026-08-29, roadmap/M4-autoscaling.md): this module
-# never accepted Object Storage credentials at all, so in the default
+# This module must accept Object Storage credentials, or in the default
 # single-dedicated-host layout (run_natctl=true, natctl_on_node_enabled=
 # false) natctl's FleetController.object_storage_access_key/secret_key
-# resolved to empty strings -- main.py's build_controllers() sources them
+# resolve to empty strings -- main.py's build_controllers() sources them
 # via LeaderElectionConfig.resolved_access_key()/resolved_secret_key(),
 # which falls back to NATCTL_OBJECT_STORAGE_ACCESS_KEY/SECRET_KEY in
 # /etc/natctl/env, but this instance's own cloud-init (unlike
 # ansible/cloud-init/nat-node.yaml.tftpl's, used only when
-# natctl_on_node_enabled=true) never wrote that file. Confirmed live: every
-# elastic-node provision attempt failed with a real S3 PutObject 400 (empty/
-# invalid credentials) while trying to upload the new node's nftables.conf
-# -- autoscaling's actual provisioning step has likely never worked via the
-# default deployment mode. These credentials are ALWAYS needed here when
-# run_natctl is true (every pool's elastic-node uploads use them,
-# regardless of leader_election/natctl_on_node_enabled), unlike
+# natctl_on_node_enabled=true) never writes that file on its own. Without
+# them, every elastic-node provision attempt fails with a real S3
+# PutObject 400 (empty/invalid credentials) while trying to upload the
+# new node's nftables.conf -- autoscaling's actual provisioning step
+# breaks silently in this deployment mode. These credentials are ALWAYS
+# needed here when run_natctl is true (every pool's elastic-node uploads
+# use them, regardless of leader_election/natctl_on_node_enabled), unlike
 # leader_election's own object storage fields which are genuinely optional.
 variable "object_storage_access_key" {
   description = "Object Storage access key natctl uses to upload each elastic node's own rendered nftables.conf/artifacts (fleet.py's _provision() -> object_storage.py's upload_public_object()) -- required whenever run_natctl is true, independent of leader_election. Written to /etc/natctl/env (0600), never into natctl_config_yaml itself."

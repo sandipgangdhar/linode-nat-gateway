@@ -44,7 +44,8 @@ services:
       # natctl (running natively on the host, not in a container) writes
       # fleet membership here after every reconcile pass; Prometheus reads
       # it via file_sd so scrape targets track the fleet's live node count
-      # as it autoscales — see docs/OBSERVABILITY.md "Fleet-aware scraping".
+      # as it autoscales — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §7.1
+      # "The Metrics Pipeline".
       - /opt/lng-observability/file_sd:/etc/prometheus/file_sd:ro
       - prometheus-data:/prometheus
     ports:
@@ -65,19 +66,15 @@ services:
     restart: unless-stopped
     volumes:
       - /opt/lng-observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      # BUG FIX (found live, 2026-08-30): this had no data volume at all --
-      # docs/ARCHITECTURE.md used to state this as an accepted trade-off
-      # ("Alertmanager has zero persistence today"), but it's a small,
-      # well-scoped fix, not a fundamental limitation: /alertmanager is
-      # where the container persists active silences and its notification
-      # log (which is what prevents re-sending a notification for an
-      # alert that's still firing). Without this volume, EVERY container
-      # restart (a host reboot, an image update, `docker compose up -d`
-      # re-run) silently dropped both -- an operator-created silence
-      # (e.g. "known issue, don't page me") would reappear as a fresh
-      # page after any routine restart, and every still-firing alert
-      # would re-notify as if it were brand new. Matches prometheus-data/
-      # grafana-data's existing pattern below.
+      # /alertmanager is where the container persists active silences
+      # and its notification log (which is what prevents re-sending a
+      # notification for an alert that's still firing). Without this
+      # volume, EVERY container restart (a host reboot, an image update,
+      # `docker compose up -d` re-run) silently drops both -- an
+      # operator-created silence (e.g. "known issue, don't page me")
+      # reappears as a fresh page after any routine restart, and every
+      # still-firing alert re-notifies as if it were brand new. Matches
+      # prometheus-data/grafana-data's existing pattern below.
       - alertmanager-data:/alertmanager
     ports:
       - "9093:9093"

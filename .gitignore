@@ -1,9 +1,7 @@
 # .gitignore (repository root) -- CUSTOMER-FACING DISTRIBUTION
 #
-# Real gap found live, 2026-08-30: the publish pipeline had no .gitignore
-# at all in this repo until this file existed -- meaning a customer's own
-# terraform.tfvars (Linode API token, root_pass) or *.tfstate (which can
-# contain sensitive values in plan output) had no protection against
+# Protects a customer's own terraform.tfvars (Linode API token, root_pass)
+# and *.tfstate (which can contain sensitive values in plan output) from
 # being accidentally committed. Mirrors the dev repo's own .gitignore,
 # trimmed to what's actually relevant here (no Python source ships in
 # this repo, so no __pycache__/venv/pytest-cache entries needed).

@@ -2,44 +2,37 @@
 # install-nat-client.sh (scripts)
 #
 # Sets up NAT routing on an existing Linode that already has a static
-# VLAN address applied -- the second of two separate steps for turning a
-# server into a NAT gateway client (see configure-vlan-address.sh for
-# the first: applying that address in the first place). If this
-# instance doesn't already have a working default route of its own,
-# fetches the compiled client-agent binary from your artifacts bucket
-# and installs it as a systemd service that manages ECMP routing across
-# every healthy node in the pool. An instance that already has its own
-# working path out (a public IP, or a VPC interface with 1:1 NAT) is
-# left alone by default, since there'd be nothing for client-agent to
-# manage -- pass --force to install it anyway, e.g. for a deliberate
-# dual-path egress policy. Same mechanism Terraform's client-fleet
-# module wires up automatically for "vlan_only"/"vpc_vlan" client_groups
-# (ansible/cloud-init/client-node.yaml.tftpl), packaged here as a
-# standalone script for a server that already exists outside Terraform.
+# VLAN address applied. If this instance doesn't already have a working
+# default route of its own, fetches the compiled client-agent binary
+# from your artifacts bucket and installs it as a systemd service that
+# manages ECMP routing across every healthy node in the pool. An
+# instance that already has its own working path out (a public IP, or a
+# VPC interface with 1:1 NAT) is left alone by default, since there'd be
+# nothing for client-agent to manage -- pass --force to install it
+# anyway, e.g. for a deliberate dual-path egress policy.
 #
-# Split into two scripts, 2026-09-10, from what was previously a single
-# combined install-nat-client.sh that also applied the VLAN address
-# itself -- VLAN addressing and NAT routing are genuinely separate
-# concerns. Run configure-vlan-address.sh FIRST; this script assumes
-# --vlan-iface already has a real address on it and fails fast,
-# pointing you at that script, if it doesn't.
-#
-# Does NOT touch the VLAN interface's address at all -- not applying it,
-# not verifying it's collision-free, not persisting it across a reboot.
-# See configure-vlan-address.sh for all of that.
+# Does NOT touch the VLAN interface's address at all -- applying a
+# working static VLAN address (this project's own nodes' reserved
+# sub-block, see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §3.4, is
+# off-limits; anywhere else on the pool's wide VLAN CIDR is fine) is
+# entirely your own automation's responsibility, not something this
+# project provides tooling for -- this script only ever verifies that
+# --vlan-iface already has a real address applied, as a safety check
+# against building a route through an unaddressed interface, never
+# applies one itself.
 #
 # Also sets net.ipv4.fib_multipath_hash_policy=1 (5-tuple ECMP hashing)
 # unconditionally -- the kernel default (0) hashes only source+
 # destination IP, so repeated connections to one fixed destination
 # deterministically land on the same NAT node every time regardless of
 # how many nodes are healthy. Plain kernel sysctl, same fix on any
-# distro. See roadmap/M21-ecmp-hash-policy-gap.md.
+# distro.
 #
 # -----------------------------------------------------
 # Two ways to run this:
 #
 # 1) MANUALLY, on an already-running server, as root, with flags, AFTER
-#    configure-vlan-address.sh has already applied a real address to
+#    your own automation has already applied a real static address to
 #    the VLAN interface. No internet access needed on this server --
 #    client-agent is fetched over the roster connection itself (see
 #    --artifact-base-url below):
@@ -51,13 +44,13 @@
 # 2) As LINODE USER DATA (Cloud Manager "Add-ons" tab at create time, or
 #    `linode-cli linodes rebuild --metadata.user_data`), so a fresh
 #    instance configures itself at first boot with no manual step at
-#    all -- paste configure-vlan-address.sh's body first, then this
-#    script's, both with their flags set as exported environment
-#    variables instead (user-data scripts run with no arguments):
+#    all -- apply the VLAN address yourself first (whatever your own
+#    automation already does for that), then run this script's body
+#    with its flags set as exported environment variables instead
+#    (user-data scripts run with no arguments):
 #
 #    #!/usr/bin/env bash
-#    export LNG_VLAN_IP="192.168.100.251/22"
-#    # ... configure-vlan-address.sh's body from "set -euo pipefail" ...
+#    # ... your own automation's VLAN-addressing step goes here ...
 #    export LNG_ROSTER_URL="http://10.60.32.20:8099/fleet/shared"
 #    export LNG_VLAN_IFACE="eth1"
 #    # ... this script's own body from "set -euo pipefail" down ...
@@ -77,18 +70,17 @@
 #      node's own Cloud Firewall CIDR scoping for port 8099 before
 #      assuming client-agent is broken (a client on the VPC's wrong
 #      subnet is a real, silent way for this to fail -- see
-#      docs/ARCHITECTURE.md's VPC/subnet notes).
+#      docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §3.3's callout on
+#      cross-subnet VPC reachability).
 #
 # 2) --vlan-iface <name> / LNG_VLAN_IFACE (required)
 #      Which network interface is the VLAN one -- must already have a
-#      real address on it (run configure-vlan-address.sh first if not;
-#      this script checks and fails fast with that exact guidance
-#      otherwise). Required, not auto-detected: unlike
-#      configure-vlan-address.sh, there's no "addressless interface"
-#      heuristic that makes sense here, since by the time this script
+#      real address on it (apply one with your own automation first if
+#      not; this script checks and fails fast with actionable guidance
+#      otherwise). Required, not auto-detected: by the time this script
 #      runs the VLAN interface should already have an address -- an
-#      addressless one would be a sign something upstream went wrong,
-#      not a hint about which interface to use.
+#      addressless one is a sign something upstream went wrong, not a
+#      hint about which interface to use.
 #
 # 3) --artifact-base-url <url> / LNG_ARTIFACT_BASE_URL (optional)
 #      DEFAULT BEHAVIOR (no flag needed): client-agent is fetched from
@@ -97,9 +89,9 @@
 #      This is deliberate, not a shortcut: a "vlan_only"/"vpc_vlan" client
 #      has NO internet path of its own until client-agent itself brings
 #      one up (that's the entire point of those modes), so it can never
-#      reach an internet-facing Object Storage URL directly -- confirmed
-#      live, 2026-09-01 (a real DNS/routing failure against the bucket
-#      URL on a genuinely private-only test client). natctl itself
+#      reach an internet-facing Object Storage URL directly -- the fetch
+#      just hangs on DNS resolution against a genuinely private-only
+#      client, exactly as expected for a host with no route out. natctl itself
 #      fetches the binary from Object Storage once at ITS OWN startup
 #      (it has real internet via its own public IP) and re-serves it
 #      locally over the same roster host/port -- see
@@ -115,13 +107,14 @@
 #      fetches "<base>/bin/client-agent").
 #
 # 4) --fallback-probe-enabled true|false / LNG_FALLBACK_PROBE_ENABLED
-#      (optional, default false) -- roadmap/M24-scalable-roster-health-distribution.md:
-#      this client trusts natctl's own computed node health by default
-#      (zero direct probing of NAT nodes). Set true for the extra
-#      insurance of also independently probing each node directly,
-#      ANDed with natctl's own view -- can also be set/overridden
-#      fleet-wide, live, via `natctl_cli set-client-config` (see
-#      docs/RUNBOOK.md), no restart needed either way.
+#      (optional, default false) -- this client trusts natctl's own
+#      computed node health by default (zero direct probing of NAT
+#      nodes). Set true for the extra insurance of also independently
+#      probing each node directly, ANDed with natctl's own view -- can
+#      also be set/overridden fleet-wide, live, via
+#      `natctl_cli set-client-config` (see
+#      docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §10.2), no restart needed
+#      either way.
 # 5) --fallback-probe-interval <3-60 seconds> / LNG_FALLBACK_PROBE_INTERVAL
 #      (optional, default 30) -- only meaningful when the fallback probe
 #      above is enabled.
@@ -132,15 +125,16 @@
 # 7) --force / LNG_FORCE=true (optional flag, no value -- default false)
 #      DEFAULT BEHAVIOR: this script checks whether this instance
 #      already has a WORKING default route (a real, verified request
-#      over it, not just route presence -- found live 2026-09-10: a
-#      vpc_vlan instance's VPC interface, if marked primary with no 1:1
-#      NAT, still gets a default route from Linode's own Network Helper
-#      that structurally cannot reach the internet, and a plain
-#      route-presence check was fooled by it) BEFORE touching
+#      over it, not just route presence -- a vpc_vlan instance's VPC
+#      interface, if marked primary with no 1:1 NAT, still gets a
+#      default route from Linode's own Network Helper that structurally
+#      cannot reach the internet, and a plain route-presence check is
+#      fooled by it) BEFORE touching
 #      client-agent. Found one -> client-agent is NOT installed, since
 #      there's nothing for it to manage (the "public_vlan"/
-#      "public_vpc_vlan" interface_mode shapes, see docs/ARCHITECTURE.md
-#      section 3.1). Found none (or a non-functional one) -> client-agent
+#      "public_vpc_vlan" interface_mode shapes, see
+#      docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §3.3's interface table).
+#      Found none (or a non-functional one) -> client-agent
 #      IS installed and takes over the default route
 #      ("vlan_only"/"vpc_vlan"). Pass --force to skip this check and
 #      install/start client-agent unconditionally -- for a deliberate
@@ -155,8 +149,9 @@
 # -----------------------------------------------------
 # Best Practices:
 #
-# - Run configure-vlan-address.sh first. This script fails fast with a
-#   clear message pointing you back at it if --vlan-iface has no address.
+# - Apply a real static address to --vlan-iface with your own automation
+#   first. This script fails fast with a clear message if it doesn't
+#   find one -- it never applies an address itself.
 # - Safe to re-run -- every step here is idempotent (overwrites its own
 #   config files, restarts rather than double-starts services).
 # - After running, confirm with:
@@ -195,14 +190,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 : "${LNG_ROSTER_URL:?--roster-url (or LNG_ROSTER_URL) is required, e.g. http://10.60.32.20:8099/fleet/shared}"
-: "${LNG_VLAN_IFACE:?--vlan-iface (or LNG_VLAN_IFACE) is required, e.g. eth1 -- run configure-vlan-address.sh first if that is not already known}"
+: "${LNG_VLAN_IFACE:?--vlan-iface (or LNG_VLAN_IFACE) is required, e.g. eth1 -- apply a real static VLAN address to it with your own automation first if that is not already known}"
 # LNG_ARTIFACT_BASE_URL is intentionally optional now -- see the
 # --artifact-base-url parameter comment above. Left unset, client-agent
 # is fetched from natctl's own roster API instead of an internet-facing
 # Object Storage URL, which is what actually works for a private-only
-# ("vlan_only"/"vpc_vlan") client (confirmed live, 2026-09-01, against a
-# genuinely internet-less test client -- the bucket-URL fetch just hung
-# on DNS resolution, exactly as expected for a host with no route out).
+# ("vlan_only"/"vpc_vlan") client -- against a genuinely internet-less
+# client, a direct bucket-URL fetch just hangs on DNS resolution,
+# exactly as expected for a host with no route out.
 LNG_FALLBACK_PROBE_ENABLED="${LNG_FALLBACK_PROBE_ENABLED:-false}"
 LNG_FALLBACK_PROBE_INTERVAL="${LNG_FALLBACK_PROBE_INTERVAL:-30}"
 LNG_HEALTH_PROBE_TIMEOUT="${LNG_HEALTH_PROBE_TIMEOUT:-1.5}"
@@ -216,27 +211,26 @@ fi
 # This script configures a Linux network stack directly (sysctl under
 # /proc/sys/net/ipv4, `ip` nexthop/route commands, systemd) -- it must
 # run ON the target client instance itself, not on whatever machine is
-# driving your automation. Caught live, 2026-09-08: run on macOS, the
-# very first step below (a Linux-only sysctl) fails with a cryptic BSD
-# "sysctl: unknown oid" error that reads like a kernel/config problem
-# on the *target*, when the real issue is just the wrong host running
-# it -- macOS has no net.ipv4.fib_multipath_hash_policy at all. Fail
-# fast with an actionable message instead.
+# driving your automation. Run on macOS, the very first step below (a
+# Linux-only sysctl) fails with a cryptic BSD "sysctl: unknown oid"
+# error that reads like a kernel/config problem on the *target*, when
+# the real issue is just the wrong host running it -- macOS has no
+# net.ipv4.fib_multipath_hash_policy at all. Fail fast with an
+# actionable message instead.
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "This script must run on the Linux client instance itself (detected: $(uname -s))." >&2
   echo "SSH into the target Linode and run it there, or deliver it as that instance's own user-data -- see the usage comment at the top of this file." >&2
   exit 1
 fi
 
-# Found live 2026-09-10, right after the VLAN-addressing/NAT-routing
-# split: this script assumes --vlan-iface already has a real address on
-# it (configure-vlan-address.sh's job) -- verify that assumption
-# explicitly and fail with clear, actionable guidance rather than
-# silently proceeding to build a route through an unaddressed interface,
-# which would look like it worked but never actually pass traffic.
+# This script assumes --vlan-iface already has a real address applied by
+# your own automation -- verify that assumption explicitly and fail with
+# clear, actionable guidance rather than silently proceeding to build a
+# route through an unaddressed interface, which would look like it
+# worked but never actually pass traffic.
 if ! ip -4 -o addr show dev "${LNG_VLAN_IFACE}" 2>/dev/null | grep -q inet; then
   echo "ERROR: ${LNG_VLAN_IFACE} has no IPv4 address configured." >&2
-  echo "Run configure-vlan-address.sh first (e.g. './configure-vlan-address.sh --vlan-ip 192.168.100.251/22 --vlan-iface ${LNG_VLAN_IFACE}'), then re-run this script." >&2
+  echo "Apply a real static VLAN address to ${LNG_VLAN_IFACE} first (your own automation, or e.g. 'ip addr add 192.168.100.251/22 dev ${LNG_VLAN_IFACE}' -- pick an address outside this pool's reserved sub-block, using the pool's WIDE VLAN CIDR prefix, see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §3.4), then re-run this script." >&2
   exit 1
 fi
 
@@ -256,8 +250,6 @@ LNG_ORIGINAL_DEFAULT_ROUTE="$(ip route show default 2>/dev/null || true)"
 #    what actually makes client-agent's resilient-nexthop-group routing
 #    deliver its claimed "consistent per-flow hashing, spread across
 #    every healthy node" property, rather than a route/health problem.
-#    Confirmed live, 2026-09-01/09-02, on multiple test clients -- see
-#    roadmap/M21-ecmp-hash-policy-gap.md.
 sysctl -w net.ipv4.fib_multipath_hash_policy=1 >/dev/null
 mkdir -p /etc/sysctl.d
 cat >/etc/sysctl.d/99-lng-ecmp.conf <<'EOF'
@@ -289,18 +281,17 @@ except Exception:
   echo "Pass --force to install and start it anyway, e.g. for a deliberate dual-path egress policy."
 else
   LNG_INSTALL_CLIENT_AGENT=true
-  # Found live 2026-09-10: a plain `ip route show default` presence check
-  # (this line's old behavior) is fooled by a vpc_vlan instance -- a VPC
-  # interface marked primary, with no 1:1 NAT, still gets a default route
-  # from Linode's own boot-time Network Helper on the ifupdown stack, even
-  # though a VPC interface with no 1:1 NAT structurally cannot reach the
-  # internet at all (see docs/ARCHITECTURE.md §3.0) -- that route exists
-  # but doesn't work. Confirmed live: install-nat-client.sh skipped
-  # installing client-agent on exactly this shape, leaving the instance
-  # with no real egress path at all. Now actually attempts a real request
-  # over whatever default route exists (api.linode.com, 3s timeout) before
-  # trusting it -- a route that's present but non-functional is treated
-  # the same as no route at all.
+  # A plain `ip route show default` presence check is fooled by a
+  # vpc_vlan instance -- a VPC interface marked primary, with no 1:1
+  # NAT, still gets a default route from Linode's own boot-time Network
+  # Helper on the ifupdown stack, even though a VPC interface with no
+  # 1:1 NAT structurally cannot reach the internet at all (see
+  # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §1.2) -- that route exists
+  # but doesn't work, and skipping client-agent on exactly this shape
+  # would leave the instance with no real egress path at all. Instead,
+  # actually attempt a real request over whatever default route exists
+  # (api.linode.com, 3s timeout) before trusting it -- a route that's
+  # present but non-functional is treated the same as no route at all.
   if ip route show default 2>/dev/null | grep -q .; then
     echo "A default route exists but doesn't actually reach the internet (e.g. a VPC interface with no 1:1 NAT) -- installing client-agent to provide a working one via the NAT fleet."
   else
@@ -319,9 +310,9 @@ if [[ "${LNG_INSTALL_CLIENT_AGENT}" == "true" ]]; then
 #
 #    Stop the service first if this is a re-run -- overwriting a binary
 #    that's currently executing fails with "Text file busy" (ETXTBSY),
-#    confirmed live, 2026-09-02, breaking this script's own "safe to
-#    re-run" claim otherwise. No-op (and harmless) on a first run, where
-#    the service/unit doesn't exist yet.
+#    which would otherwise break this script's own "safe to re-run"
+#    claim. No-op (and harmless) on a first run, where the service/unit
+#    doesn't exist yet.
 systemctl stop lng-client-agent 2>/dev/null || true
 #
 #    Default source: natctl's own roster API (same host/port as
@@ -383,14 +374,14 @@ EOF
 systemctl daemon-reload
 systemctl enable --now lng-client-agent
 
-# Found live 2026-09-10: `systemctl enable --now` returns as soon as the
-# unit is started, not once client-agent has actually fetched the roster
-# and applied its own ECMP route -- confirmed live, the "Summary of
-# changes" below showed no route change even though a real one had, in
-# fact, just landed a couple of seconds later. client-agent's own
-# initial fetch is a plain (non-long-poll) GET, so this is normally
-# quick; poll briefly for the route to actually change before capturing
-# "after", rather than reporting a stale snapshot as if it were final.
+# `systemctl enable --now` returns as soon as the unit is started, not
+# once client-agent has actually fetched the roster and applied its own
+# ECMP route -- without this poll, the "Summary of changes" below could
+# show no route change even though a real one lands a couple of seconds
+# later. client-agent's own initial fetch is a plain (non-long-poll)
+# GET, so this is normally quick; poll briefly for the route to
+# actually change before capturing "after", rather than reporting a
+# stale snapshot as if it were final.
 for _ in $(seq 1 20); do
   CURRENT_DEFAULT_ROUTE="$(ip route show default 2>/dev/null || true)"
   [[ "${CURRENT_DEFAULT_ROUTE}" != "${LNG_ORIGINAL_DEFAULT_ROUTE:-}" ]] && break
@@ -399,9 +390,9 @@ done
 
 fi  # LNG_INSTALL_CLIENT_AGENT
 
-# Found live 2026-09-10: a real, itemized record of what this run
-# actually did -- not just "Done." -- so an operator can see exactly
-# what changed without having to already know this script's internals.
+# A real, itemized record of what this run actually did -- not just
+# "Done." -- so an operator can see exactly what changed without having
+# to already know this script's internals.
 echo ""
 echo "===== Summary of changes ====="
 echo "ECMP hash policy: net.ipv4.fib_multipath_hash_policy=1 (file: /etc/sysctl.d/99-lng-ecmp.conf)"

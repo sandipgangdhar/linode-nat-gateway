@@ -14,16 +14,15 @@
 #    Sizing for the default pool.
 # 3) enable_dedicated_pool_example - Toggle the second example pool on/off.
 # 4) ip_failover_enabled/linode_bgp_dcid - Buddy IP failover (see
-#    docs/ARCHITECTURE.md section 3.6, docs/RUNBOOK.md "Enable buddy IP
-#    failover for a pool").
+#    docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.4, "BGP-Based IP Failover").
 # 5) reserved_ip_enabled - Fixed/whitelist-safe public IPs for every node,
 #    floor and elastic (account-gated by Linode, off by default).
 # 6) shared_pool_reserved_ip_pool/dedicated_acme_pool_reserved_ip_pool -
-#    Bring-your-own reserved IPs for floor nodes, by position (M17, off
-#    by default -- see roadmap/M17-reserved-ip-pool-and-prereservation.md).
+#    Bring-your-own reserved IPs for floor nodes, by position, off
+#    by default.
 # 7) placement_group_enabled/placement_group_policy - Spread floor nodes
-#    across separate physical hosts (M16, off by default; floor nodes
-#    only -- see roadmap/M16-anti-affinity-placement-groups.md).
+#    across separate physical hosts (off by default; floor nodes
+#    only).
 # 8) grafana_admin_password         - Change before any real deployment.
 #
 # -----------------------------------------------------
@@ -53,17 +52,18 @@ variable "label" {
 }
 
 # ---------------------------------------------------------------------------
-# v11: Bring Your Own VPC. This automation no longer creates the Linode VPC
+# Bring Your Own VPC. This automation does not create the Linode VPC
 # or its subnet(s) -- see terraform/modules/vpc/main.tf's header comment
-# for why, and docs/RUNBOOK.md "Bring your own VPC" for how to create one
-# yourself (Cloud Manager, linode-cli, or a separate one-time Terraform
-# config) before running `terraform apply` here. vpc_id/public_subnet_id
+# for why. Create one yourself first (Cloud Manager, linode-cli, or a
+# separate one-time Terraform config -- see
+# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §9.1) before running
+# `terraform apply` here. vpc_id/public_subnet_id
 # are required, no defaults -- there's no environment-agnostic default
 # that would make sense for an id specific to your account.
 # ---------------------------------------------------------------------------
 
 variable "vpc_id" {
-  description = "Numeric id of your existing Linode VPC. Create this yourself first -- see docs/RUNBOOK.md \"Bring your own VPC\"."
+  description = "Numeric id of your existing Linode VPC. Create this yourself first (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §9.1)."
   type        = number
 }
 
@@ -73,18 +73,18 @@ variable "public_subnet_id" {
 }
 
 variable "admin_cidrs" {
-  description = "List of CIDRs allowed to reach SSH (every node) and Grafana/Prometheus/Alertmanager (the control-plane host) -- see roadmap/M2-security.md. No default, deliberately: previously hardcoded to 0.0.0.0/0 (open to the entire internet) with only a code comment telling an operator to fix it. Set this to your own admin/office/VPN egress CIDR(s), e.g. [\"203.0.113.4/32\"]."
+  description = "List of CIDRs allowed to reach SSH (every node) and Grafana/Prometheus/Alertmanager (the control-plane host). No default, deliberately: previously hardcoded to 0.0.0.0/0 (open to the entire internet) with only a code comment telling an operator to fix it. Set this to your own admin/office/VPN egress CIDR(s), e.g. [\"203.0.113.4/32\"]."
   type        = list(string)
 }
 
 variable "private_subnet_ids" {
-  description = "Map of VPC private-subnet label => existing subnet id, for VPC-resident workloads that are NOT the VLAN-based NAT client fleet (e.g. an LKE Enterprise cluster sharing this VPC) -- see docs/ARCHITECTURE.md §3.0. Leave empty ({}) if you don't have any; this is optional, unlike vpc_id/public_subnet_id."
+  description = "Map of VPC private-subnet label => existing subnet id, for VPC-resident workloads that are NOT the VLAN-based NAT client fleet (e.g. an LKE Enterprise cluster sharing this VPC) -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §1.2 for why the client fleet itself rides VLAN, not VPC. Leave empty ({}) if you don't have any; this is optional, unlike vpc_id/public_subnet_id."
   type        = map(number)
   default     = {}
 }
 
 # ---------------------------------------------------------------------------
-# v11: VLAN label/CIDR, promoted from hardcoded locals to real input
+# VLAN label/CIDR are real input
 # variables so you can override them from terraform.tfvars without editing
 # main.tf. Linode VLANs have no standalone Terraform resource (a VLAN is
 # just a label -- see terraform/modules/nat-fleet's vlan_label/vlan_cidr
@@ -114,7 +114,7 @@ variable "vlan_cidr_shared_reserved" {
 }
 
 variable "vlan_label_dedicated_acme" {
-  description = "VLAN label the dedicated-acme example pool's nodes join. Only relevant if enable_dedicated_pool_example is true. See terraform/modules/nat-fleet's vlan_label. Can be DIFFERENT from vlan_label_shared (separate VLANs, the original/simplest setup) or the SAME value (\"same-VLAN mode\" -- see vlan_cidr_shared's description above and docs/RUNBOOK.md's \"Same-VLAN mode\" section); if you make it the same, vlan_cidr_dedicated_acme_reserved must not overlap vlan_cidr_shared_reserved -- main.tf's \"vlan_cidr_reserved_no_overlap_same_vlan\" check block validates this at plan time rather than leaving it to chance."
+  description = "VLAN label the dedicated-acme example pool's nodes join. Only relevant if enable_dedicated_pool_example is true. See terraform/modules/nat-fleet's vlan_label. Can be DIFFERENT from vlan_label_shared (separate VLANs, the original/simplest setup) or the SAME value (\"same-VLAN mode\": both pools share one physical VLAN, coordinating only on keeping their own small reserved sub-blocks -- see vlan_cidr_shared's description above -- from overlapping each other); if you make it the same, vlan_cidr_dedicated_acme_reserved must not overlap vlan_cidr_shared_reserved -- main.tf's \"vlan_cidr_reserved_no_overlap_same_vlan\" check block validates this at plan time rather than leaving it to chance."
   type        = string
   default     = "lng-vlan-acme"
 }
@@ -143,7 +143,7 @@ variable "root_pass" {
 }
 
 variable "shared_pool_floor_nodes" {
-  description = "Terraform-managed baseline node count for the shared pool. Defaults to 1 -- start minimal and raise it (or let natctl add elastic capacity above the floor) once real load justifies it, rather than assuming multi-node capacity is needed up front. At 1 node, conntrack buddy-sync and buddy IP failover (if enabled) simply stay dormant -- there's nothing to pair with -- and activate automatically the moment a second node joins; see docs/ARCHITECTURE.md §3.5's \"Already self-adjusts to node count\" note. See docs/ARCHITECTURE.md §4."
+  description = "Terraform-managed baseline node count for the shared pool. Defaults to 1 -- start minimal and raise it (or let natctl add elastic capacity above the floor) once real load justifies it, rather than assuming multi-node capacity is needed up front. At 1 node, conntrack buddy-sync and buddy IP failover (if enabled) simply stay dormant -- there's nothing to pair with -- and activate automatically the moment a second node joins, no reconfiguration needed. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.1 (Two Tiers of Capacity)."
   type        = number
   default     = 1
 }
@@ -172,7 +172,7 @@ variable "grafana_admin_password" {
 }
 
 variable "ip_failover_enabled" {
-  description = "Enable BIDIRECTIONAL BGP-based IP Sharing (FRR, v5) between buddy pairs so a dead node's public IP fails over, not just its conntrack state — each node self-announces its own IP and backs up its buddy's simultaneously. Requires linode_bgp_dcid to be set for your region. See docs/ARCHITECTURE.md §3.5/§3.6/§3.6.1."
+  description = "Enable BIDIRECTIONAL BGP-based IP Sharing (FRR, v5) between buddy pairs so a dead node's public IP fails over, not just its conntrack state — each node self-announces its own IP and backs up its buddy's simultaneously. Requires linode_bgp_dcid to be set for your region. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3/§4.4."
   type        = bool
   default     = false
 }
@@ -184,13 +184,13 @@ variable "linode_bgp_dcid" {
 }
 
 variable "reserved_ip_enabled" {
-  description = "Whether every NAT node's primary public IP (floor AND natctl-provisioned elastic nodes) is a Linode Reserved IP instead of the ephemeral one Linode auto-assigns — so a node's egress IP stays the same even across an instance replacement, which matters if any downstream service IP-whitelists this fleet's addresses. Off by default: Linode's Reserved IP feature is account-gated (\"IP reservation is not currently available to all users\") — confirm it's enabled for your account (Cloud Manager, or Linode support) before turning this on. See terraform/modules/nat-fleet/variables.tf's reserved_ip_enabled and docs/ARCHITECTURE.md for the full design, including what this does NOT cover (egress_ips_per_node's extra IPs stay ephemeral)."
+  description = "Whether every NAT node's primary public IP (floor AND natctl-provisioned elastic nodes) is a Linode Reserved IP instead of the ephemeral one Linode auto-assigns — so a node's egress IP stays the same even across an instance replacement, which matters if any downstream service IP-whitelists this fleet's addresses. Off by default: Linode's Reserved IP feature is account-gated (\"IP reservation is not currently available to all users\") — confirm it's enabled for your account (Cloud Manager, or Linode support) before turning this on. See terraform/modules/nat-fleet/variables.tf's reserved_ip_enabled and docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.6 for the full design, including what this does NOT cover (egress_ips_per_node's extra IPs stay ephemeral)."
   type        = bool
   default     = false
 }
 
 variable "shared_pool_reserved_ip_pool" {
-  description = "roadmap/M17-reserved-ip-pool-and-prereservation.md: reserved IPv4 addresses you ALREADY OWN (reused from a prior deployment on this account, or reserved out-of-band ahead of time), for the shared pool's floor nodes to use instead of always minting a brand-new reservation. Assigned by position -- the first entry goes to this pool's first floor node by creation order, and so on; any floor node beyond the length of this list still gets a freshly-created reservation. Only meaningful when reserved_ip_enabled is true. Must not exceed shared_pool_floor_nodes in length -- see terraform/modules/nat-fleet's reserved_ip_pool_fits_node_count check block. Default [] (fully backward compatible)."
+  description = "Reserved IPv4 addresses you ALREADY OWN (reused from a prior deployment on this account, or reserved out-of-band ahead of time), for the shared pool's floor nodes to use instead of always minting a brand-new reservation. Assigned by position -- the first entry goes to this pool's first floor node by creation order, and so on; any floor node beyond the length of this list still gets a freshly-created reservation. Only meaningful when reserved_ip_enabled is true. Must not exceed shared_pool_floor_nodes in length -- see terraform/modules/nat-fleet's reserved_ip_pool_fits_node_count check block. Default [] (fully backward compatible)."
   type        = list(string)
   default     = []
 }
@@ -202,7 +202,7 @@ variable "dedicated_acme_pool_reserved_ip_pool" {
 }
 
 variable "placement_group_enabled" {
-  description = "roadmap/M16-anti-affinity-placement-groups.md: whether floor nodes (shared and, if enabled, dedicated-acme-corp pools) are spread across Linode Placement Groups (anti_affinity:local) so Akamai avoids co-locating them on the same physical host — closes the correlated-physical-host-failure gap docs/COMPARISON.md documents. Off by default — same opt-in pattern as reserved_ip_enabled. Floor nodes only; natctl-provisioned elastic nodes are NOT covered (deliberately out of scope, see the roadmap file). See terraform/modules/nat-fleet/variables.tf's placement_group_enabled and docs/ARCHITECTURE.md §3.6.2 for the full design, including the multi-group chunking behavior for pools over 5 nodes."
+  description = "Whether floor nodes (shared and, if enabled, dedicated-acme-corp pools) are spread across Linode Placement Groups (anti_affinity:local) so Akamai avoids co-locating them on the same physical host — closes the correlated-physical-host-failure gap that buddy conntrack sync + BGP IP failover alone don't cover (both narrow the risk of one node dying, but do nothing if both members of a buddy pair happen to sit on the same physical host and that host fails as a unit). Off by default — same opt-in pattern as reserved_ip_enabled. Floor nodes only; natctl-provisioned elastic nodes are NOT covered, deliberately out of scope. See terraform/modules/nat-fleet/variables.tf's placement_group_enabled and docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.5 for the full design, including the multi-group chunking behavior for pools over 5 nodes."
   type        = bool
   default     = false
 }
@@ -214,11 +214,14 @@ variable "placement_group_policy" {
 }
 
 # ---------------------------------------------------------------------------
-# v6: natctl-on-node (opt-in) — removes the requirement for a dedicated
+# natctl-on-node (opt-in) — removes the requirement for a dedicated
 # control-plane host by running natctl itself, leader-elected with STONITH
-# fencing, on every NAT node instead. See controller/natctl/leader_election.py,
-# docs/ARCHITECTURE.md's leader-election section, and docs/RUNBOOK.md's
-# natctl-on-node section. Leave natctl_on_node_enabled at its default
+# fencing (power off the previous leader, poll for confirmed offline, only
+# then claim leadership), on every NAT node instead. See
+# controller/natctl/leader_election.py and
+# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.3/§2.4. This is defense-in-depth,
+# not mathematically perfect mutual exclusion -- fencing briefly interrupts
+# a node's own NAT traffic too. Leave natctl_on_node_enabled at its default
 # (false) to keep this environment's original single-dedicated-host layout
 # (module.observability runs natctl) unchanged.
 # ---------------------------------------------------------------------------
@@ -230,7 +233,7 @@ variable "natctl_on_node_enabled" {
 }
 
 variable "natctl_object_storage_endpoint" {
-  description = "S3-compatible endpoint URL for a Linode Object Storage bucket (e.g. \"https://us-east-1.linodeobjects.com\") -- REQUIRED unconditionally as of v9, not just when natctl_on_node_enabled: terraform/modules/artifacts uploads exporter.py/buddy_sync.py/the natctl package here and every NAT node fetches them at boot, since embedding their content directly in cloud-init exceeds Linode's 16384-byte decoded user_data limit (confirmed against a real terraform apply, not assumed -- see that module's main.tf header for the full numbers). Also still backs the leader-election lease when natctl_on_node_enabled (controller/natctl/leader_election.py's ObjectStorageLeaseStore) -- same bucket, dual purpose."
+  description = "S3-compatible endpoint URL for a Linode Object Storage bucket (e.g. \"https://us-east-1.linodeobjects.com\") -- REQUIRED unconditionally, not just when natctl_on_node_enabled: terraform/modules/artifacts uploads exporter.py/buddy_sync.py/the natctl package here and every NAT node fetches them at boot, since embedding their content directly in cloud-init exceeds Linode's 16384-byte decoded user_data limit (see that module's main.tf header for the full numbers). Also still backs the leader-election lease when natctl_on_node_enabled (controller/natctl/leader_election.py's ObjectStorageLeaseStore) -- same bucket, dual purpose."
   type        = string
 }
 
@@ -252,11 +255,13 @@ variable "natctl_object_storage_secret_key" {
 }
 
 # ---------------------------------------------------------------------------
-# v6: monitoring-stack opt-out — reuse an existing Prometheus/Grafana (or
-# push into one via remote_write) instead of standing up a second one. See
+# Monitoring-stack opt-out — reuse an existing Prometheus/Grafana (or
+# push into one via remote_write) instead of standing up a second one. Set
+# run_monitoring_stack false and give the three prometheus_remote_write_*
+# values to have natctl's own metrics forwarded to your existing
+# Prometheus instead of this environment standing up its own. See
 # terraform/modules/observability's run_monitoring_stack/
-# prometheus_remote_write_url and docs/OBSERVABILITY.md "Bring your own
-# monitoring".
+# prometheus_remote_write_url.
 # ---------------------------------------------------------------------------
 
 variable "run_monitoring_stack" {
@@ -283,20 +288,3 @@ variable "customer_prometheus_remote_write_password" {
   sensitive   = true
   default     = ""
 }
-
-# ---------------------------------------------------------------------------
-# roadmap/M20-remove-terraform-client-creation.md (2026-09-02): the v14
-# client_groups variable and module.client_fleet that used to live here
-# are removed. This environment no longer creates client instances --
-# see docs/RUNBOOK.md's "Onboard a client instance" section for the
-# replacement (scripts/configure-vlan-address.sh + scripts/install-nat-client.sh,
-# run against an instance the customer's own automation already created).
-#
-# 2026-09-11: client_static_vlan_reserved (a per-pool reserved-address
-# COUNT, carved out of a shared range) is also removed -- replaced by
-# vlan_cidr_shared_reserved/vlan_cidr_dedicated_acme_reserved above, a
-# wholly-owned sub-block this project's own nodes never leave, rather
-# than a window sized in the middle of a range the customer also shares.
-# See docs/ARCHITECTURE.md's write-up of this refactor for the full
-# reasoning.
-# ---------------------------------------------------------------------------

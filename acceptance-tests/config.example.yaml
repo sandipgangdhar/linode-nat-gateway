@@ -50,7 +50,8 @@ ssh:
 # The observability stack this pool's cloud-init deployed --
 # terraform/environments/example/outputs.tf's grafana_url/prometheus_url.
 # alertmanager_url is optional (some deployments don't expose it
-# externally at all -- see docs/RUNBOOK.md).
+# externally at all -- alerting still fires internally either way, this
+# just controls whether this suite can independently verify it).
 control_plane:
   prometheus_url: "http://203.0.113.50:9090"
   grafana_url: "http://203.0.113.50:3000"
@@ -77,11 +78,15 @@ pools:
     # scripts/node-failure-drill.sh. node_host is the NAT node's address
     # AS IT APPEARS IN THE CLIENT'S ROUTE TABLE -- on pure-nat-gateway
     # this is the node's VLAN address (client-agent's ECMP nexthops are
-    # VLAN, not VPC -- docs/ARCHITECTURE.md §3.0/§3.2). node_ssh_host is
+    # VLAN, not VPC -- VPC's fabric won't transit-route a packet through
+    # a peer VPC instance to a non-VPC destination at all, confirmed live
+    # with packet captures on both ends -- see
+    # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §1.2/§3.2). node_ssh_host is
     # the SEPARATE address actually used to SSH into the node -- it must
     # be different from node_host on this branch, since the node's own
     # nftables ruleset deliberately excludes SSH on the VLAN interface
-    # (roadmap/M2-security.md test case 2.8); use the node's VPC or
+    # (confirmed live, since VLAN is the client fleet's only path and
+    # carries no Cloud Firewall coverage at all); use the node's VPC or
     # public IP instead, whichever your Cloud Firewall's admin_cidrs/
     # VPC-subnet scoping actually lets you reach from wherever you run
     # this suite. Omit node_ssh_host to fall back to node_host, for any
@@ -95,8 +100,8 @@ pools:
       client_host: "192.168.100.201"
       max_wait_seconds: 20
 
-    # Used by check 04 -- the live BGP IP-failover proof from
-    # docs/ARCHITECTURE.md section 3.6.1. Only meaningful for a pool with
+    # Used by check 04 -- the live BGP IP-failover proof described in
+    # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.4. Only meaningful for a pool with
     # ip_failover_enabled=true and an already-converged buddy pairing
     # (confirm via nat_conntrack_buddy_paired in Grafana first). Requires
     # SSH access to primary_ssh_host and that this suite itself can ping

@@ -59,4 +59,4 @@ A check SKIPs a pool (rather than failing it) when that pool's `config.yaml` blo
 
 Checks 01, 02, and 06 are read-only and safe to run on every deploy, or even wire into a recurring health check. Checks 03 and 04 are real drills against real infrastructure — brief but genuinely disruptive; run them in a scheduled maintenance window, not as a routine gate. Check 05 provisions a real, billable Linode — it's opt-in by design (leave `autoscale_drill` out of a pool's config to skip it entirely) and should be run deliberately, not by accident.
 
-None of these checks were run as part of preparing this suite — see the repo's own commit history and `docs/RUNBOOK.md` for the deployment sequence this suite is meant to run after, not before.
+None of these checks were run as part of preparing this suite — see `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html`'s §9.2 "Deployment Sequence" for the sequence this suite is meant to run after, not before.

@@ -18,9 +18,11 @@
 # 3) Alertmanager (`control_plane.alertmanager_url`) answers
 #    `/api/v2/status`, if configured (optional -- some deployments run
 #    Alertmanager with no external endpoint exposed at all).
-# 4) Per pool: `nat_node_healthy` has data -- docs/OBSERVABILITY.md and
-#    this suite's own commit history singled out NAT visibility as
-#    needing full parity in the observability stack.
+# 4) Per pool: `nat_node_healthy` has data -- this metric is documented
+#    in docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §7.2 "Every Metric,
+#    Explained"; this suite singles it out specifically because NAT
+#    visibility (not just the control-plane/host layer) needs full parity
+#    in the observability stack, not just partial coverage.
 #
 # -----------------------------------------------------
 # Usage:

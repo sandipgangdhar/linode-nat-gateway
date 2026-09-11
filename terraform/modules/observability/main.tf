@@ -14,11 +14,11 @@
 #    ansible/cloud-init/observability.yaml.tftpl with the Docker Compose
 #    file, Prometheus/Alertmanager/Grafana configs, natctl's config, and
 #    the Linode API token. The natctl Python package itself is NOT
-#    embedded here (v9) -- var.natctl_file_urls (terraform/modules/
+#    embedded here -- var.natctl_file_urls (terraform/modules/
 #    artifacts) is fetched at boot instead, since Linode's Instance
 #    Metadata API caps cloud-init user_data at 16384 bytes decoded. The
 #    pre-built Grafana dashboard JSON is fetched at boot the same way
-#    (v15, var.nat_overview_json_url) -- besides the byte budget, this
+#    (var.nat_overview_json_url) -- besides the byte budget, this
 #    also means editing the dashboard no longer forces this instance to
 #    be replaced on the next apply (a `metadata.user_data` change is
 #    ForceNew; a fetched-at-boot URL reference doesn't change when its
@@ -76,7 +76,7 @@ terraform {
 }
 
 locals {
-  # v9: natctl/*.py content is no longer read/embedded here -- see
+  # natctl/*.py content is not read/embedded here -- see
   # terraform/modules/artifacts/main.tf's header comment (Linode's
   # 16384-byte decoded cloud-init limit). var.natctl_file_urls (passed in
   # from environments/example/main.tf) carries the fetch-at-boot URLs
@@ -90,16 +90,15 @@ locals {
       remote_write_url      = var.prometheus_remote_write_url
       remote_write_username = var.prometheus_remote_write_username
       remote_write_password = var.prometheus_remote_write_password
-      # v19: natctl's :8099/metrics only actually exists on THIS host when
+      # natctl's :8099/metrics only actually exists on THIS host when
       # this module also runs natctl itself -- see prometheus.yml.tftpl's
       # own header comment for the natctl-on-node limitation.
       scrape_natctl_metrics = var.run_natctl
-      # M2-security.md regression fix (found live, 2026-09-02), corrected
-      # for a second real bug found live in M28: non-empty only when
-      # natctl_on_node_enabled, one target per enabled pool (not one
-      # target for the whole fleet) -- see
-      # terraform/environments/example/main.tf's natctl_http_sd_targets
-      # local for the full story.
+      # Non-empty only when natctl_on_node_enabled, one target per
+      # enabled pool (not one target for the whole fleet, which would
+      # miss every pool but the one that address's own natctl instance
+      # knows about) -- see terraform/environments/example/main.tf's
+      # natctl_http_sd_targets local for the full story.
       natctl_http_sd_targets = var.natctl_http_sd_targets
     })
     alertmanager_yml       = file("${path.module}/../../../ansible/templates/alertmanager.yml")
@@ -111,28 +110,28 @@ locals {
     run_monitoring_stack = var.run_monitoring_stack
     natctl_file_urls     = var.natctl_file_urls
 
-    # Found live 2026-09-09 -- see this module's vpc_sibling_subnet_cidrs
-    # variable and observability.yaml.tftpl's own runcmd comment for the
-    # full write-up.
+    # See this module's vpc_sibling_subnet_cidrs variable and
+    # observability.yaml.tftpl's own runcmd comment for the full
+    # write-up.
     private_ip               = var.private_ip
     vpc_prefix               = var.vpc_prefix
     vpc_sibling_subnet_cidrs = var.vpc_sibling_subnet_cidrs
-    # v10: fetched from Object Storage instead of embedded -- see
-    # terraform/modules/artifacts' new static uploads and nat-fleet's
-    # matching v10 change.
+    # Fetched from Object Storage instead of embedded -- see
+    # terraform/modules/artifacts' static uploads and nat-fleet's
+    # matching treatment.
     natctl_requirements_txt_url = var.natctl_requirements_txt_url
     natctl_service_url          = var.natctl_service_url
-    # v15: same treatment -- see terraform/modules/artifacts' matching v15
-    # change and this file's nat_overview_json_url variable for why.
+    # Same treatment -- see terraform/modules/artifacts' matching change
+    # and this file's nat_overview_json_url variable for why.
     nat_overview_json_url     = var.nat_overview_json_url
     natctl_config_yaml        = var.natctl_config_yaml
     linode_token              = var.linode_token
     object_storage_access_key = var.object_storage_access_key
     object_storage_secret_key = var.object_storage_secret_key
 
-    # v21: "source" (default) preserves the above exactly as it behaved
+    # "source" (default) preserves the above exactly as it behaved
     # before this variable existed -- see nat-fleet/main.tf's matching
-    # v21 comment and docs/PUBLISHING.md.
+    # comment.
     agent_distribution = var.agent_distribution
     natctl_bin_url     = var.natctl_bin_url
   })
@@ -160,13 +159,13 @@ resource "linode_instance" "observability" {
     }
   }
 
-  # 2026-09-11: genuine VLAN presence for this host, added specifically so
-  # a "vlan_only" client (no VPC interface at all) can reach the roster
-  # API in the default single-dedicated-host layout (natctl_on_node_enabled
-  # = false) -- previously structurally impossible, since this instance
-  # had no VLAN interface at all (see docs/ARCHITECTURE.md's client
-  # onboarding notes). Joins the SHARED pool's own VLAN specifically (the
-  # default pool every tenant uses) -- a dedicated pool on a genuinely
+  # Genuine VLAN presence for this host, so a "vlan_only" client (no VPC
+  # interface at all) can reach the roster API in the default
+  # single-dedicated-host layout (natctl_on_node_enabled = false) --
+  # without this, this instance has no VLAN interface at all, and such a
+  # client structurally cannot reach it. Joins the SHARED pool's own VLAN
+  # specifically (the default pool every tenant uses) -- a dedicated pool
+  # on a genuinely
   # separate VLAN is unaffected by this and still needs
   # natctl_on_node_enabled (or a VPC-capable client) for the same reason
   # as before. Only attached when var.vlan_label is actually given (empty
@@ -182,12 +181,12 @@ resource "linode_instance" "observability" {
   }
 
   metadata {
-    # v9: gzip before base64 -- see nat-fleet/main.tf's matching comment.
-    # v15: the dashboard JSON (~18KB raw) is no longer part of this
-    # payload at all (fetched at boot instead, see nat_overview_json_url
-    # above) -- what's left (alerts JSON + docker-compose/prometheus/
-    # grafana configs) is comfortably under Linode's 16384-byte decoded
-    # limit even before gzip.
+    # gzip before base64 -- see nat-fleet/main.tf's matching comment.
+    # The dashboard JSON (~18KB raw) is not part of this payload at all
+    # (fetched at boot instead, see nat_overview_json_url above) -- what's
+    # left (alerts JSON + docker-compose/prometheus/grafana configs) is
+    # comfortably under Linode's 16384-byte decoded limit even before
+    # gzip.
     user_data = base64gzip(local.cloud_init)
   }
 }

@@ -1,6 +1,6 @@
 {
   "title": "LNG \u2014 NAT Fleet Overview",
-  "description": "nat-overview.json (dashboards). Note: JSON has no comment syntax, so this field carries the documentation a header comment would elsewhere in this repo. Provisioned automatically into Grafana's 'LNG NAT Gateway' folder by ansible/templates/grafana-dashboards.yml (see terraform/modules/observability). Panels are grouped as: fleet summary (total nodes/throughput/conntrack across every pool), per-pool detail (node count, conntrack %, port headroom per IP, throughput, PPS, drop rate), node health grid, and a capacity-forecast panel. The 'pool' template variable filters every panel. Data source: Prometheus, scraping every node's :9200/metrics via natctl's fleet-aware file_sd target file, plus natctl's own :8099/metrics for fleet-wide node-count figures -- see docs/OBSERVABILITY.md for the full metric/alert catalogue this dashboard visualizes. Author: Sandip Gangdhar (https://github.com/sandipgangdhar). (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026.",
+  "description": "nat-overview.json (dashboards). Note: JSON has no comment syntax, so this field carries the documentation a header comment would elsewhere in this repo. Provisioned automatically into Grafana's 'LNG NAT Gateway' folder by ansible/templates/grafana-dashboards.yml (see terraform/modules/observability). Panels are grouped as: fleet summary (total nodes/throughput/conntrack across every pool), per-pool detail (node count, conntrack %, port headroom per IP, throughput, PPS, drop rate), node health grid, and a capacity-forecast panel. The 'pool' template variable filters every panel. Data source: Prometheus, scraping every node's :9200/metrics via natctl's fleet-aware file_sd target file, plus natctl's own :8099/metrics for fleet-wide node-count figures -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part 7 (Observability) for the full metric/alert catalogue this dashboard visualizes. Author: Sandip Gangdhar (https://github.com/sandipgangdhar). (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026.",
   "uid": "lng-nat-overview",
   "schemaVersion": 39,
   "version": 8,
@@ -304,7 +304,7 @@
         "x": 0,
         "y": 36
       },
-      "description": "Nodes with an active conntrackd buddy assigned (session-loss mitigation, not a health signal \u2014 see docs/ARCHITECTURE.md \u00a73.5)",
+      "description": "Nodes with an active conntrackd buddy assigned (session-loss mitigation, not a health signal \u2014 see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html \u00a74.3 'Connection-State Sync')",
       "targets": [
         {
           "expr": "sum(nat_conntrack_buddy_paired{pool=~\"$pool\"})",
@@ -346,7 +346,7 @@
         "x": 0,
         "y": 44
       },
-      "description": "Sum of established FRR BGP sessions across all nodes -- see docs/ARCHITECTURE.md IP-sharing section.",
+      "description": "Sum of established FRR BGP sessions across all nodes -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.4 'BGP-Based IP Failover'.",
       "targets": [
         {
           "expr": "sum(nat_bgp_peers_established_total{pool=~\"$pool\"})",
@@ -582,7 +582,7 @@
         "x": 16,
         "y": 64
       },
-      "description": "Why the most recent scale-out/scale-in fired -- direction, reason, sustained-breach metric(s), and required node count. Value is always 1; the text is carried entirely as labels (see natctl_pool_last_scale_event_info in docs/OBSERVABILITY.md).",
+      "description": "Why the most recent scale-out/scale-in fired -- direction, reason, sustained-breach metric(s), and required node count. Value is always 1; the text is carried entirely as labels (metric: natctl_pool_last_scale_event_info -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.2 'The Autoscaling Algorithm').",
       "options": {
         "textMode": "name",
         "colorMode": "background",
@@ -711,7 +711,7 @@
         "x": 0,
         "y": 84
       },
-      "description": "Busiest-core network-softirq saturation ratio, pool-wide -- see docs/AUTOSCALING.md. Scale-out only: unlike conntrack, there is no low (scale-in) watermark for this metric.",
+      "description": "Busiest-core network-softirq saturation ratio, pool-wide -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.2 'The Autoscaling Algorithm'. Scale-out only: unlike conntrack, there is no low (scale-in) watermark for this metric.",
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit"

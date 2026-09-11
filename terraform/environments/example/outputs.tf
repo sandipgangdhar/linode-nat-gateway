@@ -17,13 +17,13 @@
 # 4) vpc_id / private_subnet_ids   - Reference for wiring up additional
 #    workloads into this same VPC.
 # 5) shared_pool_placement_group_ids / dedicated_acme_pool_placement_group_ids -
-#    M16: this pool's Placement Group IDs when placement_group_enabled is
+#    This pool's Placement Group IDs when placement_group_enabled is
 #    true; empty otherwise.
 #
-# roadmap/M20-remove-terraform-client-creation.md: this environment no
+# This environment no
 # longer creates client instances, so there are no client-related
 # outputs here anymore -- see scripts/install-nat-client.sh and
-# docs/RUNBOOK.md's "Onboard a client instance" section instead.
+# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §9.3 instead.
 # -----------------------------------------------------
 # Author:
 # - Sandip Gangdhar
@@ -42,12 +42,12 @@ output "dedicated_acme_pool_node_private_ips" {
 }
 
 output "shared_pool_placement_group_ids" {
-  description = "M16: this pool's Placement Group IDs when placement_group_enabled is true; empty list otherwise."
+  description = "This pool's Placement Group IDs when placement_group_enabled is true; empty list otherwise."
   value       = module.nat_fleet_shared.placement_group_ids
 }
 
 output "dedicated_acme_pool_placement_group_ids" {
-  description = "M16: this pool's Placement Group IDs when placement_group_enabled is true; empty list otherwise (or if the dedicated pool itself is disabled)."
+  description = "This pool's Placement Group IDs when placement_group_enabled is true; empty list otherwise (or if the dedicated pool itself is disabled)."
   value       = var.enable_dedicated_pool_example ? module.nat_fleet_dedicated_acme[0].placement_group_ids : []
 }
 
@@ -77,10 +77,3 @@ output "vpc_id" {
 output "private_subnet_ids" {
   value = module.vpc.private_subnet_ids
 }
-
-# roadmap/M20-remove-terraform-client-creation.md (2026-09-02):
-# client_instance_ids/client_public_ips/client_static_vlan_addresses
-# outputs (v14/v18, fed by module.client_fleet/var.client_groups) are
-# removed alongside that mechanism -- this environment no longer creates
-# client instances, so there's nothing left to report here. See
-# docs/RUNBOOK.md's "Onboard a client instance" section.

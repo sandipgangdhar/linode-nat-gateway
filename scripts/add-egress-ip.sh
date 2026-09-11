@@ -22,7 +22,12 @@
 #
 # Prerequisite: the IP must already be allocated to this node via
 # `terraform apply -var 'egress_ips_per_node=<n+1>'` on the relevant
-# nat-fleet module call. See docs/ARCHITECTURE.md section 4.4.
+# nat-fleet module call -- each node can hold multiple public egress
+# IPs, multiplying its per-destination connection ceiling, but only the
+# primary eth0 address participates in buddy IP failover; extra egress
+# IPs are a plain per-node allocation with no sharing/failover, and
+# aren't wired into a node's live NAT rules automatically, which is
+# what this script does as a separate day-2 step.
 #
 # -----------------------------------------------------
 # Best Practices:
@@ -70,12 +75,11 @@ fi
 #    --ip is safe.
 nft add chain inet lng_nat "snat_extra_${BUCKET_INDEX}" 2>/dev/null || true
 nft flush chain inet lng_nat "snat_extra_${BUCKET_INDEX}"
-# BUG FIX (found live, 2026-08-01): "snat to <ip>" (no address family) is
-# invalid inside an `inet` table -- confirmed live against this exact
-# lng_nat table on a freshly-provisioned node ("Error: ip or ip6 must be
-# specified with address for inet tables"). inet tables are dual-stack,
-# so nftables can't infer the family without an explicit qualifier -- see
-# the identical fix in ansible/templates/nftables.conf.tftpl and
+# "snat to <ip>" (no address family) is invalid inside an `inet` table
+# ("Error: ip or ip6 must be specified with address for inet tables").
+# inet tables are dual-stack, so nftables can't infer the family without
+# an explicit qualifier -- see the identical handling in
+# ansible/templates/nftables.conf.tftpl and
 # controller/natctl/cloud_init.py's render_nftables().
 nft add rule inet lng_nat "snat_extra_${BUCKET_INDEX}" snat ip to "$IP"
 

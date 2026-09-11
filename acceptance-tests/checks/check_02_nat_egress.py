@@ -24,7 +24,7 @@
 #    isn't actually load-spreading (informational, not a hard failure by
 #    itself, since client-agent's consistent-hashing nexthop groups
 #    intentionally give flow affinity, not necessarily per-request
-#    spread -- see docs/ARCHITECTURE.md section 3.2).
+#    spread -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §3.2).
 #
 # -----------------------------------------------------
 # Usage:
@@ -77,14 +77,13 @@ def _ssh_curl(ssh_user: str, ssh_key: str | None, host: str, target: str) -> str
     if ssh_key:
         ssh_cmd += ["-i", ssh_key]
     # -4 is required, not optional: client-agent deliberately only manages
-    # the IPv4 default route (docs/ARCHITECTURE.md) and leaves IPv6
-    # untouched, so on any normal dual-stack client a plain curl to an
-    # AAAA-capable target goes out the client's own native IPv6 path --
-    # bypassing the NAT gateway entirely -- and this check would then
-    # report a false "traffic may be leaking" FAIL against a perfectly
-    # correct deployment. Found live, M28 (roadmap/M28-full-production-
-    # readiness-pass.md's acceptance-suite section) -- this reproduced on
-    # BOTH pools tested, not an edge case.
+    # the IPv4 default route and leaves IPv6 untouched (see
+    # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §3.2, "The one thing it
+    # manages, and the one thing it never touches"), so on any normal
+    # dual-stack client a plain curl to an AAAA-capable target goes out
+    # the client's own native IPv6 path -- bypassing the NAT gateway
+    # entirely -- and this check would then report a false "traffic may
+    # be leaking" FAIL against a perfectly correct deployment.
     ssh_cmd += [f"{ssh_user}@{host}", f"curl -4 -s --max-time 10 {target}"]
     out = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=SSH_TIMEOUT_SECONDS, check=True)
     return out.stdout.strip()
