@@ -3,13 +3,13 @@ README.md (repository root) -- CUSTOMER-FACING DISTRIBUTION
 
 Top-level entry point for the LNG customer distribution: what LNG is,
 why it exists, its core capabilities, repository layout, and a
-copy-paste quickstart. See OPERATIONS.md for day-2 operations, config
-reference, and troubleshooting; see CLI-GUIDE.md for the complete
-natctl-cli command reference.
+copy-paste quickstart. See docs/OPERATIONS.md for day-2 operations,
+config reference, and troubleshooting; see docs/CLI-GUIDE.md for the
+complete natctl-cli command reference.
 
 This repository ships the natctl control plane and the nat-exporter/
 buddy-sync/client-agent runtime agents as pre-compiled native binaries,
-not Python source -- see OPERATIONS.md's "How this repository is built"
+not Python source -- see docs/OPERATIONS.md's "How this repository is built"
 section for what that means for you operationally (short version:
 nothing changes about how you deploy or operate it; a compiled binary is
 fetched and run instead of a script).
@@ -36,12 +36,12 @@ A pool of independently-active NAT nodes per zone, each owning its own public eg
 
 ## Core capabilities
 
-- **High availability**: every node is active — a node failure affects only the ~1/N of connections that were hashed to it, with the rest of the fleet unaffected. No idle standby capacity, no failover cliff. Client-agent detects and routes around a dead node in seconds, independent of the control plane's own availability. Opt-in conntrack buddy-pair sync, paired with opt-in BGP-based buddy IP failover, lets a buddy take over both a dead node's connection state *and* its public IP — a node that's "running" but failing its own health check is drained and replaced automatically. See OPERATIONS.md's "High availability" section for exactly what this does and doesn't protect against.
+- **High availability**: every node is active — a node failure affects only the ~1/N of connections that were hashed to it, with the rest of the fleet unaffected. No idle standby capacity, no failover cliff. Client-agent detects and routes around a dead node in seconds, independent of the control plane's own availability. Opt-in conntrack buddy-pair sync, paired with opt-in BGP-based buddy IP failover, lets a buddy take over both a dead node's connection state *and* its public IP — a node that's "running" but failing its own health check is drained and replaced automatically. See docs/OPERATIONS.md's "High availability" section for exactly what this does and doesn't protect against.
 - **Horizontal scale-out**: a Terraform-managed floor (baseline capacity) plus natctl-managed elastic capacity above it, fully automatic within configured `min_nodes`/`max_nodes` bounds. A single tenant's traffic spreads across the *entire pool*, not one pair.
 - **Multi-tenant isolation, when you want it**: default shared pool for cost efficiency, or dedicated pools with reserved capacity for tenants that need isolation — both are the same Terraform module, just a different `pool_name`.
 - **Vertical scale**: swap instance plans, up to Akamai Cloud's 40 Gbps in / 12 Gbps out dedicated-CPU plans.
 - **Multi-IP egress**: each node can hold multiple public egress IPs to multiply available ephemeral ports (55K connections per IP per destination, same ceiling AWS documents).
-- **Static VLAN addressing for the client fleet**: since Linode VLANs carry no address-assignment mechanism of their own, applying a client instance's static VLAN address is entirely your own automation's responsibility (this project provides no tooling for it); `scripts/install-nat-client.sh` then sets up NAT routing against the already-addressed instance. See OPERATIONS.md "Onboarding a client instance".
+- **Static VLAN addressing for the client fleet**: since Linode VLANs carry no address-assignment mechanism of their own, applying a client instance's static VLAN address is entirely your own automation's responsibility (this project provides no tooling for it); `scripts/install-nat-client.sh` then sets up NAT routing against the already-addressed instance. See docs/OPERATIONS.md "Onboarding a client instance".
 - **Security**: default-deny Cloud Firewall templates on public/VPC interfaces, egress-only posture, minimal node-side attack surface, node-level flood/rate-limiting.
 - **Rich observability**: Prometheus metrics for NAT (conntrack utilization, port exhaustion, PPS, throughput, drop counters, node health) — plus fleet-aware scraping that tracks autoscaling automatically, pre-built Grafana dashboards, and alert rules.
 - **Infrastructure as code**: full Terraform module set for Akamai Cloud; reproducible, auditable, GitOps-friendly, and fully owned by you.
@@ -63,11 +63,9 @@ controller/                 Compiled natctl binary + systemd unit + natctl.yaml 
 exporter/nat_exporter/      Compiled Prometheus exporter binary + systemd unit
 dashboards/                 Grafana dashboard JSON
 alerts/                     Prometheus alerting rules
-docs/                       API token setup instructions
+docs/                       API token setup, OPERATIONS.md (day-2 ops), CLI-GUIDE.md (natctl-cli reference)
 acceptance-tests/           Post-deploy checks you can run against your own live deployment
 scripts/                    Load-test and day-2 operational scripts
-OPERATIONS.md               Day-2 operations, configuration reference, troubleshooting
-CLI-GUIDE.md                natctl-cli reference: install, configure, every subcommand
 ```
 
 ## Quickstart
@@ -85,20 +83,20 @@ terraform apply
 
 # 2. Configure a client instance you already created (through your own
 #    automation -- this project doesn't create client instances or apply
-#    their VLAN addresses, see OPERATIONS.md "Onboarding a client
+#    their VLAN addresses, see docs/OPERATIONS.md "Onboarding a client
 #    instance"). Apply a static VLAN address yourself first (outside
 #    this pool's reserved sub-block, at its wide VLAN CIDR prefix
 #    length), then install client-agent:
 ./scripts/install-nat-client.sh --vlan-iface eth0 \
   --roster-url "$(terraform -chdir=terraform/environments/example output -raw natctl_roster_url_shared)"
 # Running natctl_on_node_enabled? Pass every node's own address instead, comma-
-# separated, for failover -- see OPERATIONS.md "Onboarding a client instance".
+# separated, for failover -- see docs/OPERATIONS.md "Onboarding a client instance".
 
 # 3. Open Grafana
 terraform -chdir=terraform/environments/example output grafana_url
 ```
 
-See OPERATIONS.md for the full day-2 reference: how autoscaling works and how to tune it, changing instance types, HA health checks, and troubleshooting. `acceptance-tests/` is a ready-to-run suite that validates your deployment end to end after you apply — see `acceptance-tests/README.md`.
+See docs/OPERATIONS.md for the full day-2 reference: how autoscaling works and how to tune it, changing instance types, HA health checks, and troubleshooting. `acceptance-tests/` is a ready-to-run suite that validates your deployment end to end after you apply — see `acceptance-tests/README.md`.
 
 **Want the whole system in one document?** [`docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html`](docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html) is a single, self-contained reference covering architecture, the control plane and roster URL, every HA mechanism (including exactly how buddy pairing and the odd-node triangle work), autoscaling, Object Storage usage, observability, and day-2 operations — open it directly in a browser.
 
@@ -107,13 +105,13 @@ See OPERATIONS.md for the full day-2 reference: how autoscaling works and how to
 - An Akamai Cloud (Linode) account with API access (Personal Access Token — see `docs/API-TOKEN-SETUP.md` for exactly which scopes to grant)
 - Terraform >= 1.6, Linode provider `~> 2.x`
 - Linux kernel 5.19+ on private-subnet client instances recommended (resilient ECMP nexthop groups); older kernels fall back automatically with a logged warning
-- If enabling buddy IP failover (`ip_failover_enabled`), confirm your Akamai Cloud region supports BGP-based IP Sharing and look up its data-center ID — see OPERATIONS.md "Turning on HA deliberately"
+- If enabling buddy IP failover (`ip_failover_enabled`), confirm your Akamai Cloud region supports BGP-based IP Sharing and look up its data-center ID — see docs/OPERATIONS.md "Turning on HA deliberately"
 
 No Python installation is required anywhere in this deployment — every node fetches and runs a self-contained compiled binary at boot.
 
 ## Honest limits
 
-LNG is not a zero-ops replacement for AWS NAT Gateway or GCP Cloud NAT — it trades managed-service simplicity for transparency, cost, and control, and that trade should be made deliberately. See OPERATIONS.md's "High availability" section for exactly what LNG's HA model does and doesn't protect against.
+LNG is not a zero-ops replacement for AWS NAT Gateway or GCP Cloud NAT — it trades managed-service simplicity for transparency, cost, and control, and that trade should be made deliberately. See docs/OPERATIONS.md's "High availability" section for exactly what LNG's HA model does and doesn't protect against.
 
 ## License
 

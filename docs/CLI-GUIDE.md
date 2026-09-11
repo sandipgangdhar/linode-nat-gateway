@@ -1,5 +1,5 @@
 <!--
-CLI-GUIDE.md (repository root) -- CUSTOMER-FACING DISTRIBUTION
+docs/CLI-GUIDE.md -- CUSTOMER-FACING DISTRIBUTION
 
 The complete natctl-cli reference: what it is, how to get it, how to
 configure it, and every subcommand it has -- with real, complete,
@@ -18,7 +18,7 @@ Author: Sandip Gangdhar (https://github.com/sandipgangdhar)
 retire or resize a specific node, or to change a live setting across the
 whole fleet without a redeploy. This doc covers installing it,
 configuring it, and every subcommand it has. For deployment itself, see
-`README.md`; for the broader day-2 operations picture (autoscaling
+`../README.md`; for the broader day-2 operations picture (autoscaling
 tuning, HA, monitoring, troubleshooting), see `OPERATIONS.md`.
 
 ## What it is, and what it isn't
@@ -296,7 +296,7 @@ No `--pool` flag — this setting is a property of the whole environment,
 not any one pool, since every pool shares the same VPC. Every controller
 re-reads it the next reconcile pass, which feeds both a node's own route
 to the new subnet **and** (via the roster) every connected client's
-self-healing route to it too — see `README.md`'s VPC-routing notes and
+self-healing route to it too — see `../README.md`'s VPC-routing notes and
 `OPERATIONS.md`'s onboarding section for the full mechanism this plugs
 into. `--clear` empties the override, it does not restore Terraform's
 own value: `terraform apply` always re-derives this list live from the

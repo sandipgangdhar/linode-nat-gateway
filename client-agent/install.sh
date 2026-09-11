@@ -31,7 +31,7 @@
 # Best Practices:
 #
 # - Bake this into your own instance image/cloud-init rather than running
-#   it ad hoc over SSH at scale -- see OPERATIONS.md "Onboarding a new
+#   it ad hoc over SSH at scale -- see docs/OPERATIONS.md "Onboarding a new
 #   client group".
 # - Verify with `ip route show default` after install -- expect multiple
 #   nexthops or an nhid reference to a resilient group.

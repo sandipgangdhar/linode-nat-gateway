@@ -1,9 +1,9 @@
 <!--
-OPERATIONS.md (repository root) -- CUSTOMER-FACING DISTRIBUTION
+docs/OPERATIONS.md -- CUSTOMER-FACING DISTRIBUTION
 
 Day-2 operations reference for this LNG deployment: configuration
 reference, common procedures, high availability, and troubleshooting.
-Read README.md first for what this is and how to deploy it.
+Read ../README.md first for what this is and how to deploy it.
 
 Author: Sandip Gangdhar (https://github.com/sandipgangdhar)
 (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
@@ -49,7 +49,7 @@ this release.
 
 ## `natctl.yaml` configuration reference
 
-`natctl` reads one YAML file per environment (see `controller/natctl.example.yaml`
+`natctl` reads one YAML file per environment (see `../controller/natctl.example.yaml`
 for a fully commented starting point). The fields you'll actually tune day
 to day, per pool:
 
@@ -124,7 +124,7 @@ Four layered mechanisms, each closing a specific gap:
 1. Set `conntrack_buddy_sync_enabled = true` and redeploy — starts mirroring state, nothing user-visible yet.
 2. Set `ip_failover_enabled = true` (`ip_failover_auto_configure` stays at its default of `true`, so no separate action is needed for `natctl` to authorize pairings itself).
 3. Verify a pairing converged (check the roster's `ip_failover_buddy_ips` field, or the `nat_conntrack_buddy_paired` Grafana panel) and that BGP actually established (`vtysh -c "show bgp summary"` should show `Established`, not `Active`) before trusting it.
-4. Only then run a real failover drill (`acceptance-tests/checks/check_04_ip_failover_bgp.py`) to prove it end to end.
+4. Only then run a real failover drill (`../acceptance-tests/checks/check_04_ip_failover_bgp.py`) to prove it end to end.
 
 If you'd rather authorize the first pairing yourself before `natctl` touches it, set `ip_failover_auto_configure = false`, run `linode-cli networking ip-share` by hand for both directions, watch it converge, then flip it back to `true`.
 
@@ -166,7 +166,7 @@ No `--pool` flag — one list, shared by the whole environment. See `CLI-GUIDE.m
 ```
 Refuses to drain a Terraform floor node — lower the floor via Terraform instead.
 
-**Onboarding a client instance**: this project doesn't create client instances or apply their VLAN addresses -- create the instance yourself through your own automation (Terraform, an autoscaling group, hand-provisioned, whatever you already use), attach its VLAN interface, and apply a static VLAN address to it, entirely your own responsibility (no tooling or collision check from this project). Pick the address from outside your pool's dedicated reserved sub-block (that pool's own `vlan_cidr_reserved` field in the `pools` map, `.tfvars` -- that block belongs to this pool's own floor/elastic/observability nodes only) so it can never collide with a future node, and apply it **at the pool's WIDE `vlan_cidr` prefix length** (e.g. `/22`), not whatever prefix fits your address alone -- get this wrong and `client-agent` silently fails to install its route (`ip nexthop` rejects it with `Error: Nexthop has invalid gateway`, only visible in `journalctl -u lng-client-agent`), since this client's own connected route then can't reach the wider block a NAT node's address lives in. See `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html` §3.4 (Static VLAN Addressing) for the full writeup and fix. Once the address is applied, run `scripts/install-nat-client.sh --vlan-iface <iface> --roster-url <roster-url>` -- it verifies the address is really there (failing fast if not) and installs/starts client-agent if the instance has no working internet path of its own.
+**Onboarding a client instance**: this project doesn't create client instances or apply their VLAN addresses -- create the instance yourself through your own automation (Terraform, an autoscaling group, hand-provisioned, whatever you already use), attach its VLAN interface, and apply a static VLAN address to it, entirely your own responsibility (no tooling or collision check from this project). Pick the address from outside your pool's dedicated reserved sub-block (that pool's own `vlan_cidr_reserved` field in the `pools` map, `.tfvars` -- that block belongs to this pool's own floor/elastic/observability nodes only) so it can never collide with a future node, and apply it **at the pool's WIDE `vlan_cidr` prefix length** (e.g. `/22`), not whatever prefix fits your address alone -- get this wrong and `client-agent` silently fails to install its route (`ip nexthop` rejects it with `Error: Nexthop has invalid gateway`, only visible in `journalctl -u lng-client-agent`), since this client's own connected route then can't reach the wider block a NAT node's address lives in. See `NAT-GATEWAY-DEFINITIVE-GUIDE.html` §3.4 (Static VLAN Addressing) for the full writeup and fix. Once the address is applied, run `../scripts/install-nat-client.sh --vlan-iface <iface> --roster-url <roster-url>` -- it verifies the address is really there (failing fast if not) and installs/starts client-agent if the instance has no working internet path of its own.
 
 **If this pool runs `natctl_on_node_enabled`** (every node runs its own natctl), pass every node's own address to `--roster-url` as one comma-separated value instead of just one, e.g. `--roster-url "http://192.168.100.20:8099/fleet/shared,http://192.168.100.21:8099/fleet/shared,http://192.168.100.22:8099/fleet/shared"` -- client-agent tries each in turn and only fails if every one of them is down. A single hardcoded address leaves a freshly-starting (or restarting) client with zero NAT routes if that one specific node happens to be down at that exact moment, even though every other node is healthy. Prefer each node's **VLAN** address here (as above) over its VPC address -- it's reachable with no routing needed at all, since every node and every client share the same VLAN.
 
@@ -187,7 +187,7 @@ Run through this whenever you're asked "is this fleet actually highly available,
 3. **BGP sessions actually established?** "BGP Peers Established" vs "BGP Peers Configured" should match; `nat_bgp_peer_state` should be `1` per peer.
 4. **Every node announcing its own IP?** `nat_ip_failover_self_announced` should be `1` on every node with `ip_failover_enabled`.
 5. **Real buddy-backup coverage?** `nat_ip_failover_buddy_count` — `1` on a normal pair, `2` on an odd-node triangle's hub, `0` only if IP failover isn't configured for that node.
-6. **Would a real failover actually work?** Steps 1–5 tell you the mechanism is armed; `acceptance-tests/checks/check_04_ip_failover_bgp.py` is the real drill (genuinely disruptive — run in a maintenance window).
+6. **Would a real failover actually work?** Steps 1–5 tell you the mechanism is armed; `../acceptance-tests/checks/check_04_ip_failover_bgp.py` is the real drill (genuinely disruptive — run in a maintenance window).
 
 ## Monitoring
 
@@ -214,4 +214,4 @@ Key alerts to know before you're on call: `NATConntrackTableNearFull`/`Critical`
 
 ## API token
 
-See `docs/API-TOKEN-SETUP.md` for exactly which scopes to grant and how to create a least-privilege token via Cloud Manager or `linode-cli`.
+See `API-TOKEN-SETUP.md` for exactly which scopes to grant and how to create a least-privilege token via Cloud Manager or `linode-cli`.
