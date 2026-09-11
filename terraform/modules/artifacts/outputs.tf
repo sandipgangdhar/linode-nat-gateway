@@ -85,3 +85,8 @@ output "nat_overview_json_url" {
   description = "Public URL for dashboards/nat-overview.json -- unchanged from the dev repo."
   value       = "${local.base_url}/${linode_object_storage_object.nat_overview_json.key}"
 }
+
+output "install_nat_client_script_url" {
+  description = "Public URL for scripts/install-nat-client.sh itself -- fetched ONCE by natctl at its own startup (ApiConfig.install_nat_client_script_url), then served over VLAN/VPC via GET /agents/install-nat-client.sh. Unchanged from the dev repo (a plain shell script, not compiled)."
+  value       = "${local.base_url}/${linode_object_storage_object.install_nat_client_script.key}"
+}

@@ -122,7 +122,40 @@
 #      Match client-agent/lng-client-agent.env.example's own defaults --
 #      only override if you've tuned these elsewhere in your fleet.
 #
-# 7) --force / LNG_FORCE=true (optional flag, no value -- default false)
+# 7) --vpc-iface <name> / LNG_VPC_IFACE (optional)
+#      Only relevant for a "vlan_only"/"vpc_vlan" instance -- i.e. one
+#      whose VPC interface WAS its own default interface before this
+#      script ran. That default route (even though it can't reach the
+#      internet, see --force above) may have been giving this instance
+#      real reachability to OTHER subnets in the same VPC, since Akamai's
+#      VPC fabric forwards a packet between two sibling subnets of the
+#      same VPC when explicitly routed via the VPC interface -- no
+#      gateway IP needed, an on-link route is enough (mirrors exactly
+#      how terraform/modules/vpc's own vpc_sibling_subnet_cidrs mechanism
+#      routes NAT nodes to every other VPC subnet). Once client-agent
+#      (below) takes over the default route for internet egress via the
+#      NAT fleet, that implicit sibling-subnet reachability is gone --
+#      the default route now points at the VLAN, not VPC. DO NOT point
+#      the default route itself at the fleet's VPC addresses to "fix"
+#      this -- NAT nodes' VPC interface is deliberately scoped to
+#      buddy-pair conntrackd sync only (see docs/ARCHITECTURE.md §3.0);
+#      it never masquerades client traffic out to the internet, so
+#      internet egress would break outright.
+#
+#      This flag just tells client-agent which interface is VPC
+#      (LNG_VPC_IFACE in its own env file) -- client-agent itself then
+#      adds/removes explicit, non-default routes to whatever VPC subnets
+#      natctl's roster currently reports (Terraform-auto-discovered,
+#      same source `vpc_sibling_subnet_cidrs` already uses on the
+#      NAT-node side), self-healing on every roster update. A subnet the
+#      customer adds to the VPC later reaches every connected client
+#      automatically, with no re-run of this script needed on any of
+#      them -- see docs/ARCHITECTURE.md §8.7 and
+#      client-agent/lng-client-agent.env.example's own LNG_VPC_IFACE
+#      comment for the full mechanism.
+#      Example: --vpc-iface eth0
+#
+# 8) --force / LNG_FORCE=true (optional flag, no value -- default false)
 #      DEFAULT BEHAVIOR: this script checks whether this instance
 #      already has a WORKING default route (a real, verified request
 #      over it, not just route presence -- a vpc_vlan instance's VPC
@@ -176,16 +209,82 @@
 
 set -euo pipefail
 
+# Kept in sync with the "Parameters" section of this file's own header
+# comment above -- that's the authoritative full explanation of every
+# flag's "why"; this is the quick-reference version.
+print_help() {
+  cat <<'EOF'
+Usage: install-nat-client.sh --roster-url <url> --vlan-iface <name> [options]
+
+Sets up NAT routing on an existing Linode that already has a static VLAN
+address applied. Fetches and installs client-agent (unless this instance
+already has its own working default route) to manage ECMP routing across
+every healthy node in the target pool.
+
+Required:
+  --roster-url <url>              natctl's roster URL for this client's
+                                   pool, e.g.
+                                   http://10.60.32.20:8099/fleet/shared
+                                   (comma-separated list accepted for
+                                   failover across natctl-on-node peers)
+  --vlan-iface <name>              This instance's VLAN interface -- must
+                                   already have a real static address
+                                   applied by your own automation first
+
+Optional:
+  --artifact-base-url <url>       Fetch client-agent from this Object
+                                   Storage base URL instead of natctl's
+                                   roster API (default: derived from
+                                   --roster-url; only needed for a client
+                                   that already has its own internet path)
+  --fallback-probe-enabled true|false
+                                   Also independently probe each node
+                                   directly, ANDed with natctl's own
+                                   reported health (default: false)
+  --fallback-probe-interval <3-60>
+                                   Fallback probe interval in seconds,
+                                   only meaningful if enabled (default: 30)
+  --health-probe-timeout <seconds>
+                                   Per-probe HTTP timeout (default: 1.5)
+  --vpc-iface <name>               This instance's VPC interface, if it
+                                   has one -- lets client-agent restore
+                                   reachability to other VPC subnets its
+                                   own default route would otherwise
+                                   remove, self-healing from natctl's
+                                   roster (default: unset, no effect --
+                                   see docs/ARCHITECTURE.md §8.7)
+  --force                          Install/start client-agent even if
+                                   this instance already has a working
+                                   default route of its own (default:
+                                   false -- skip if one's already found)
+  --help, -h                       Show this help and exit
+
+Examples:
+  ./install-nat-client.sh --roster-url http://10.60.32.20:8099/fleet/shared \
+    --vlan-iface eth1
+
+  ./install-nat-client.sh --roster-url http://10.60.32.20:8099/fleet/shared \
+    --vlan-iface eth1 --vpc-iface eth0
+
+Every flag also has an equivalent LNG_* environment variable (for use as
+Linode user-data, where scripts run with no arguments) -- see this file's
+own header comment for the full mapping and the "why" behind each one, or
+docs/RUNBOOK.md's "Onboard a client instance" / docs/ARCHITECTURE.md §8.7.
+EOF
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --help|-h) print_help; exit 0 ;;
     --roster-url) LNG_ROSTER_URL="$2"; shift 2 ;;
     --vlan-iface) LNG_VLAN_IFACE="$2"; shift 2 ;;
     --artifact-base-url) LNG_ARTIFACT_BASE_URL="$2"; shift 2 ;;
     --fallback-probe-enabled) LNG_FALLBACK_PROBE_ENABLED="$2"; shift 2 ;;
     --fallback-probe-interval) LNG_FALLBACK_PROBE_INTERVAL="$2"; shift 2 ;;
     --health-probe-timeout) LNG_HEALTH_PROBE_TIMEOUT="$2"; shift 2 ;;
+    --vpc-iface) LNG_VPC_IFACE="$2"; shift 2 ;;
     --force) LNG_FORCE=true; shift ;;
-    *) echo "Unknown arg: $1" >&2; exit 1 ;;
+    *) echo "Unknown arg: $1 (see --help)" >&2; exit 1 ;;
   esac
 done
 
@@ -202,6 +301,7 @@ LNG_FALLBACK_PROBE_ENABLED="${LNG_FALLBACK_PROBE_ENABLED:-false}"
 LNG_FALLBACK_PROBE_INTERVAL="${LNG_FALLBACK_PROBE_INTERVAL:-30}"
 LNG_HEALTH_PROBE_TIMEOUT="${LNG_HEALTH_PROBE_TIMEOUT:-1.5}"
 LNG_FORCE="${LNG_FORCE:-false}"
+LNG_VPC_IFACE="${LNG_VPC_IFACE:-}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "Must run as root." >&2
@@ -256,6 +356,19 @@ cat >/etc/sysctl.d/99-lng-ecmp.conf <<'EOF'
 net.ipv4.fib_multipath_hash_policy=1
 EOF
 echo "Set net.ipv4.fib_multipath_hash_policy=1 (5-tuple ECMP hashing), persisted in /etc/sysctl.d/99-lng-ecmp.conf."
+
+# 0b. Optional: sanity-check --vpc-iface, if given, has a real address --
+#     see this flag's own comment at the top of this file for the full
+#     "why". The actual route management (restoring reachability to
+#     other VPC subnets, self-healing as the VPC's subnet list changes)
+#     is client-agent's own job now (LNG_VPC_IFACE in its env file,
+#     step 3 below) -- see docs/ARCHITECTURE.md §8.7 -- this is just an
+#     early, actionable failure instead of a silent no-op if the
+#     interface named doesn't actually have an address on it.
+if [[ -n "${LNG_VPC_IFACE}" ]] && ! ip -4 -o addr show dev "${LNG_VPC_IFACE}" 2>/dev/null | grep -q inet; then
+  echo "ERROR: ${LNG_VPC_IFACE} (--vpc-iface) has no IPv4 address configured." >&2
+  exit 1
+fi
 
 # 1. Decide whether client-agent belongs on this instance at all -- see
 #    the --force parameter comment above for the full reasoning. Order
@@ -346,6 +459,7 @@ LNG_HEALTH_PROBE_TIMEOUT=${LNG_HEALTH_PROBE_TIMEOUT}
 LNG_DRY_RUN=false
 LNG_FALLBACK_PROBE_ENABLED=${LNG_FALLBACK_PROBE_ENABLED}
 LNG_FALLBACK_PROBE_INTERVAL=${LNG_FALLBACK_PROBE_INTERVAL}
+LNG_VPC_IFACE=${LNG_VPC_IFACE}
 EOF
 
 # 4. systemd unit -- static, non-secret content, embedded directly
@@ -396,6 +510,9 @@ fi  # LNG_INSTALL_CLIENT_AGENT
 echo ""
 echo "===== Summary of changes ====="
 echo "ECMP hash policy: net.ipv4.fib_multipath_hash_policy=1 (file: /etc/sysctl.d/99-lng-ecmp.conf)"
+if [[ -n "${LNG_VPC_IFACE}" ]]; then
+  echo "VPC sibling routes: client-agent will self-manage these via ${LNG_VPC_IFACE}, from natctl's own roster (see 'ip route' after it's up, and docs/ARCHITECTURE.md §8.7)"
+fi
 echo "Default route:"
 echo "  before: ${LNG_ORIGINAL_DEFAULT_ROUTE:-<none>}"
 echo "  after:  $(ip route show default 2>/dev/null || echo '<none>')"

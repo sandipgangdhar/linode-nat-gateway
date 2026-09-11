@@ -74,6 +74,13 @@ locals {
 
   nat_overview_json_path = "${path.module}/../../../dashboards/nat-overview.json"
 
+  # scripts/install-nat-client.sh itself -- a plain shell script, not a
+  # compiled binary, so unlike the four Nuitka outputs above this is the
+  # exact same file the dev repo uploads. Served to client instances by
+  # natctl (GET /agents/install-nat-client.sh), same fetch-once-cache
+  # pattern as client_agent_bin above.
+  install_nat_client_script_path = "${path.module}/../../../scripts/install-nat-client.sh"
+
   base_url = "https://${var.bucket}.${var.s3_region}.linodeobjects.com"
 }
 
@@ -188,4 +195,16 @@ resource "linode_object_storage_object" "nat_overview_json" {
   source = local.nat_overview_json_path
   acl    = "public-read"
   etag   = filemd5(local.nat_overview_json_path)
+}
+
+resource "linode_object_storage_object" "install_nat_client_script" {
+  bucket     = var.bucket
+  region     = var.s3_region
+  access_key = var.access_key
+  secret_key = var.secret_key
+
+  key    = "${local.prefix}/install-nat-client.sh"
+  source = local.install_nat_client_script_path
+  acl    = "public-read"
+  etag   = filemd5(local.install_nat_client_script_path)
 }

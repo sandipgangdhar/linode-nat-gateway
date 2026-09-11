@@ -783,6 +783,11 @@ flowchart TB
           <span class="co-label">A VPC-attached instance now reaches every subnet in its VPC, not just its own</span>
           A Linode instance's VPC interface only ever gets a kernel route to its own directly-connected subnet — nothing routed it to any other subnet in the same VPC automatically. A client on a different VPC subnet than the fleet's own nodes therefore couldn't reach the control plane's VPC address, even with the firewall correctly scoped to allow it (8.1) — the packet simply had nowhere to go, and fell back to the public interface's default route instead, where it was silently dropped. Every node and the control-plane host now route to every subnet in the environment's VPC automatically, closing this gap — a routing fix only, not a change to what the firewall actually permits.
         </div>
+
+        <div class="callout warn">
+          <span class="co-label"><code>--vpc-iface</code>: restoring VPC sibling-subnet reachability a "VPC + VLAN" instance had before onboarding</span>
+          For a "VPC + VLAN" instance specifically, the VPC interface was its own default route <em>before</em> onboarding — with no public IP, VPC was its only path out, and that default route gave it real reachability to other subnets in the same VPC (Akamai's VPC fabric forwards a packet between sibling subnets via a plain on-link route through the VPC interface, no gateway address needed). Once onboarding hands the default route to the routing agent for internet egress over the VLAN, that implicit sibling-subnet reachability goes away as a side effect. Pass <code>--vpc-iface &lt;name&gt;</code> to restore it: this tells the routing agent which interface is VPC, and it then adds/removes explicit, non-default routes to whatever VPC subnets the roster reports — self-healing on every roster update, so a subnet added to the VPC later reaches this client automatically, no re-run needed. <strong>Never</strong> restore this by pointing the default route at the fleet's VPC addresses instead — the NAT nodes' VPC interface is deliberately scoped to connection-state sync only (1.3) and never carries client traffic to the internet, so that breaks internet egress outright.
+        </div>
       </section>
 
       <section class="chapter" id="c3-4">
@@ -1286,6 +1291,7 @@ flowchart LR
       <section class="chapter" id="c9-3">
         <h2><span class="chno">9.3</span> Onboarding a Client Instance</h2>
         <p>Once a private instance exists, has its VLAN interface attached at the account level, and has a real static VLAN address applied by your own automation (this project provides no tooling for that step, see 3.4), a single configuration step against that instance finishes the job: it verifies the address is really there, installs and starts the routing agent only if the instance genuinely needs one, and points it at the correct pool's roster URL. The instance is now a fully participating client, spreading its egress traffic across every currently healthy node in that pool.</p>
+        <p>If the instance has no internet path of its own and you don't already have a copy of the configuration script on hand, fetch it directly from the control plane instead of copying it over separately — it's served the same way the compiled routing agent itself is, over the fleet's own private network: <code>curl -fsSL http://&lt;roster-host&gt;:8099/agents/install-nat-client.sh -o install-nat-client.sh</code>.</p>
       </section>
 
       <!-- ============ PART X ============ -->

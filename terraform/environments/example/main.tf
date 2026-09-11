@@ -362,6 +362,9 @@ locals {
   # See natctl_config_yaml's api.client_agent_bin_url further down for
   # where this is actually consumed.
   client_agent_bin_url = module.artifacts.client_agent_bin_url
+  # See natctl_config_yaml's api.install_nat_client_script_url further
+  # down for where this is actually consumed.
+  install_nat_client_script_url = module.artifacts.install_nat_client_script_url
 
   # Static, non-secret systemd unit files + requirements.txt -- see
   # terraform/modules/artifacts/main.tf's header comment for why these are
@@ -606,6 +609,12 @@ locals {
       # /agents/client-agent (upstream) and this repo's own
       # ansible/cloud-init/client-node.yaml.tftpl.
       client_agent_bin_url = local.client_agent_bin_url
+      # Same fetch-once-serve-locally mechanism for the onboarding
+      # SCRIPT itself, GET /agents/install-nat-client.sh -- lets an
+      # operator bootstrap a brand-new client instance with one curl
+      # against this fleet's own VLAN/VPC instead of already needing a
+      # copy of the script on hand.
+      install_nat_client_script_url = local.install_nat_client_script_url
     }
     pools = local.natctl_pools
     # Must NOT be hardcoded to "http://localhost:9090" -- that's only

@@ -158,6 +158,18 @@ your own VLAN-addressing step -- see the script's own header comment for
 the exact user-data variant (flags become exported env vars instead,
 since user-data scripts run with no arguments).
 
+**Or fetch it directly from natctl, no prior copy needed**: `GET
+/agents/install-nat-client.sh` on natctl's roster API serves the script
+itself, the same fetch-once-serve-locally mechanism already used for
+`client-agent`'s own compiled binary. Useful for a `vlan_only`/`vpc_vlan`
+instance with no internet path of its own, or just to skip a separate
+copy/scp step:
+
+```bash
+curl -fsSL http://192.168.100.10:8099/agents/install-nat-client.sh -o install-nat-client.sh
+chmod +x install-nat-client.sh
+```
+
 ## natctl-on-node pools: multi-URL failover
 
 If this pool runs `natctl_on_node_enabled` (every node runs its own
@@ -202,7 +214,12 @@ one URL is fine -- there's only one natctl to point at either way.
    on the same NAT node regardless of how many healthy nodes exist.
    (`client-agent` itself also sets this at its own startup, so this
    step is belt-and-suspenders, not load-bearing on its own.)
-3. **Detects whether this instance already has its own WORKING path to
+3. **If `--vpc-iface` is given, sanity-checks it has a real address**
+   -- the actual VPC sibling-subnet route management happens dynamically
+   inside `client-agent` itself, from natctl's roster, not here (see
+   "Restoring VPC sibling-subnet reachability" above); this is just an
+   early, actionable failure if the named interface looks wrong.
+4. **Detects whether this instance already has its own WORKING path to
    the internet** (a public IP, or VPC membership with 1:1 NAT) -- this
    is a real connectivity check (a request to `api.linode.com`, 3s
    timeout), not just "does a default route entry exist." A `vpc_vlan`
@@ -233,11 +250,27 @@ Safe to re-run: every step is idempotent.
 | `--fallback-probe-enabled true\|false` | `LNG_FALLBACK_PROBE_ENABLED` | no | `false` | Client trusts natctl's own computed health by default; enable for extra independent per-node probing (ANDed with natctl's view). Also settable fleet-wide, live, via `natctl-cli set-client-config` -- see OPERATIONS.md. |
 | `--fallback-probe-interval <3-60>` | `LNG_FALLBACK_PROBE_INTERVAL` | no | `30` | Only meaningful with the fallback probe enabled. |
 | `--health-probe-timeout <seconds>` | `LNG_HEALTH_PROBE_TIMEOUT` | no | `1.5` | |
+| `--vpc-iface <name>` | `LNG_VPC_IFACE` | no | unset | This instance's VPC interface, if it has one. Only relevant for `vlan_only`/`vpc_vlan` instances whose VPC interface WAS their own default route before this script ran -- see "Restoring VPC sibling-subnet reachability" below. |
 | `--force` | `LNG_FORCE=true` | no | `false` | Install/start `client-agent` even if this instance already has its own working path out. |
+| `--help`, `-h` | — | no | — | Print the full flag reference and exit. |
 
 Full detail and live-found caveats for each flag are in each script's
 own header comment -- treat these tables as a quick reference, those
 comments as the source of truth.
+
+## Restoring VPC sibling-subnet reachability (`--vpc-iface`)
+
+If this instance's VPC interface was its own default route **before** this script ran — i.e. a `vlan_only`/`vpc_vlan` instance with no public IP, so VPC was its only path out — that default route may have given it real reachability to *other* subnets in the same VPC (Akamai's VPC fabric forwards a packet between sibling subnets via a plain on-link route through the VPC interface, no gateway IP needed). Once this script hands the default route to `client-agent` for internet egress via the VLAN, that implicit sibling-subnet reachability is lost as a side effect — the default route now points at the VLAN, not VPC.
+
+Pass `--vpc-iface <name>` to fix this. It just tells `client-agent` which interface is VPC; `client-agent` itself then adds/removes explicit, non-default routes to whatever VPC subnets natctl's roster currently reports — self-healing on every roster poll, so a subnet you add to the VPC later reaches this client automatically, no re-run needed:
+
+```bash
+sudo ./install-nat-client.sh \
+  --vlan-iface eth1 --roster-url http://192.168.100.10:8099/fleet/common \
+  --vpc-iface eth0
+```
+
+**Never** work around this by pointing the *default* route at the fleet's VPC addresses instead — NAT nodes' VPC interface is deliberately scoped to buddy-pair conntrackd sync only and never masquerades client traffic to the internet, so that breaks internet egress outright.
 
 ## Interface-mode shapes
 
@@ -357,7 +390,8 @@ pick up the fix.
 - `OPERATIONS.md` — "Onboarding a client instance" (the condensed,
   day-2-ops version of this same material).
 - `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html#c3-3` — interface layout
-  rationale and the full four-shape table; `#c2-2`/`#c2-3` for the
+  rationale and the full four-shape table, including `--vpc-iface` /
+  VPC sibling-subnet reachability; `#c2-2`/`#c2-3` for the
   roster/control-plane design this all sits on top of.
 - `scripts/install-nat-client.sh` — its own header comment is the
   authoritative, most detailed reference for every flag.
