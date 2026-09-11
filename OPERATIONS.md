@@ -15,8 +15,10 @@ Author: Sandip Gangdhar (https://github.com/sandipgangdhar)
 
 `natctl` (the fleet controller), `natctl-cli` (the operator-facing day-2
 CLI — `status`/`nodes`/`drain`/`resize`/`check-orphans`/
-`set-client-config`, a separate entry point from the daemon with no
-subcommands of its own), `nat-exporter` (the Prometheus exporter),
+`set-client-config`/`set-pool-scaling`/`set-vpc-sibling-subnets`, a
+separate entry point from the daemon with no subcommands of its own —
+see `CLI-GUIDE.md` for the complete reference), `nat-exporter` (the
+Prometheus exporter),
 `buddy-sync` (conntrackd buddy-pair sync + BGP IP failover), and
 `client-agent` (ECMP routing on private-subnet instances) are shipped as
 pre-compiled, self-contained native binaries — not Python scripts. This
@@ -144,6 +146,18 @@ If the resized node is a **Terraform floor node**, the command prints the exact 
 ```bash
 terraform apply
 ```
+
+**Adjust elastic bounds (`min_nodes`/`max_nodes`)** — durable: edit that pool's `max_nodes` field (or `floor_nodes` for the minimum) in `terraform.tfvars`'s `pools` map, then `terraform apply`. Fast, temporary (a real capacity emergency, no time for a full apply cycle):
+```bash
+./natctl-cli set-pool-scaling --config natctl.yaml --pool shared --min-nodes 3 --max-nodes 8
+```
+Update `terraform.tfvars` too afterward if it should stick — the next `terraform apply`, for any reason, overwrites this back to whatever the file says. See `CLI-GUIDE.md`'s `set-pool-scaling` for the full detail.
+
+**Get a newly-added VPC subnet reaching nodes and clients** — durable: `terraform apply` (re-discovers every VPC subnet automatically, no tfvars edit needed). Fast, temporary (a subnet added outside this project's own Terraform run, needs to be reachable before the next apply):
+```bash
+./natctl-cli set-vpc-sibling-subnets --config natctl.yaml --cidrs "10.0.0.0/13,10.8.0.0/16,10.9.0.0/24"
+```
+No `--pool` flag — one list, shared by the whole environment. See `CLI-GUIDE.md`'s `set-vpc-sibling-subnets` for the full detail.
 
 **Manually drain and remove an elastic node**:
 ```bash

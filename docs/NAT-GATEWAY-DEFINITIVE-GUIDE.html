@@ -1085,7 +1085,7 @@ flowchart LR
       <section class="chapter" id="c6-4">
         <h2><span class="chno">6.4</span> Reserved-IP and Live Configuration Manifests</h2>
         <p>A pool's reserved-IP ownership manifest is a durable, per-pool list of every address that pool has ever reserved — the only thing that makes address reuse across node replacements provably safe rather than a guess, since an address being merely "unattached" says nothing about whether it actually belongs to this pool or to something completely unrelated sitting idle on the same account.</p>
-        <p>A separate, small live-configuration object lets an operator change certain fleet-wide operational behavior — for example, whether client instances should also independently double-check node health rather than trusting the control plane's computed view alone — instantly and durably, with every connected client and every controller instance picking up the change within one round trip and with zero restarts required anywhere in the fleet.</p>
+        <p>A separate, small live-configuration object lets an operator change certain fleet-wide operational behavior instantly and durably, with every connected client and every controller instance picking up the change within one round trip and with zero restarts required anywhere in the fleet. Three settings work this way today: whether client instances should also independently double-check node health rather than trusting the control plane's computed view alone; a pool's elastic <code>min_nodes</code>/<code>max_nodes</code> bounds; and the whole-environment list of sibling VPC subnets a node needs an explicit route to (Part I, 1.2). All three are also written by Terraform on every <code>apply</code> — whichever wrote most recently is what's actually in effect, and Terraform's own value always wins again on the next apply. See Part X, 10.2's <code>set-client-config</code>/<code>set-pool-scaling</code>/<code>set-vpc-sibling-subnets</code> for the live-override side of this.</p>
       </section>
 
       <!-- ============ PART VII ============ -->
@@ -1377,6 +1377,21 @@ dedicated-acme-corp: 3 node(s), 3 healthy</pre>
         <p><strong>Why:</strong> every connected client trusts the roster's own computed health by default (Part II, 2.2) rather than independently probing each node itself — correct for almost every deployment, since it means a client never adds duplicate probe traffic the control plane is already generating. <strong>When:</strong> the rare occasion you judge that trust unacceptable for a specific pool (a single-node pool already turns the probe on automatically where it matters most, Part IV — this command is for deliberately overriding the default elsewhere, not for the case that's already handled).</p>
         <p>Flips the fallback probe on or off, and sets its interval, for every currently-connected client in that pool at once — without touching <code>natctl.yaml</code> or restarting anything anywhere. <code>--clear</code> reverts to whatever the pool's own static configuration says. Every connected client picks up the change within one long-poll round-trip (Part II, 2.2) — seconds, not a deploy cycle.</p>
         <p>Unlike every other subcommand here, this one doesn't build a local view of the fleet at all — it sends a real HTTP request straight to a running <code>natctl</code> process's own API. It defaults to talking to <code>localhost</code> (the common case: running this from the same host natctl runs on, or against a specific node in the every-node placement mode), so pass <code>--natctl-url</code> explicitly if you're operating from anywhere else.</p>
+
+        <h3><code>set-pool-scaling</code> — override a pool's elastic bounds fleet-wide, live</h3>
+        <pre class="code">./natctl-cli set-pool-scaling --config natctl.yaml --pool shared \
+  --min-nodes 3 --max-nodes 8</pre>
+        <p><strong>Why:</strong> the durable path ("Adjust elastic bounds," 10.3 below) needs a full <code>terraform apply</code> — correct for a bound change you intend to keep, but slower than a genuine incident calls for. <strong>When:</strong> a real, right-now capacity emergency — raise <code>max_nodes</code> immediately, then still go make the same change in <code>terraform.tfvars</code> afterward so it survives the next apply (see the trade-off below).</p>
+        <p>Same HTTP-to-a-running-instance mechanism as <code>set-client-config</code> above — it writes the exact same small object Terraform itself writes on every apply, so there's no separate override layer to reason about, just last-write-wins. Every controller managing this pool re-reads it the very next reconcile pass (roughly 15 seconds). <strong>The next <code>terraform apply</code>, for any reason, overwrites it back</strong> to whatever <code>terraform.tfvars</code> currently says — this command is the fast, temporary path, not a replacement for keeping Terraform's own value correct.</p>
+
+        <h3><code>set-vpc-sibling-subnets</code> — override the sibling-VPC-subnet list fleet-wide, live</h3>
+        <pre class="code">./natctl-cli set-vpc-sibling-subnets --config natctl.yaml \
+  --cidrs "10.0.0.0/13,10.8.0.0/16,10.9.0.0/24"
+
+./natctl-cli set-vpc-sibling-subnets --config natctl.yaml --clear</pre>
+        <p><strong>Why:</strong> a newly-created sibling subnet in the same VPC (Part I, 1.2) needs an explicit route on every node and every client before it's actually reachable — normally a Terraform concern (it auto-discovers every subnet in the VPC on each apply), but this command gets a genuinely new subnet flowing immediately, without waiting on a full apply. <strong>When:</strong> a subnet was just added to the VPC outside of this project's own Terraform (by hand, or by another team's automation sharing the same VPC) and needs to be reachable right now.</p>
+        <p>No <code>--pool</code> flag — this setting is a property of the whole environment, not any one pool, since every pool shares the same VPC. Every controller re-reads it the next reconcile pass, and it feeds both directions of reachability described in Part I, 1.2: a node's own route to the new subnet, and (via the roster) every connected client's self-healing route to it too. <code>--clear</code> empties the override; it does not restore Terraform's own discovered value — run <code>terraform apply</code> for that, since Terraform always re-derives this list live from the VPC's actual subnets rather than reading back anything <code>natctl-cli</code> wrote.</p>
+        <p>Same last-write-wins relationship with Terraform as <code>set-pool-scaling</code> above: the next apply, for any reason, recomputes and overwrites this object from live VPC discovery.</p>
       </section>
 
       <section class="chapter" id="c10-3">
@@ -1391,10 +1406,15 @@ dedicated-acme-corp: 3 node(s), 3 healthy</pre>
         <p>Every connected client picks up the new node automatically on its next roster refresh — no other action is needed anywhere.</p>
 
         <h3>Adjust elastic bounds (<code>min_nodes</code> / <code>max_nodes</code>)</h3>
+        <p><strong>Durable</strong> (the change survives the next apply, which is why this is the default path):</p>
         <ol>
           <li>Edit that pool's <code>max_nodes</code> field in <code>terraform.tfvars</code>'s <code>pools</code> map (or <code>floor_nodes</code> for the pool's minimum — the same field "Raise the floor" above uses), then from the Terraform environment directory: <pre class="code">terraform apply</pre></li>
         </ol>
         <p>This writes the new value to a small, dedicated object the control plane rereads every reconcile pass — the very next pass, roughly 15 seconds later, is already sizing against it. No restart, and — unlike changing the floor node count's own boot-time settings below — no existing node of any kind is touched: the apply is a plain, in-place update to that one object, nothing else.</p>
+        <p><strong>Fast, temporary</strong> (10.2's <code>set-pool-scaling</code>) — for a real, right-now capacity emergency, when even one <code>terraform apply</code> cycle is too slow:</p>
+        <pre class="code">./natctl-cli set-pool-scaling --config natctl.yaml --pool shared \
+  --min-nodes 3 --max-nodes 8</pre>
+        <p>Writes the exact same object the Terraform path above writes — last-write-wins, no separate override layer. Update <code>terraform.tfvars</code> too afterward if the change should stick; the next <code>apply</code>, for any reason, overwrites it back to whatever the file currently says.</p>
 
         <h3>Adjust other autoscaling tuning (watermarks, sustained-breach window, step caps, cooldown)</h3>
         <ol>
@@ -1430,6 +1450,13 @@ dedicated-acme-corp: 3 node(s), 3 healthy</pre>
           <li>Confirm sessions actually establish: <code>vtysh -c "show bgp summary"</code> on a paired node — peers should show <code>Established</code>, not stuck on <code>Active</code>.</li>
           <li>Test a real failover from an external host before trusting it in production: <code>ping</code> a node's public IP continuously, then <code>systemctl stop frr</code> on that node and confirm the ping keeps answering (now via its buddy). <code>systemctl start frr</code> to fail back.</li>
         </ol>
+
+        <h3>Get a newly-added VPC subnet reaching nodes and clients</h3>
+        <p><strong>Durable</strong>: <code>terraform apply</code> — every apply re-discovers every subnet actually in the VPC and rewrites the sibling-subnet list from scratch, no tfvars edit needed for this one specifically.</p>
+        <p><strong>Fast, temporary</strong> (10.2's <code>set-vpc-sibling-subnets</code>) — for a subnet just added outside this project's own Terraform run (by hand, or by another team sharing the VPC) that needs to be reachable before the next apply:</p>
+        <pre class="code">./natctl-cli set-vpc-sibling-subnets --config natctl.yaml \
+  --cidrs "10.0.0.0/13,10.8.0.0/16,10.9.0.0/24"</pre>
+        <p>No <code>--pool</code> flag — one list, shared by the whole environment. Every controller picks it up the next reconcile pass, which also republishes it to every connected client via the roster (Part I, 1.2). A later <code>terraform apply</code> still overwrites this back to its own live-discovered value.</p>
 
         <h3>Enable the every-node control-plane placement</h3>
         <ol>

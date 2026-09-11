@@ -4,7 +4,8 @@ README.md (repository root) -- CUSTOMER-FACING DISTRIBUTION
 Top-level entry point for the LNG customer distribution: what LNG is,
 why it exists, its core capabilities, repository layout, and a
 copy-paste quickstart. See OPERATIONS.md for day-2 operations, config
-reference, and troubleshooting.
+reference, and troubleshooting; see CLI-GUIDE.md for the complete
+natctl-cli command reference.
 
 This repository ships the natctl control plane and the nat-exporter/
 buddy-sync/client-agent runtime agents as pre-compiled native binaries,
@@ -66,6 +67,7 @@ docs/                       API token setup instructions
 acceptance-tests/           Post-deploy checks you can run against your own live deployment
 scripts/                    Load-test and day-2 operational scripts
 OPERATIONS.md               Day-2 operations, configuration reference, troubleshooting
+CLI-GUIDE.md                natctl-cli reference: install, configure, every subcommand
 ```
 
 ## Quickstart
