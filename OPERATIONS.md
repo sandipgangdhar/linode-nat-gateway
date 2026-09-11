@@ -38,9 +38,10 @@ Download it directly from this version's GitHub Release (the same page
 this repository's Terraform config and README point you at for every
 other binary), `chmod +x natctl-cli`, and run it from there — every
 `natctl_cli`/`natctl-cli` command in "Common procedures" below is the
-real, working command as written, invoked as `./natctl-cli <subcommand>
---config natctl.yaml ...` (no `python -m` prefix — it's a compiled
-binary, not a Python module). **This was a real, live-found gap in
+real, working command as written, invoked as `./natctl-cli --config
+natctl.yaml <subcommand> ...` (`--config` is a top-level flag, so it
+comes before the subcommand, not after; no `python -m` prefix — it's a
+compiled binary, not a Python module). **This was a real, live-found gap in
 earlier releases of this repository** (through `v0.1.14`): only the
 `natctl` daemon had a compiled binary, so every `natctl_cli` command
 documented here failed outright with "command not found" — fixed as of
@@ -132,7 +133,7 @@ If you'd rather authorize the first pairing yourself before `natctl` touches it,
 **Resizing an existing node (floor or elastic) — the safe, in-place way**, via the operator CLI (handles drain → resize → rejoin for you, never deletes the node):
 
 ```bash
-./natctl-cli resize --config natctl.yaml --pool shared \
+./natctl-cli --config natctl.yaml resize --pool shared \
   --node-id shared-3 --instance-type g6-dedicated-8
 ```
 
@@ -149,19 +150,19 @@ terraform apply
 
 **Adjust elastic bounds (`min_nodes`/`max_nodes`)** — durable: edit that pool's `max_nodes` field (or `floor_nodes` for the minimum) in `terraform.tfvars`'s `pools` map, then `terraform apply`. Fast, temporary (a real capacity emergency, no time for a full apply cycle):
 ```bash
-./natctl-cli set-pool-scaling --config natctl.yaml --pool shared --min-nodes 3 --max-nodes 8
+./natctl-cli --config natctl.yaml set-pool-scaling --pool shared --min-nodes 3 --max-nodes 8
 ```
 Update `terraform.tfvars` too afterward if it should stick — the next `terraform apply`, for any reason, overwrites this back to whatever the file says. See `CLI-GUIDE.md`'s `set-pool-scaling` for the full detail.
 
 **Get a newly-added VPC subnet reaching nodes and clients** — durable: `terraform apply` (re-discovers every VPC subnet automatically, no tfvars edit needed). Fast, temporary (a subnet added outside this project's own Terraform run, needs to be reachable before the next apply):
 ```bash
-./natctl-cli set-vpc-sibling-subnets --config natctl.yaml --cidrs "10.0.0.0/13,10.8.0.0/16,10.9.0.0/24"
+./natctl-cli --config natctl.yaml set-vpc-sibling-subnets --cidrs "10.0.0.0/13,10.8.0.0/16,10.9.0.0/24"
 ```
 No `--pool` flag — one list, shared by the whole environment. See `CLI-GUIDE.md`'s `set-vpc-sibling-subnets` for the full detail.
 
 **Manually drain and remove an elastic node**:
 ```bash
-./natctl-cli drain --config natctl.yaml --pool shared --node-id shared-elastic-103
+./natctl-cli --config natctl.yaml drain --pool shared --node-id shared-elastic-103
 ```
 Refuses to drain a Terraform floor node — lower the floor via Terraform instead.
 
@@ -173,8 +174,8 @@ Refuses to drain a Terraform floor node — lower the floor via Terraform instea
 
 **Checking fleet status**:
 ```bash
-./natctl-cli status --config natctl.yaml
-./natctl-cli nodes --config natctl.yaml --pool shared
+./natctl-cli --config natctl.yaml status
+./natctl-cli --config natctl.yaml nodes --pool shared
 ```
 
 ## HA fleet health check

@@ -60,11 +60,15 @@ get it by hand, once, from the Release page.
 
 ## Configuring it
 
-Every subcommand takes `--config <path-to-natctl.yaml>` — the same
-configuration file the daemon itself reads. `natctl-cli` reads it fresh
-on every invocation and never modifies it. If you're running the CLI
-from a machine other than a live fleet node, you'll need your own local
-copy of that file (and the credentials it references).
+Every subcommand needs `--config <path-to-natctl.yaml>` — the same
+configuration file the daemon itself reads. **`--config` is a top-level
+flag, not a per-subcommand one**, so it goes right after `natctl-cli`,
+before the subcommand name: `./natctl-cli --config natctl.yaml status`,
+not `./natctl-cli status --config natctl.yaml` (the latter fails with
+"unrecognized arguments"). `natctl-cli` reads the file fresh on every
+invocation and never modifies it. If you're running the CLI from a
+machine other than a live fleet node, you'll need your own local copy of
+that file (and the credentials it references).
 
 **Two different things `--config` is used for, depending on the
 command**: most commands (`status`, `nodes`, `drain`, `resize`,
@@ -98,7 +102,7 @@ you're operating from anywhere else.
 The one-line, fleet-wide health check.
 
 ```bash
-./natctl-cli status --config natctl.yaml
+./natctl-cli --config natctl.yaml status
 ```
 
 ```
@@ -116,7 +120,7 @@ session, or a quick sanity check before/after a change.
 Every node in one pool, in detail.
 
 ```bash
-./natctl-cli nodes --config natctl.yaml --pool shared
+./natctl-cli --config natctl.yaml nodes --pool shared
 ```
 
 ```
@@ -135,7 +139,7 @@ which node it is and what its current public-facing address is.
 Retire one elastic node on your own schedule.
 
 ```bash
-./natctl-cli drain --config natctl.yaml --pool shared --node-id shared-elastic-103
+./natctl-cli --config natctl.yaml drain --pool shared --node-id shared-elastic-103
 ```
 
 **Why**: you want a specific elastic node gone now, rather than waiting
@@ -160,7 +164,7 @@ that pool's `floor_nodes` field in `terraform.tfvars`'s `pools` map, then
 Change a node's instance plan in place.
 
 ```bash
-./natctl-cli resize --config natctl.yaml --pool shared \
+./natctl-cli --config natctl.yaml resize --pool shared \
   --node-id shared-3 --instance-type g6-dedicated-8
 ```
 
@@ -191,8 +195,8 @@ pool's base instance type.
 Find elastic nodes a rebuild left behind.
 
 ```bash
-./natctl-cli check-orphans --config natctl.yaml --pool shared
-./natctl-cli check-orphans --config natctl.yaml   # every pool at once, omit --pool
+./natctl-cli --config natctl.yaml check-orphans --pool shared
+./natctl-cli --config natctl.yaml check-orphans   # every pool at once, omit --pool
 ```
 
 **Why**: `terraform destroy` only ever knows about the resources
@@ -219,11 +223,11 @@ just created before deciding anything is genuinely orphaned.
 Override client fallback-probe behavior fleet-wide, live.
 
 ```bash
-./natctl-cli set-client-config --config natctl.yaml --pool shared \
+./natctl-cli --config natctl.yaml set-client-config --pool shared \
   --fallback-probe-enabled true --fallback-probe-interval 10
 
 # revert to each client's own local env var / natctl.yaml's baseline:
-./natctl-cli set-client-config --config natctl.yaml --pool shared --clear
+./natctl-cli --config natctl.yaml set-client-config --pool shared --clear
 ```
 
 **Why**: every connected client trusts the roster's own computed health
@@ -246,7 +250,7 @@ Override a pool's elastic `min_nodes`/`max_nodes` bounds fleet-wide,
 live.
 
 ```bash
-./natctl-cli set-pool-scaling --config natctl.yaml --pool shared \
+./natctl-cli --config natctl.yaml set-pool-scaling --pool shared \
   --min-nodes 3 --max-nodes 8
 ```
 
@@ -272,12 +276,12 @@ Override the whole-environment list of sibling VPC subnets fleet-wide,
 live.
 
 ```bash
-./natctl-cli set-vpc-sibling-subnets --config natctl.yaml \
+./natctl-cli --config natctl.yaml set-vpc-sibling-subnets \
   --cidrs "10.0.0.0/13,10.8.0.0/16,10.9.0.0/24"
 
 # empty the override (does NOT restore Terraform's own discovered value
 # -- run terraform apply for that, see below):
-./natctl-cli set-vpc-sibling-subnets --config natctl.yaml --clear
+./natctl-cli --config natctl.yaml set-vpc-sibling-subnets --clear
 ```
 
 **Why**: a Linode VPC interface only ever gets a kernel route to its own

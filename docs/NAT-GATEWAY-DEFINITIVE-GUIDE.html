@@ -1333,29 +1333,29 @@ flowchart LR
         <p>Run it from wherever you operate the fleet from: your own laptop, the observability host, or any node itself all work equally well, as long as that machine can reach the Linode API and, for the commands that read live fleet state, the roster (Part II, 2.2). It needs no Python interpreter and no dependencies installed — it's a single, self-contained native binary, the same as <code>natctl</code> itself.</p>
 
         <h3>The <code>--config</code> flag, on every command</h3>
-        <p>Every subcommand needs <code>--config &lt;path-to-natctl.yaml&gt;</code> — the same configuration file the daemon itself reads (Part II, 2.5). <code>natctl-cli</code> reads it fresh on every invocation and never modifies it. If you're running the CLI from a machine other than a live fleet node, you'll need your own local copy of that file (and the credentials it references) — see Part II, 2.5 for exactly what it contains and how secrets are kept out of the parts of it that get distributed widely.</p>
+        <p>Every subcommand needs <code>--config &lt;path-to-natctl.yaml&gt;</code> — the same configuration file the daemon itself reads (Part II, 2.5). <strong><code>--config</code> is a top-level flag, not a per-subcommand one</strong>, so it goes right after <code>natctl-cli</code>, before the subcommand name: <code>./natctl-cli --config natctl.yaml status</code>, not <code>./natctl-cli status --config natctl.yaml</code> (the latter fails with "unrecognized arguments"). <code>natctl-cli</code> reads the file fresh on every invocation and never modifies it. If you're running the CLI from a machine other than a live fleet node, you'll need your own local copy of that file (and the credentials it references) — see Part II, 2.5 for exactly what it contains and how secrets are kept out of the parts of it that get distributed widely.</p>
 
         <h3><code>status</code> — the one-line fleet-wide health check</h3>
-        <pre class="code">./natctl-cli status --config natctl.yaml</pre>
+        <pre class="code">./natctl-cli --config natctl.yaml status</pre>
         <p><strong>Why:</strong> the fastest possible answer to "is everything okay right now," with nothing to open, load, or log into. <strong>When:</strong> first, before anything more specific — the natural opening move of any troubleshooting session, or a quick sanity check before/after a change.</p>
         <pre class="code">shared: 3 node(s), 3 healthy
 dedicated-acme-corp: 3 node(s), 3 healthy</pre>
 
         <h3><code>nodes</code> — every node in one pool, in detail</h3>
-        <pre class="code">./natctl-cli nodes --config natctl.yaml --pool shared</pre>
+        <pre class="code">./natctl-cli --config natctl.yaml nodes --pool shared</pre>
         <p><strong>Why:</strong> where <code>status</code> gives a count, <code>nodes</code> gives the roster itself — every node's ID, private IP, health, and public IP(s). <strong>When:</strong> the moment <code>status</code> shows fewer healthy nodes than expected, to see exactly which node it is and what its current public-facing address is — the natural next step, not a replacement for <code>status</code>.</p>
         <pre class="code">  shared-1                       private=10.60.32.20     healthy=True  public=['172.236.173.36']
   shared-2                       private=10.60.32.21     healthy=True  public=['172.236.171.17']
   shared-elastic-100             private=10.60.32.100    healthy=False public=['172.236.180.4']</pre>
 
         <h3><code>drain</code> — retire one elastic node on your own schedule</h3>
-        <pre class="code">./natctl-cli drain --config natctl.yaml --pool shared --node-id shared-elastic-103</pre>
+        <pre class="code">./natctl-cli --config natctl.yaml drain --pool shared --node-id shared-elastic-103</pre>
         <p><strong>Why:</strong> you want a specific elastic node gone now, rather than waiting for the autoscaler to eventually decide it's no longer needed. <strong>When:</strong> rolling a patch across the fleet (10.4 below), moving load off a node ahead of planned maintenance elsewhere on it, or simply correcting a scale-out you no longer want.</p>
         <p>The named node is excluded from the roster immediately — new connections stop landing on it at once — and deleted once its live connection count actually empties out, or once <code>drain_timeout_seconds</code> elapses, whichever comes first. Existing connections are allowed to finish; nothing is severed.</p>
         <p>It refuses outright on a Terraform floor node, by design — floor capacity is Terraform's to manage, not natctl's (Part V, 5.1). Lower the floor count instead (edit that pool's <code>floor_nodes</code> field in <code>terraform.tfvars</code>'s <code>pools</code> map, then <code>terraform apply</code>) if you actually want to remove permanent capacity.</p>
 
         <h3><code>resize</code> — change a node's instance plan in place</h3>
-        <pre class="code">./natctl-cli resize --config natctl.yaml --pool shared \
+        <pre class="code">./natctl-cli --config natctl.yaml resize --pool shared \
   --node-id shared-3 --instance-type g6-dedicated-8</pre>
         <p><strong>Why:</strong> a node's own traffic has genuinely outgrown its current plan. <strong>When:</strong> persistently high CPU/softirq or bandwidth against that one specific node — not a pool-wide capacity problem, which autoscaling already handles on its own without you touching this command at all.</p>
         <p>Works identically on a floor or elastic node, and never deletes the node — it drains it, resizes the underlying instance, then rejoins it to the pool, all in one invocation. See Part V, 5.4 for the full mechanics (warm resize, falling back to cold automatically if Linode rejects the warm attempt, and what to do if a downsize doesn't fit on-disk).</p>
@@ -1363,32 +1363,32 @@ dedicated-acme-corp: 3 node(s), 3 healthy</pre>
         <p><strong>If the resized node is a Terraform floor node</strong>, the command prints the exact override block to add to your <code>.tfvars</code> immediately after — do it before the next <code>terraform apply</code>, or Terraform will see drift and try to revert the resize back to the pool's base instance type.</p>
 
         <h3><code>check-orphans</code> — find elastic nodes a rebuild left behind</h3>
-        <pre class="code">./natctl-cli check-orphans --config natctl.yaml --pool shared
-./natctl-cli check-orphans --config natctl.yaml   # every pool at once, omit --pool</pre>
+        <pre class="code">./natctl-cli --config natctl.yaml check-orphans --pool shared
+./natctl-cli --config natctl.yaml check-orphans   # every pool at once, omit --pool</pre>
         <p><strong>Why:</strong> <code>terraform destroy</code> only ever knows about the resources Terraform itself created — floor nodes. It has no idea an elastic node exists at all, since natctl provisions those dynamically, entirely outside Terraform's view. A rebuild can leave a real, billable elastic instance running from the previous environment with nothing left pointing at it. <strong>When:</strong> before and after any <code>terraform destroy</code>/<code>apply</code> rebuild of an environment — before, to see what already exists; after, to confirm the rebuild didn't leave anything behind.</p>
         <p>Lists every node it currently sees, flags any elastic node that's unhealthy and not already draining as a <strong>SUSPECT ORPHAN</strong>, and tells you how to verify and clean one up. It's read-only — it never deletes anything itself, just reports, so it's always safe to run.</p>
         <p>One honest limitation, stated plainly: this is a single, one-shot pass, not the long-running daemon's own continuously-updated view — a flagged node's unhealthy status reflects only the instant you ran the command, not how long it's actually been that way. Correlate against what you know you just created (your own <code>terraform apply</code> output) before deciding anything is genuinely orphaned.</p>
 
         <h3><code>set-client-config</code> — override client fallback-probe behavior fleet-wide, live</h3>
-        <pre class="code">./natctl-cli set-client-config --config natctl.yaml --pool shared \
+        <pre class="code">./natctl-cli --config natctl.yaml set-client-config --pool shared \
   --fallback-probe-enabled true --fallback-probe-interval 10
 
-./natctl-cli set-client-config --config natctl.yaml --pool shared --clear</pre>
+./natctl-cli --config natctl.yaml set-client-config --pool shared --clear</pre>
         <p><strong>Why:</strong> every connected client trusts the roster's own computed health by default (Part II, 2.2) rather than independently probing each node itself — correct for almost every deployment, since it means a client never adds duplicate probe traffic the control plane is already generating. <strong>When:</strong> the rare occasion you judge that trust unacceptable for a specific pool (a single-node pool already turns the probe on automatically where it matters most, Part IV — this command is for deliberately overriding the default elsewhere, not for the case that's already handled).</p>
         <p>Flips the fallback probe on or off, and sets its interval, for every currently-connected client in that pool at once — without touching <code>natctl.yaml</code> or restarting anything anywhere. <code>--clear</code> reverts to whatever the pool's own static configuration says. Every connected client picks up the change within one long-poll round-trip (Part II, 2.2) — seconds, not a deploy cycle.</p>
         <p>Unlike every other subcommand here, this one doesn't build a local view of the fleet at all — it sends a real HTTP request straight to a running <code>natctl</code> process's own API. It defaults to talking to <code>localhost</code> (the common case: running this from the same host natctl runs on, or against a specific node in the every-node placement mode), so pass <code>--natctl-url</code> explicitly if you're operating from anywhere else.</p>
 
         <h3><code>set-pool-scaling</code> — override a pool's elastic bounds fleet-wide, live</h3>
-        <pre class="code">./natctl-cli set-pool-scaling --config natctl.yaml --pool shared \
+        <pre class="code">./natctl-cli --config natctl.yaml set-pool-scaling --pool shared \
   --min-nodes 3 --max-nodes 8</pre>
         <p><strong>Why:</strong> the durable path ("Adjust elastic bounds," 10.3 below) needs a full <code>terraform apply</code> — correct for a bound change you intend to keep, but slower than a genuine incident calls for. <strong>When:</strong> a real, right-now capacity emergency — raise <code>max_nodes</code> immediately, then still go make the same change in <code>terraform.tfvars</code> afterward so it survives the next apply (see the trade-off below).</p>
         <p>Same HTTP-to-a-running-instance mechanism as <code>set-client-config</code> above — it writes the exact same small object Terraform itself writes on every apply, so there's no separate override layer to reason about, just last-write-wins. Every controller managing this pool re-reads it the very next reconcile pass (roughly 15 seconds). <strong>The next <code>terraform apply</code>, for any reason, overwrites it back</strong> to whatever <code>terraform.tfvars</code> currently says — this command is the fast, temporary path, not a replacement for keeping Terraform's own value correct.</p>
 
         <h3><code>set-vpc-sibling-subnets</code> — override the sibling-VPC-subnet list fleet-wide, live</h3>
-        <pre class="code">./natctl-cli set-vpc-sibling-subnets --config natctl.yaml \
+        <pre class="code">./natctl-cli --config natctl.yaml set-vpc-sibling-subnets \
   --cidrs "10.0.0.0/13,10.8.0.0/16,10.9.0.0/24"
 
-./natctl-cli set-vpc-sibling-subnets --config natctl.yaml --clear</pre>
+./natctl-cli --config natctl.yaml set-vpc-sibling-subnets --clear</pre>
         <p><strong>Why:</strong> a newly-created sibling subnet in the same VPC (Part I, 1.2) needs an explicit route on every node and every client before it's actually reachable — normally a Terraform concern (it auto-discovers every subnet in the VPC on each apply), but this command gets a genuinely new subnet flowing immediately, without waiting on a full apply. <strong>When:</strong> a subnet was just added to the VPC outside of this project's own Terraform (by hand, or by another team's automation sharing the same VPC) and needs to be reachable right now.</p>
         <p>No <code>--pool</code> flag — this setting is a property of the whole environment, not any one pool, since every pool shares the same VPC. Every controller re-reads it the next reconcile pass, and it feeds both directions of reachability described in Part I, 1.2: a node's own route to the new subnet, and (via the roster) every connected client's self-healing route to it too. <code>--clear</code> empties the override; it does not restore Terraform's own discovered value — run <code>terraform apply</code> for that, since Terraform always re-derives this list live from the VPC's actual subnets rather than reading back anything <code>natctl-cli</code> wrote.</p>
         <p>Same last-write-wins relationship with Terraform as <code>set-pool-scaling</code> above: the next apply, for any reason, recomputes and overwrites this object from live VPC discovery.</p>
@@ -1412,7 +1412,7 @@ dedicated-acme-corp: 3 node(s), 3 healthy</pre>
         </ol>
         <p>This writes the new value to a small, dedicated object the control plane rereads every reconcile pass — the very next pass, roughly 15 seconds later, is already sizing against it. No restart, and — unlike changing the floor node count's own boot-time settings below — no existing node of any kind is touched: the apply is a plain, in-place update to that one object, nothing else.</p>
         <p><strong>Fast, temporary</strong> (10.2's <code>set-pool-scaling</code>) — for a real, right-now capacity emergency, when even one <code>terraform apply</code> cycle is too slow:</p>
-        <pre class="code">./natctl-cli set-pool-scaling --config natctl.yaml --pool shared \
+        <pre class="code">./natctl-cli --config natctl.yaml set-pool-scaling --pool shared \
   --min-nodes 3 --max-nodes 8</pre>
         <p>Writes the exact same object the Terraform path above writes — last-write-wins, no separate override layer. Update <code>terraform.tfvars</code> too afterward if the change should stick; the next <code>apply</code>, for any reason, overwrites it back to whatever the file currently says.</p>
 
@@ -1424,11 +1424,11 @@ dedicated-acme-corp: 3 node(s), 3 healthy</pre>
         <p>These settings are genuinely boot-time configuration, unlike a pool's <code>min_nodes</code>/<code>max_nodes</code> above — a restart is required for a change to take effect.</p>
 
         <h3>Manually drain and remove an elastic node</h3>
-        <pre class="code">./natctl-cli drain --config natctl.yaml --pool shared --node-id shared-elastic-103</pre>
+        <pre class="code">./natctl-cli --config natctl.yaml drain --pool shared --node-id shared-elastic-103</pre>
         <p>The named node is immediately excluded from the roster and deleted once its live connection count empties out, or once a configured drain timeout elapses, whichever comes first. A floor node can never be drained this way by design — the command refuses; reduce the floor's declared count instead (above). See 10.2 above for the full picture of when to reach for this.</p>
 
         <h3>Resize a node's instance plan</h3>
-        <pre class="code">./natctl-cli resize --config natctl.yaml --pool shared \
+        <pre class="code">./natctl-cli --config natctl.yaml resize --pool shared \
   --node-id shared-3 --instance-type g6-dedicated-8</pre>
         <p><code>--node-id</code> can be repeated for more than one node — see the full mechanics (drain, warm/cold resize, rejoin) in Part V, 5.4. Nodes are always processed one at a time, and the operation stops at the very first failure rather than continuing against a pool that's already short a node.</p>
 
@@ -1454,7 +1454,7 @@ dedicated-acme-corp: 3 node(s), 3 healthy</pre>
         <h3>Get a newly-added VPC subnet reaching nodes and clients</h3>
         <p><strong>Durable</strong>: <code>terraform apply</code> — every apply re-discovers every subnet actually in the VPC and rewrites the sibling-subnet list from scratch, no tfvars edit needed for this one specifically.</p>
         <p><strong>Fast, temporary</strong> (10.2's <code>set-vpc-sibling-subnets</code>) — for a subnet just added outside this project's own Terraform run (by hand, or by another team sharing the VPC) that needs to be reachable before the next apply:</p>
-        <pre class="code">./natctl-cli set-vpc-sibling-subnets --config natctl.yaml \
+        <pre class="code">./natctl-cli --config natctl.yaml set-vpc-sibling-subnets \
   --cidrs "10.0.0.0/13,10.8.0.0/16,10.9.0.0/24"</pre>
         <p>No <code>--pool</code> flag — one list, shared by the whole environment. Every controller picks it up the next reconcile pass, which also republishes it to every connected client via the roster (Part I, 1.2). A later <code>terraform apply</code> still overwrites this back to its own live-discovered value.</p>
 
@@ -1480,7 +1480,7 @@ dedicated-acme-corp: 3 node(s), 3 healthy</pre>
 
         <h3>A pool-below-floor alert fires</h3>
         <ol>
-          <li>Run <code>./natctl-cli nodes --config natctl.yaml --pool shared</code> — this shows every node and whether it's actually healthy, not just present. The floor check is against <em>healthy</em> count specifically, so a node that exists but is failing its health check doesn't count.</li>
+          <li>Run <code>./natctl-cli --config natctl.yaml nodes --pool shared</code> — this shows every node and whether it's actually healthy, not just present. The floor check is against <em>healthy</em> count specifically, so a node that exists but is failing its health check doesn't count.</li>
           <li><strong>If an elastic node is missing or unhealthy</strong>: it should self-heal automatically once it's been unhealthy past the configured threshold (default 90 seconds) — watch for a log line like <code>"elastic node ... has failed health checks for &gt;=Ns — draining for replacement"</code> in <code>journalctl -u natctl</code>. If that line never appears, check the API token's scope and any provisioning errors in the same log (a bad instance type, a region quota, etc.).</li>
           <li><strong>If a floor node is unhealthy</strong>: this is never auto-replaced by design — the pool instead runs with extra elastic capacity compensating for it, which is expected, not an error. Fix the actual floor node yourself: SSH in and investigate (check <code>systemctl status nat-exporter</code> and <code>journalctl -u nat-exporter</code> first, since that's what the health check itself depends on), or replace the instance through a targeted re-apply of just that node.</li>
           <li><strong>If a floor node is simply missing entirely</strong> (not present at all, not just unhealthy): that's infrastructure drift, not something natctl can or should fix — run <code>terraform plan</code> and reconcile it the normal way.</li>
