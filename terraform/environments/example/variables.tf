@@ -236,6 +236,12 @@ variable "observability_vlan_pool" {
   type        = string
 }
 
+variable "observability_private_ip_offset" {
+  description = "Starting host offset within public_subnet_id's CIDR for the observability host's static VPC (eth1) address -- same mechanism as each pool's own private_ip_offset (see the pools variable above), but for the one non-pool instance this environment creates. Defaults to 5, clear of every pool's own private_ip_offset range in a fresh deployment (pools default to 20+). Live-found gap (2026-09-11): this was hardcoded to 5 with no override at all until this variable existed -- harmless for a single deployment, but a real collision (Linode's [400] \"The provided IP is already in use in the subnet\" at apply time) when this environment's public_subnet_id is a VPC subnet ALSO used by a completely separate LNG deployment (different terraform.tfvars/state) that happens to use the same offset for its own observability host -- this project's own pool_vpc_offsets_no_overlap-style checks can only ever see pools/resources within THIS state, never a second deployment's. Change this if you know this subnet is shared with another deployment already using the default. Checked against every pool's own private_ip_offset range at plan time (see main.tf's observability_vpc_offset_no_overlap_pools check) -- but only within this one deployment's own pools, same limitation as every other check here."
+  type        = number
+  default     = 5
+}
+
 variable "authorized_keys" {
   description = "SSH public key(s) installed on every instance"
   type        = list(string)

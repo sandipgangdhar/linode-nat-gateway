@@ -155,6 +155,19 @@ pools = {
 # joining any VLAN entirely.
 observability_vlan_pool = "common"
 
+# Starting VPC-side host offset for the observability host's own static
+# address -- see variables.tf's observability_private_ip_offset. Defaults
+# to 5 (uncomment only if you need a different value). Live-found gap
+# (2026-09-11): if public_subnet_id above is a VPC subnet ALSO used by a
+# completely separate LNG deployment (different terraform.tfvars/state),
+# and that deployment's own observability host also uses the default 5,
+# your `terraform apply` fails outright with Linode's [400] "The provided
+# IP is already in use in the subnet" -- this project's own plan-time
+# checks can only ever see pools/resources within THIS terraform.tfvars,
+# never a second deployment's state. Pick a value clear of that other
+# deployment's own offsets if you're sharing a subnet this way.
+# observability_private_ip_offset = 5
+
 # --------------------------------------------------------------------------
 # Reserved IPs -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.6. Opt-in (default false). When
 # true, every node's primary public IP (floor AND natctl-provisioned

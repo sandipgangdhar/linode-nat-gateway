@@ -106,7 +106,18 @@ locals {
   # natctl's roster API without a cross-module cycle. See module
   # "observability" below, whose own private_ip variable is given this
   # exact same value.
-  natctl_private_ip = cidrhost(module.vpc.public_subnet_cidr, 5)
+  #
+  # var.observability_private_ip_offset (default 5), not a bare literal --
+  # live-found gap (2026-09-11): a hardcoded 5 collided with a SECOND,
+  # entirely separate LNG deployment sharing this same public_subnet_id
+  # (Linode returned [400] "The provided IP is already in use in the
+  # subnet" at apply time), since that other deployment's own
+  # observability host used the exact same hardcoded offset. See that
+  # variable's own description for the full story and
+  # observability_vpc_offset_no_overlap_pools below for what IS checked
+  # (this deployment's own pools) vs. what can't be (a second
+  # deployment's state, invisible to this one).
+  natctl_private_ip = cidrhost(module.vpc.public_subnet_cidr, var.observability_private_ip_offset)
 
   # Once natctl runs on every NAT node instead of the dedicated
   # observability host (natctl_on_node_enabled), buddy-sync's roster poll
@@ -206,6 +217,20 @@ locals {
     )
   ]
 
+  # Every pool whose own private_ip_offset range contains
+  # var.observability_private_ip_offset -- the observability host has
+  # only a single fixed VPC address (not a range), so this is a simpler
+  # single-point-in-range check than overlapping_vpc_offset_pool_pairs
+  # above, not a second copy of the same pairwise logic. Only catches a
+  # collision within THIS deployment's own pools -- see
+  # observability_private_ip_offset's own description for why a second,
+  # entirely separate deployment sharing the same public_subnet_id is
+  # invisible to this check.
+  pools_overlapping_observability_offset = [
+    for k, p in var.pools : k
+    if var.observability_private_ip_offset >= p.private_ip_offset && var.observability_private_ip_offset < p.private_ip_offset + p.floor_nodes
+  ]
+
   # Every pool whose own floor range reaches its own elastic_ip_offset_start
   # -- a pool's own floor count against its own elastic start, entirely
   # self-contained, nothing to do with any OTHER pool.
@@ -250,6 +275,16 @@ check "pool_vpc_offsets_no_overlap" {
   assert {
     condition     = length(local.overlapping_vpc_offset_pool_pairs) == 0
     error_message = "These pool pairs have overlapping private_ip_offset ranges on the shared VPC subnet: ${join(", ", local.overlapping_vpc_offset_pool_pairs)}. Both pools' nodes would get the same VPC (eth1) address, a real collision. Give every pool a non-overlapping private_ip_offset range (offset..offset+floor_nodes-1)."
+  }
+}
+
+# observability_private_ip_offset must not fall inside any pool's own
+# private_ip_offset range, or the observability host and that pool's
+# floor node would collide on the shared VPC subnet.
+check "observability_vpc_offset_no_overlap_pools" {
+  assert {
+    condition     = length(local.pools_overlapping_observability_offset) == 0
+    error_message = "observability_private_ip_offset (${var.observability_private_ip_offset}) falls inside these pools' own private_ip_offset ranges: ${join(", ", local.pools_overlapping_observability_offset)}. The observability host and one of that pool's floor nodes would get the same VPC (eth1) address. Move observability_private_ip_offset outside every pool's [private_ip_offset, private_ip_offset+floor_nodes-1] range."
   }
 }
 
@@ -688,12 +723,14 @@ module "observability" {
   authorized_keys = var.authorized_keys
   root_pass       = var.root_pass
 
-  # .5 in the public/NAT-node subnet — clear of every pool's own floor and
-  # elastic ranges (see variables.tf's pools description). Same value as
-  # local.natctl_private_ip above, kept as one local so it's impossible for
-  # this and the buddy-sync/client-agent roster URL to drift apart. Only
-  # actually reachable/meaningful when create_observability_instance is
-  # true, of course.
+  # var.observability_private_ip_offset (default 5) in the public/
+  # NAT-node subnet — clear of every pool's own floor and elastic ranges
+  # by default (see variables.tf's pools description), and checked
+  # against them at plan time (observability_vpc_offset_no_overlap_pools
+  # above). Same value as local.natctl_private_ip above, kept as one
+  # local so it's impossible for this and the buddy-sync/client-agent
+  # roster URL to drift apart. Only actually reachable/meaningful when
+  # create_observability_instance is true, of course.
   private_ip = local.natctl_private_ip
   vpc_prefix = split("/", module.vpc.public_subnet_cidr)[1]
   # This host's VPC interface only ever gets a kernel route for its OWN
