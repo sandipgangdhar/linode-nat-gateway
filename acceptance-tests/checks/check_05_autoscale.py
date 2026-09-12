@@ -42,7 +42,7 @@
 #   this check -- natctl's own scale-in logic (cooldown_seconds) will
 #   eventually remove it once load subsides, exactly as it would for a
 #   real traffic spike. If you need it gone sooner, drain it directly:
-#   `./natctl-cli drain --config natctl.yaml --pool <pool> --node-id <id>`
+#   `./natctl-cli --config natctl.yaml drain --pool <pool> --node-id <id>`
 #   (see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §10.3 "Common Procedures").
 #
 # -----------------------------------------------------

@@ -84,6 +84,27 @@ same host `natctl` runs on, or against a specific node in the every-node
 placement mode). Pass `--natctl-url http://<host>:8099` explicitly if
 you're operating from anywhere else.
 
+**The Linode API token is separate from `--config`, and needs one extra
+step if you're running the CLI on a live node.** `natctl.yaml` itself
+never contains the token — it resolves from the `LINODE_TOKEN`
+environment variable, same as the daemon (see `natctl.yaml`'s own
+`linode:` section). On a live node, that variable already lives in
+`/etc/natctl/env` (the same file the daemon's systemd unit loads via
+`EnvironmentFile=`), but a plain `source /etc/natctl/env` in your shell
+only sets it as a local shell variable — it does **not** export it, so
+a subprocess like `natctl-cli` never sees it and fails with `Linode API
+error: No Linode API token configured`. Use `set -a` first so every
+variable the file sets gets exported too:
+
+```bash
+set -a; source /etc/natctl/env; set +a
+./natctl-cli --config /etc/natctl/config.yaml status
+```
+
+If you're running the CLI from your own laptop instead, export
+`LINODE_TOKEN` yourself (or put it in your own shell environment some
+other way) rather than relying on a node's `/etc/natctl/env` at all.
+
 ## Command reference
 
 | Command | Talks to | Mutates anything? |
@@ -302,6 +323,27 @@ into. `--clear` empties the override, it does not restore Terraform's
 own value: `terraform apply` always re-derives this list live from the
 VPC's actual subnets, overwriting whatever `natctl-cli` last wrote,
 whether that was a real CIDR list or an empty one.
+
+**Refuses by default if the new list (or the empty list `--clear`
+produces) would no longer cover this environment's own control-plane
+addresses** — confirmed live to cut every client's route to natctl
+itself, with no automatic recovery:
+
+```
+Refusing: this would no longer cover this environment's own
+control-plane address(es) (10.8.0.50, 10.8.0.51, 10.8.0.52) -- every
+client's route to natctl itself would be cut, with no automatic
+recovery. Pass --force if you're certain.
+```
+
+This check runs twice — once here in the CLI before it even makes the
+HTTP call, and again independently on the natctl side (so a stale or
+older daemon doesn't leave you unprotected). Pass `--force` to override
+it deliberately — for example, you've already confirmed some other path
+(a different VPC subnet, a bastion) still reaches every node, or you're
+intentionally decommissioning this environment's own control plane.
+`--force` skips both checks and is sent through to the server too, so
+the write always succeeds when you pass it.
 
 ## The pattern behind the three `set-*` commands
 
