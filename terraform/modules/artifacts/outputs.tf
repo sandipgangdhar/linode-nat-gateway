@@ -54,6 +54,11 @@ output "natctl_bin_url" {
   value       = "${local.base_url}/${linode_object_storage_object.natctl_bin.key}"
 }
 
+output "natctl_cli_bin_url" {
+  description = "Public URL for the compiled natctl-cli binary. Installed automatically wherever natctl itself runs -- see nat-node.yaml.tftpl/observability.yaml.tftpl."
+  value       = "${local.base_url}/${linode_object_storage_object.natctl_cli_bin.key}"
+}
+
 output "client_agent_bin_url" {
   description = "Public URL for the compiled client-agent binary -- fetched ONCE by natctl itself at its own startup (ApiConfig.client_agent_bin_url), then served to client instances over VLAN/VPC via GET /agents/client-agent. Not fetched directly by client instances from Object Storage."
   value       = "${local.base_url}/${linode_object_storage_object.client_agent_bin.key}"

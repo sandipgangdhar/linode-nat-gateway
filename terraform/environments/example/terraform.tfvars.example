@@ -168,6 +168,22 @@ observability_vlan_pool = "common"
 # offsets if you're sharing a subnet this way.
 # observability_private_ip_offset = 5
 
+# TCP port natctl's roster API listens on -- see variables.tf's api_port
+# description. Defaults to 8099 (uncomment only if you need a different
+# value, e.g. it collides with something else already using 8099 on your
+# network). One value for the whole environment: changing it here threads
+# through automatically to every place that needs to agree on it --
+# module.vpc's Cloud Firewall rule, every pool's nftables ruleset (floor
+# AND natctl-provisioned elastic nodes), the observability host's own
+# firewall rule, the composed natctl.yaml's api.listen_port, and the
+# Prometheus file_sd scrape targets. If you change this on an already-
+# deployed environment, remember every existing client's
+# NATCTL_ROSTER_URL / install-nat-client.sh --roster-url and any
+# natctl_cli --natctl-url you've configured still point at the OLD port
+# and need updating too -- this variable does not retroactively rewrite
+# URLs baked into already-provisioned clients.
+# api_port = 8099
+
 # --------------------------------------------------------------------------
 # Reserved IPs -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.6. Opt-in (default false). When
 # true, every node's primary public IP (floor AND natctl-provisioned

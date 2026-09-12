@@ -66,6 +66,7 @@ locals {
   nat_exporter_bin_path = "${path.module}/../../../exporter/nat_exporter/nat-exporter"
   buddy_sync_bin_path   = "${path.module}/../../../buddy-sync/buddy-sync"
   client_agent_bin_path = "${path.module}/../../../client-agent/client-agent"
+  natctl_cli_bin_path   = "${path.module}/../../../controller/natctl-cli"
 
   natctl_service_path          = "${path.module}/../../../controller/natctl-binary.service"
   nat_exporter_service_path    = "${path.module}/../../../exporter/nat_exporter/nat-exporter-binary.service"
@@ -135,6 +136,25 @@ resource "linode_object_storage_object" "client_agent_bin" {
   source = local.client_agent_bin_path
   acl    = "public-read"
   etag   = filemd5(local.client_agent_bin_path)
+}
+
+# Uploaded here the same way as the other agents, so
+# nat-node.yaml.tftpl/observability.yaml.tftpl can install natctl-cli
+# automatically wherever natctl itself actually runs (see those
+# templates' own comments). The GitHub Release attachment (for an
+# operator's own laptop, or any host outside the fleet) is unchanged
+# and still the way to get it onto a machine that never runs natctl
+# itself.
+resource "linode_object_storage_object" "natctl_cli_bin" {
+  bucket     = var.bucket
+  region     = var.s3_region
+  access_key = var.access_key
+  secret_key = var.secret_key
+
+  key    = "${local.prefix}/bin/natctl-cli"
+  source = local.natctl_cli_bin_path
+  acl    = "public-read"
+  etag   = filemd5(local.natctl_cli_bin_path)
 }
 
 resource "linode_object_storage_object" "natctl_service" {

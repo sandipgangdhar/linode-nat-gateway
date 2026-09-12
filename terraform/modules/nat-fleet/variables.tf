@@ -84,6 +84,21 @@ variable "vlan_ip_offset" {
   description = "Starting host offset within vlan_reserved_cidr for this fleet's static VLAN IPs."
   type        = number
   default     = 20
+
+  # terraform/environments/example/main.tf's pool_vlan_ip_offset_is_positive
+  # check already rejects 0 and 1 (offset 0 is a negative cidrhost()
+  # offset, which Terraform counts backward from the end of the range;
+  # offset 1 lands on vlan_reserved_cidr's own unusable network
+  # address), but that check is keyed off the pools map in one specific
+  # caller -- this module itself had no guard of its own, so any other
+  # caller (a hand-written environments/<name>/ directory, or calling
+  # this module directly) got no protection at all. A validation block
+  # here protects every caller, not just the one that happens to have
+  # remembered to copy the check.
+  validation {
+    condition     = var.vlan_ip_offset >= 2
+    error_message = "vlan_ip_offset must be >= 2 -- 0 makes the observability host's own cidrhost(vlan_reserved_cidr, vlan_ip_offset - 1) computation (terraform/environments/example/main.tf) use a negative offset (counted backward from the end of the range); 1 lands on vlan_reserved_cidr's own unusable network address."
+  }
 }
 
 variable "private_subnet_cidrs" {
@@ -111,6 +126,20 @@ variable "private_ip_offset" {
   description = "Starting host offset (within public_subnet's CIDR) for this fleet's static VPC IPs. Give each fleet/pool sharing a subnet a non-overlapping offset+node_count range."
   type        = number
   default     = 20
+
+  # node_vpc_ips (main.tf) computes cidrhost(var.public_subnet_cidr,
+  # var.private_ip_offset + i) with no floor/usability guard -- an
+  # offset of 0 silently pins that pool's first floor node's eth1 to the
+  # public subnet's own unusable network address, the identical failure
+  # mode vlan_ip_offset already has a guard for (see that variable's own
+  # validation block). Unlike vlan_ip_offset, no caller -- not even
+  # terraform/environments/example/main.tf's own check blocks -- guarded
+  # this at all; those only catch cross-pool private_ip_offset-range
+  # overlap, not offset=0 itself.
+  validation {
+    condition     = var.private_ip_offset >= 1
+    error_message = "private_ip_offset must be >= 1 -- 0 pins this fleet's first floor node's VPC (eth1) address to the public subnet's own unusable network address."
+  }
 }
 
 variable "instance_type" {
@@ -343,6 +372,12 @@ variable "buddy_sync_bin_url" {
 
 variable "natctl_bin_url" {
   description = "Public URL of a pre-compiled natctl binary, used instead of natctl_file_urls/natctl_requirements_txt_url when agent_distribution is \"binary\" and natctl_on_node_enabled. Cheap to leave empty otherwise."
+  type        = string
+  default     = ""
+}
+
+variable "natctl_cli_bin_url" {
+  description = "Public URL of a pre-compiled natctl-cli binary -- installed to /usr/local/bin/natctl-cli on every node in this fleet when agent_distribution is \"binary\" and natctl_on_node_enabled (that's where natctl itself runs in this mode, so that's where the operator CLI belongs too -- see terraform/modules/observability's matching variable for the single-dedicated-host case). Cheap to leave empty otherwise."
   type        = string
   default     = ""
 }

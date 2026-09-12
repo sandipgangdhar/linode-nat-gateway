@@ -144,6 +144,7 @@ locals {
     # comment.
     agent_distribution = var.agent_distribution
     natctl_bin_url     = var.natctl_bin_url
+    natctl_cli_bin_url = var.natctl_cli_bin_url
   })
 }
 

@@ -207,6 +207,12 @@ variable "natctl_bin_url" {
   default     = ""
 }
 
+variable "natctl_cli_bin_url" {
+  description = "Public URL of a pre-compiled natctl-cli binary -- installed to /usr/local/bin/natctl-cli on this instance when agent_distribution is \"binary\" and run_natctl (this single-dedicated host is where natctl itself runs in that mode, so that's where the operator CLI belongs too -- see terraform/modules/nat-fleet's matching variable for the natctl-on-node case). Cheap to leave empty otherwise."
+  type        = string
+  default     = ""
+}
+
 variable "nat_overview_json_url" {
   description = "Public URL (terraform/modules/artifacts' nat_overview_json_url output) for dashboards/nat-overview.json, fetched at boot instead of embedded inline. Only actually consumed when run_monitoring_stack is true. Fetching this instead of embedding it means editing the dashboard JSON no longer forces this instance to be replaced on the next apply (user_data changes are ForceNew; a fetched-at-boot URL reference is a few dozen stable bytes regardless of the target content)."
   type        = string

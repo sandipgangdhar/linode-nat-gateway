@@ -451,6 +451,19 @@ runcmd:
   # pre-compiled binary path -- see
   # controller/natctl/cloud_init.py's matching comment, this
   # renderer must stay in sync with that one.
+  #
+  # The systemd unit fetches below (nat_exporter_service_url here,
+  # lng_buddy_sync_service_url/natctl_service_url further down) are NOT
+  # agent_distribution-aware the way the executable fetch just above is
+  # -- this template has no *_service_bin_url variant of its own to pick
+  # from, so whichever single URL the caller passes as each of these
+  # three variables is fetched exactly as given, in BOTH modes. The
+  # caller is responsible for passing the matching *_service_binary_url
+  # output (terraform/modules/artifacts) instead of the source-mode
+  # *_service_url whenever this environment's agent_distribution is
+  # "binary" -- passing the wrong one produces a unit file whose
+  # ExecStart invokes python3 on a node that was never given python3 or
+  # the .py source to run.
   - mkdir -p /opt/nat-exporter
 %{ if agent_distribution == "binary" ~}
   - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${exporter_bin_url}" -o /opt/nat-exporter/nat-exporter
@@ -542,7 +555,10 @@ runcmd:
   # (both static, non-secret) are also fetched, not embedded --
   # daemon-reload is required here since systemd hasn't seen either unit
   # file until this curl step runs. See the exporter.py block above's
-  # matching comment for the binary-vs-source distinction.
+  # matching comment for the binary-vs-source distinction, and its
+  # "systemd unit fetches below are NOT agent_distribution-aware" note
+  # -- the same caller contract applies to lng_buddy_sync_service_url
+  # here.
   - mkdir -p /opt/lng-buddy-sync
 %{ if agent_distribution == "binary" ~}
   - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${buddy_sync_bin_url}" -o /opt/lng-buddy-sync/buddy-sync
@@ -605,12 +621,24 @@ runcmd:
   # non-secret) are also fetched, not embedded.
   # agent_distribution == "binary" replaces the whole per-.py-file loop +
   # pip install with one curl of a single pre-compiled executable -- see
-  # controller/natctl/cloud_init.py's matching comment.
+  # controller/natctl/cloud_init.py's matching comment. natctl_service_url
+  # below is under the same caller contract as nat_exporter_service_url
+  # near the top of this file (not agent_distribution-aware itself) --
+  # the caller must pass natctl_service_binary_url instead whenever this
+  # environment runs agent_distribution == "binary".
 %{ if agent_distribution == "binary" ~}
   - mkdir -p /opt/natctl
   - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_bin_url}" -o /opt/natctl/natctl
   - chown root:root /opt/natctl/natctl
   - chmod 0750 /opt/natctl/natctl
+  # natctl-cli (the operator-facing day-2 CLI -- status/nodes/drain/
+  # resize/etc.) is installed directly to /usr/local/bin (already on
+  # PATH for any interactive shell) rather than /opt/natctl, since this
+  # is a tool a human runs by hand, not something natctl.service itself
+  # execs.
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_cli_bin_url}" -o /usr/local/bin/natctl-cli
+  - chown root:root /usr/local/bin/natctl-cli
+  - chmod 0755 /usr/local/bin/natctl-cli
 %{ else ~}
   - mkdir -p /opt/natctl/natctl
   - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_requirements_txt_url}" -o /opt/natctl/requirements.txt

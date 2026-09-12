@@ -38,33 +38,33 @@ paraphrase — against a live deployment.
 
 ## Installing it
 
-Download `natctl-cli` from this version's GitHub Release page — the same
-page this repository's own README points you to for the other four
-compiled binaries — then:
+Already installed at `/usr/local/bin/natctl-cli` on whichever host runs
+the `natctl` daemon in your deployment — every NAT node if
+`natctl_on_node_enabled = true`, or the observability host if it's
+`false`. SSH into that host and run `natctl-cli --help` directly, no
+setup needed.
+
+To run it from somewhere else instead — your own laptop, a bastion
+host, or any other machine — download `natctl-cli` from this version's
+GitHub Release page (the same page this repository's own README points
+you to for the other four compiled binaries), then:
 
 ```bash
 chmod +x natctl-cli
 ```
 
-Run it from wherever you operate the fleet from: your own laptop, the
-observability host, or any node itself all work equally well, as long as
-that machine can reach the Linode API and, for commands that read live
-fleet state, the roster. It needs no Python interpreter and no
-dependencies installed — a single, self-contained native binary, same as
-`natctl` itself.
-
-**This is a separate binary from the daemon, distributed differently on
-purpose.** It's an operator's own tool, never fetched automatically by
-Terraform or cloud-init the way the other four binaries are — you always
-get it by hand, once, from the Release page.
+That machine just needs to reach the Linode API and, for commands that
+read live fleet state, the roster. It needs no Python interpreter and
+no dependencies installed — a single, self-contained native binary,
+same as `natctl` itself.
 
 ## Configuring it
 
 Every subcommand needs `--config <path-to-natctl.yaml>` — the same
 configuration file the daemon itself reads. **`--config` is a top-level
 flag, not a per-subcommand one**, so it goes right after `natctl-cli`,
-before the subcommand name: `./natctl-cli --config natctl.yaml status`,
-not `./natctl-cli status --config natctl.yaml` (the latter fails with
+before the subcommand name: `natctl-cli --config /etc/natctl/config.yaml status`,
+not `natctl-cli status --config /etc/natctl/config.yaml` (the latter fails with
 "unrecognized arguments"). `natctl-cli` reads the file fresh on every
 invocation and never modifies it. If you're running the CLI from a
 machine other than a live fleet node, you'll need your own local copy of
@@ -98,7 +98,7 @@ variable the file sets gets exported too:
 
 ```bash
 set -a; source /etc/natctl/env; set +a
-./natctl-cli --config /etc/natctl/config.yaml status
+natctl-cli --config /etc/natctl/config.yaml status
 ```
 
 If you're running the CLI from your own laptop instead, export
@@ -123,7 +123,7 @@ other way) rather than relying on a node's `/etc/natctl/env` at all.
 The one-line, fleet-wide health check.
 
 ```bash
-./natctl-cli --config natctl.yaml status
+natctl-cli --config /etc/natctl/config.yaml status
 ```
 
 ```
@@ -141,7 +141,7 @@ session, or a quick sanity check before/after a change.
 Every node in one pool, in detail.
 
 ```bash
-./natctl-cli --config natctl.yaml nodes --pool shared
+natctl-cli --config /etc/natctl/config.yaml nodes --pool shared
 ```
 
 ```
@@ -160,7 +160,7 @@ which node it is and what its current public-facing address is.
 Retire one elastic node on your own schedule.
 
 ```bash
-./natctl-cli --config natctl.yaml drain --pool shared --node-id shared-elastic-103
+natctl-cli --config /etc/natctl/config.yaml drain --pool shared --node-id shared-elastic-103
 ```
 
 **Why**: you want a specific elastic node gone now, rather than waiting
@@ -185,7 +185,7 @@ that pool's `floor_nodes` field in `terraform.tfvars`'s `pools` map, then
 Change a node's instance plan in place.
 
 ```bash
-./natctl-cli --config natctl.yaml resize --pool shared \
+natctl-cli --config /etc/natctl/config.yaml resize --pool shared \
   --node-id shared-3 --instance-type g6-dedicated-8
 ```
 
@@ -216,8 +216,8 @@ pool's base instance type.
 Find elastic nodes a rebuild left behind.
 
 ```bash
-./natctl-cli --config natctl.yaml check-orphans --pool shared
-./natctl-cli --config natctl.yaml check-orphans   # every pool at once, omit --pool
+natctl-cli --config /etc/natctl/config.yaml check-orphans --pool shared
+natctl-cli --config /etc/natctl/config.yaml check-orphans   # every pool at once, omit --pool
 ```
 
 **Why**: `terraform destroy` only ever knows about the resources
@@ -244,11 +244,11 @@ just created before deciding anything is genuinely orphaned.
 Override client fallback-probe behavior fleet-wide, live.
 
 ```bash
-./natctl-cli --config natctl.yaml set-client-config --pool shared \
+natctl-cli --config /etc/natctl/config.yaml set-client-config --pool shared \
   --fallback-probe-enabled true --fallback-probe-interval 10
 
 # revert to each client's own local env var / natctl.yaml's baseline:
-./natctl-cli --config natctl.yaml set-client-config --pool shared --clear
+natctl-cli --config /etc/natctl/config.yaml set-client-config --pool shared --clear
 ```
 
 **Why**: every connected client trusts the roster's own computed health
@@ -271,7 +271,7 @@ Override a pool's elastic `min_nodes`/`max_nodes` bounds fleet-wide,
 live.
 
 ```bash
-./natctl-cli --config natctl.yaml set-pool-scaling --pool shared \
+natctl-cli --config /etc/natctl/config.yaml set-pool-scaling --pool shared \
   --min-nodes 3 --max-nodes 8
 ```
 
@@ -297,12 +297,12 @@ Override the whole-environment list of sibling VPC subnets fleet-wide,
 live.
 
 ```bash
-./natctl-cli --config natctl.yaml set-vpc-sibling-subnets \
+natctl-cli --config /etc/natctl/config.yaml set-vpc-sibling-subnets \
   --cidrs "10.0.0.0/13,10.8.0.0/16,10.9.0.0/24"
 
 # empty the override (does NOT restore Terraform's own discovered value
 # -- run terraform apply for that, see below):
-./natctl-cli --config natctl.yaml set-vpc-sibling-subnets --clear
+natctl-cli --config /etc/natctl/config.yaml set-vpc-sibling-subnets --clear
 ```
 
 **Why**: a Linode VPC interface only ever gets a kernel route to its own

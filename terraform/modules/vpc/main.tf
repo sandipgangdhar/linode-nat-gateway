@@ -236,8 +236,11 @@ resource "linode_firewall" "nat_node" {
     label    = "nat-exporter"
     action   = "ACCEPT"
     protocol = "TCP"
-    ports    = "9200"
-    ipv4     = [data.linode_vpc_subnet.public.ipv4]
+    # Must match exporter.py's own NAT_EXPORTER_PORT/LISTEN_PORT default
+    # -- see controller/natctl/health.py's check_node_health() for the
+    # full list of every other place this same literal is hardcoded.
+    ports = "9200"
+    ipv4  = [data.linode_vpc_subnet.public.ipv4]
   }
 
   # natctl's roster API (8099) must be opened here too, not just on the

@@ -558,6 +558,7 @@ locals {
   exporter_bin_url   = module.artifacts.exporter_bin_url
   buddy_sync_bin_url = module.artifacts.buddy_sync_bin_url
   natctl_bin_url     = module.artifacts.natctl_bin_url
+  natctl_cli_bin_url = module.artifacts.natctl_cli_bin_url
   # See natctl_config_yaml's api.client_agent_bin_url further down for
   # where this is actually consumed.
   client_agent_bin_url = module.artifacts.client_agent_bin_url
@@ -567,7 +568,18 @@ locals {
 
   # Static, non-secret systemd unit files + requirements.txt -- see
   # terraform/modules/artifacts/main.tf's header comment for why these are
-  # also fetched at boot instead of embedded per-pool.
+  # also fetched at boot instead of embedded per-pool. This module (this
+  # repo's own standalone, binary-only copy of terraform/modules/artifacts
+  # -- see its own main.tf locals block) has only ONE systemd-unit
+  # resource per service, already pointing at the compiled-binary unit
+  # variant (natctl-binary.service/nat-exporter-binary.service/
+  # lng-buddy-sync-binary.service) -- unlike the dev repo's artifacts
+  # module, which carries BOTH a source and a binary variant per service
+  # (natctl_service_url vs. natctl_service_binary_url, the latter not
+  # defined here at all since there's no source variant in this
+  # binary-only copy to need picking between). natctl_requirements_txt_url
+  # is unaffected either way -- its own fetch and the `pip3 install` step
+  # that consumes it are both already skipped entirely in binary mode.
   nat_exporter_service_url    = module.artifacts.nat_exporter_service_url
   lng_buddy_sync_service_url  = module.artifacts.lng_buddy_sync_service_url
   conntrackd_peer_service_url = module.artifacts.conntrackd_peer_service_url
@@ -666,6 +678,7 @@ module "nat_fleet" {
   exporter_bin_url   = local.exporter_bin_url
   buddy_sync_bin_url = local.buddy_sync_bin_url
   natctl_bin_url     = local.natctl_bin_url
+  natctl_cli_bin_url = local.natctl_cli_bin_url
 
   # Static, non-secret systemd unit files + requirements.txt.
   nat_exporter_service_url    = module.artifacts.nat_exporter_service_url
@@ -810,6 +823,7 @@ locals {
       exporter_bin_url   = local.exporter_bin_url
       buddy_sync_bin_url = local.buddy_sync_bin_url
       natctl_bin_url     = local.natctl_bin_url
+      natctl_cli_bin_url = local.natctl_cli_bin_url
       # Static, non-secret systemd unit files + requirements.txt --
       # natctl's own elastic-node cloud-init renderer
       # (controller/natctl/cloud_init.py) needs the SAME URLs. See

@@ -176,6 +176,9 @@ table inet lng_nat {
     # on the VLAN and must reach it directly. 22 (SSH) is explicitly NOT
     # exposed on the VLAN — admin access comes over public/VPC, where Cloud
     # Firewall is the primary gate and this rule is defense in depth.
+    # Must match exporter.py's own NAT_EXPORTER_PORT/LISTEN_PORT default
+    # -- see controller/natctl/health.py's check_node_health() for the
+    # full list of every other place this same literal is hardcoded.
     tcp dport 9200 accept
     # SSH is already scoped to
     # var.admin_cidrs at the Cloud Firewall layer (a single /32 in this

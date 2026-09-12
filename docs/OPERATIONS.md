@@ -29,23 +29,27 @@ no node needs a Python interpreter installed — a compiled binary is
 fetched (from your own Object Storage bucket, via the same mechanism as
 every other config file this project uploads) and run directly.
 
-**`natctl-cli` is distributed differently from the other four,
-deliberately.** It's an operator's own tool, run by hand from wherever
-you choose to operate the fleet from (your laptop, the observability
-host, a node — your call) — never something a node needs automatically,
-so it isn't fetched by Terraform/cloud-init the way the other four are.
-Download it directly from this version's GitHub Release (the same page
+**`natctl-cli` is already installed at `/usr/local/bin/natctl-cli`** on
+whichever host runs the `natctl` daemon in your deployment — every NAT
+node if `natctl_on_node_enabled = true`, or the observability host if
+it's `false`. SSH into that host and run it directly; no download step
+needed. Every `natctl_cli`/`natctl-cli` command in "Common procedures"
+below is the real, working command as written, invoked as `natctl-cli
+--config /etc/natctl/config.yaml <subcommand> ...` (`--config` is a
+top-level flag, so it comes before the subcommand, not after; no
+`python -m` prefix — it's a compiled binary, not a Python module; and
+`/etc/natctl/config.yaml` — not `natctl.yaml` — is the actual path this
+same daemon reads its own config from on that host, so pointing
+`natctl-cli` at it means you're always reading the live, in-effect
+configuration).
+
+To run it from somewhere else instead — your own laptop, a bastion
+host, or any machine that isn't running `natctl` itself — download
+`natctl-cli` directly from this version's GitHub Release (the same page
 this repository's Terraform config and README point you at for every
-other binary), `chmod +x natctl-cli`, and run it from there — every
-`natctl_cli`/`natctl-cli` command in "Common procedures" below is the
-real, working command as written, invoked as `./natctl-cli --config
-natctl.yaml <subcommand> ...` (`--config` is a top-level flag, so it
-comes before the subcommand, not after; no `python -m` prefix — it's a
-compiled binary, not a Python module). **This was a real, live-found gap in
-earlier releases of this repository** (through `v0.1.14`): only the
-`natctl` daemon had a compiled binary, so every `natctl_cli` command
-documented here failed outright with "command not found" — fixed as of
-this release.
+other binary), `chmod +x natctl-cli`, and point `--config` at your own
+local copy of the config file instead (e.g. `./natctl-cli --config
+natctl.yaml <subcommand> ...`).
 
 ## `natctl.yaml` configuration reference
 
@@ -322,7 +326,7 @@ If you'd rather authorize the first pairing yourself before `natctl` touches it,
 **Resizing an existing node (floor or elastic) — the safe, in-place way**, via the operator CLI (handles drain → resize → rejoin for you, never deletes the node):
 
 ```bash
-./natctl-cli --config natctl.yaml resize --pool shared \
+natctl-cli --config /etc/natctl/config.yaml resize --pool shared \
   --node-id shared-3 --instance-type g6-dedicated-8
 ```
 
@@ -339,19 +343,19 @@ terraform apply
 
 **Adjust elastic bounds (`min_nodes`/`max_nodes`)** — durable: edit that pool's `max_nodes` field (or `floor_nodes` for the minimum) in `terraform.tfvars`'s `pools` map, then `terraform apply`. Fast, temporary (a real capacity emergency, no time for a full apply cycle):
 ```bash
-./natctl-cli --config natctl.yaml set-pool-scaling --pool shared --min-nodes 3 --max-nodes 8
+natctl-cli --config /etc/natctl/config.yaml set-pool-scaling --pool shared --min-nodes 3 --max-nodes 8
 ```
 Update `terraform.tfvars` too afterward if it should stick — the next `terraform apply`, for any reason, overwrites this back to whatever the file says. See `CLI-GUIDE.md`'s `set-pool-scaling` for the full detail.
 
 **Get a newly-added VPC subnet reaching nodes and clients** — durable: `terraform apply` (re-discovers every VPC subnet automatically, no tfvars edit needed). Fast, temporary (a subnet added outside this project's own Terraform run, needs to be reachable before the next apply):
 ```bash
-./natctl-cli --config natctl.yaml set-vpc-sibling-subnets --cidrs "10.0.0.0/13,10.8.0.0/16,10.9.0.0/24"
+natctl-cli --config /etc/natctl/config.yaml set-vpc-sibling-subnets --cidrs "10.0.0.0/13,10.8.0.0/16,10.9.0.0/24"
 ```
 No `--pool` flag — one list, shared by the whole environment. See `CLI-GUIDE.md`'s `set-vpc-sibling-subnets` for the full detail.
 
 **Manually drain and remove an elastic node**:
 ```bash
-./natctl-cli --config natctl.yaml drain --pool shared --node-id shared-elastic-103
+natctl-cli --config /etc/natctl/config.yaml drain --pool shared --node-id shared-elastic-103
 ```
 Refuses to drain a Terraform floor node — lower the floor via Terraform instead.
 
@@ -363,15 +367,15 @@ Refuses to drain a Terraform floor node — lower the floor via Terraform instea
 
 **Checking fleet status**:
 ```bash
-./natctl-cli --config natctl.yaml status
-./natctl-cli --config natctl.yaml nodes --pool shared
+natctl-cli --config /etc/natctl/config.yaml status
+natctl-cli --config /etc/natctl/config.yaml nodes --pool shared
 ```
 
 ## HA fleet health check
 
 Run through this whenever you're asked "is this fleet actually highly available," or periodically as a standing check:
 
-1. **Enough healthy nodes?** `./natctl-cli status`, or the roster's `healthy_count` vs `node_count`.
+1. **Enough healthy nodes?** `natctl-cli status`, or the roster's `healthy_count` vs `node_count`.
 2. **Buddy-pair sync actually paired?** Grafana's "Buddy-Paired Nodes" panel, or `nat_conntrack_buddy_paired` (1/0 per node). `0` on a node in an otherwise-healthy pool means genuinely unpaired.
 3. **BGP sessions actually established?** "BGP Peers Established" vs "BGP Peers Configured" should match; `nat_bgp_peer_state` should be `1` per peer.
 4. **Every node announcing its own IP?** `nat_ip_failover_self_announced` should be `1` on every node with `ip_failover_enabled`.

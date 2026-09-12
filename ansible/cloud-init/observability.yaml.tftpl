@@ -220,7 +220,7 @@ runcmd:
   # grafana-dashboards.yml) sees it from its very first pass instead of
   # a brief empty-folder window.
   - mkdir -p /opt/lng-observability/dashboards
-  - curl -fsSL "${nat_overview_json_url}" -o /opt/lng-observability/dashboards/nat-overview.json
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${nat_overview_json_url}" -o /opt/lng-observability/dashboards/nat-overview.json
   - cd /opt/lng-observability && docker compose up -d
 %{ endif ~}
 %{ if run_natctl ~}
@@ -228,21 +228,36 @@ runcmd:
   # its dependencies / starting it -- see the write_files comment above.
   # requirements.txt and natctl.service are fetched the same way --
   # daemon-reload is required since systemd hasn't seen the unit file
-  # until this curl step runs.
+  # until this curl step runs. natctl_service_url below is NOT
+  # agent_distribution-aware the way the executable fetch above is --
+  # this template has no *_service_bin_url variant of its own to pick
+  # from, so the caller must pass natctl_service_binary_url instead of
+  # the source-mode natctl_service_url whenever this environment runs
+  # agent_distribution == "binary" (see nat-node.yaml.tftpl's matching
+  # comment for the full "why" -- the same contract applies here).
 %{ if agent_distribution == "binary" ~}
   - mkdir -p /opt/natctl
-  - curl -fsSL "${natctl_bin_url}" -o /opt/natctl/natctl
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_bin_url}" -o /opt/natctl/natctl
   - chown root:root /opt/natctl/natctl
   - chmod 0750 /opt/natctl/natctl
+  # natctl-cli (the operator-facing day-2 CLI) -- see
+  # nat-node.yaml.tftpl's matching comment (this is the
+  # !natctl_on_node_enabled / run_natctl=true counterpart: this
+  # dedicated host is where natctl itself runs in that mode, so that's
+  # where the operator CLI belongs too). Installed to /usr/local/bin,
+  # already on PATH for any interactive shell.
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_cli_bin_url}" -o /usr/local/bin/natctl-cli
+  - chown root:root /usr/local/bin/natctl-cli
+  - chmod 0755 /usr/local/bin/natctl-cli
 %{ else ~}
   - mkdir -p /opt/natctl/natctl
-  - curl -fsSL "${natctl_requirements_txt_url}" -o /opt/natctl/requirements.txt
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_requirements_txt_url}" -o /opt/natctl/requirements.txt
 %{ for rel_path, url in natctl_file_urls ~}
-  - curl -fsSL "${url}" -o /opt/natctl/natctl/${rel_path}
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${url}" -o /opt/natctl/natctl/${rel_path}
 %{ endfor ~}
   - chmod -R 0644 /opt/natctl/natctl
 %{ endif ~}
-  - curl -fsSL "${natctl_service_url}" -o /etc/systemd/system/natctl.service
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_service_url}" -o /etc/systemd/system/natctl.service
   - chown root:root /etc/systemd/system/natctl.service
   - chmod 0644 /etc/systemd/system/natctl.service
 %{ if agent_distribution != "binary" ~}

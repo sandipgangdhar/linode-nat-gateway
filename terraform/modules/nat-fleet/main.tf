@@ -578,6 +578,7 @@ locals {
       exporter_bin_url   = var.exporter_bin_url
       buddy_sync_bin_url = var.buddy_sync_bin_url
       natctl_bin_url     = var.natctl_bin_url
+      natctl_cli_bin_url = var.natctl_cli_bin_url
     })
   }
 }
