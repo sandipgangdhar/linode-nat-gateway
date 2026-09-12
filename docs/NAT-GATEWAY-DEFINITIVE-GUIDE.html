@@ -1509,7 +1509,178 @@ dedicated-acme-corp: 3 node(s), 3 healthy</pre>
       </section>
 
       <section class="chapter" id="c10-5">
-        <h2><span class="chno">10.5</span> Where to Look First</h2>
+        <h2><span class="chno">10.5</span> Complete <code>natctl.yaml</code> Configuration Reference</h2>
+        <p class="lede">Every field <code>natctl</code> reads, grouped the way it's actually organized in the file, with its type, default, and what it does. 10.6 right after this is the actual step-by-step procedure for changing one on a live deployment.</p>
+        <p><strong>Not hot-reloaded</strong>: <code>natctl</code> reads this file once, at process startup (Part II, 2.1). Editing it alone changes nothing until the process restarts — three fields are the exception (<code>min_nodes</code>/<code>max_nodes</code>, the whole-environment <code>vpc_sibling_subnet_cidrs</code>, and the <code>client_fallback_probe_*</code> pair), which also live in a small Object Storage object every instance re-reads every reconcile pass, changeable fleet-wide with no restart via 10.2's <code>set-pool-scaling</code>/<code>set-vpc-sibling-subnets</code>/<code>set-client-config</code>. Every other field below needs 10.6's edit-and-restart procedure.</p>
+
+        <h3>Global settings (top level, outside <code>pools:</code>)</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>reconcile_interval_seconds</code></td><td>int</td><td><code>15</code></td><td>How often the background loop runs: discover nodes, health-check, pair buddies, evaluate autoscale (Part II, 2.1). Lower = faster reaction, more Linode API calls.</td></tr>
+            <tr><td><code>prometheus_url</code></td><td>string</td><td><em>(required)</em></td><td>Where natctl queries Prometheus for the real per-node conntrack/port/throughput metrics autoscaling depends on (Part VII, 7.1).</td></tr>
+            <tr><td><code>file_sd_path</code></td><td>string or omit</td><td><em>(unset)</em></td><td>Local disk path to write a Prometheus file_sd target list to after every reconcile pass. Leave unset if Prometheus runs on a different host than natctl — <code>GET /file_sd</code> serves the identical data over HTTP instead.</td></tr>
+            <tr><td><code>vpc_sibling_subnet_cidrs</code></td><td>list of strings</td><td><code>[]</code></td><td><strong>Live-overridable — 10.2's <code>set-vpc-sibling-subnets</code>.</strong> The whole-VPC sibling-subnet list (Part I, 1.2); Terraform keeps this current automatically on every apply, rarely hand-edited.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3><code>api:</code> block — the roster HTTP API</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>listen_host</code></td><td>string</td><td><code>0.0.0.0</code></td><td>Address the roster HTTP API binds to.</td></tr>
+            <tr><td><code>listen_port</code></td><td>int</td><td><code>8099</code></td><td>Port the roster API listens on — must match every client/buddy-sync roster URL and every <code>natctl-cli --natctl-url</code> pointed at this instance.</td></tr>
+            <tr><td><code>client_agent_bin_url</code></td><td>string</td><td><code>""</code></td><td><strong>Terraform-managed — do not hand-edit.</strong> Object Storage URL of the compiled <code>client-agent</code> binary, fetched once at natctl's own startup and served from <code>GET /agents/client-agent</code> for <code>vlan_only</code>/<code>vpc_vlan</code> clients with no other internet path.</td></tr>
+            <tr><td><code>client_agent_bin_cache_path</code></td><td>string</td><td><code>/opt/lng-agents/client-agent</code></td><td>Where natctl caches that fetched binary on local disk. Rarely changed.</td></tr>
+            <tr><td><code>client_agent_source_url</code> / <code>client_agent_source_cache_path</code></td><td>string</td><td><code>""</code> / <code>/opt/lng-agents/client-agent.py</code></td><td><strong>Terraform-managed.</strong> Source-mode sibling of the two fields above — unused in this repository, which only ships compiled binaries.</td></tr>
+            <tr><td><code>install_nat_client_script_url</code></td><td>string</td><td><code>""</code></td><td><strong>Terraform-managed.</strong> Object Storage URL of <code>install-nat-client.sh</code> itself, fetched once and served from <code>GET /agents/install-nat-client.sh</code> — lets a brand-new client bootstrap with one <code>curl</code> against the fleet's own VLAN/VPC instead of already needing a copy of the script.</td></tr>
+            <tr><td><code>install_nat_client_script_cache_path</code></td><td>string</td><td><code>/opt/lng-agents/install-nat-client.sh</code></td><td>Where that fetched script is cached on local disk.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3><code>linode:</code> block</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>api_base</code></td><td>string</td><td><code>https://api.linode.com/v4</code></td><td>Base URL for the Linode API. Only change for a non-default endpoint.</td></tr>
+            <tr><td><code>token</code></td><td>string or omit</td><td><em>(unset)</em></td><td><strong>Leave this unset.</strong> natctl resolves the token from the <code>LINODE_TOKEN</code> environment variable (<code>/etc/natctl/env</code>, mode 0600 — Part II, 2.5) if this field is empty. Never put a real token directly in <code>config.yaml</code>, which is typically more widely readable and, under <code>natctl_on_node_enabled</code>, copied identically to every node.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3><code>leader_election:</code> block — only meaningful under <code>natctl_on_node_enabled</code></h3>
+        <p>Omit this whole block entirely in single-dedicated-host mode (the default, Part II, 2.3) — there's nothing to elect with one instance.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>enabled</code></td><td>bool</td><td><code>false</code></td><td>Turns on STONITH-style leader election (Part II, 2.4) across every instance of natctl running this pool.</td></tr>
+            <tr><td><code>object_storage_endpoint</code> / <code>object_storage_bucket</code> / <code>object_storage_key</code></td><td>string</td><td><code>""</code> / <code>""</code> / <code>natctl/leader-lease.json</code></td><td>Where the shared leader-lease record lives (Part VI, 6.3). <code>object_storage_key</code> gets a per-pool suffix automatically — leadership is always scoped per pool, never fleet-wide.</td></tr>
+            <tr><td><code>object_storage_access_key</code> / <code>object_storage_secret_key</code></td><td>string</td><td><code>""</code> / <code>""</code></td><td><strong>Prefer the <code>NATCTL_OBJECT_STORAGE_ACCESS_KEY</code>/<code>NATCTL_OBJECT_STORAGE_SECRET_KEY</code> environment variables instead</strong> (same <code>/etc/natctl/env</code> treatment as <code>LINODE_TOKEN</code>) — these fields exist for completeness but shouldn't hold a real secret in a file copied to every node.</td></tr>
+            <tr><td><code>lease_ttl_seconds</code></td><td>float</td><td><code>45.0</code></td><td>How long a claimed leadership lease is valid before it's considered expired.</td></tr>
+            <tr><td><code>election_jitter_max_seconds</code></td><td>float</td><td><code>10.0</code></td><td>Random delay before a node attempts to claim leadership, so every node doesn't race for it at the exact same instant.</td></tr>
+            <tr><td><code>fence_confirm_timeout_seconds</code></td><td>float</td><td><code>60.0</code></td><td>How long a new leader waits for confirmation that the previous leader was actually powered off before proceeding.</td></tr>
+            <tr><td><code>renewal_retry_attempts</code> / <code>renewal_retry_backoff_seconds</code></td><td>int / float</td><td><code>2</code> / <code>1.0</code></td><td>Bounded retry on the lease-store read/renewal path.</td></tr>
+            <tr><td><code>liveness_probe_timeout_seconds</code></td><td>float</td><td><code>3.0</code></td><td>Timeout for the pre-fence check of whether the previous leader's own roster API still answers.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Per-pool: placement and identity (<code>pools.&lt;name&gt;.*</code>)</h3>
+        <p>Set once at initial deployment, matched 1:1 against this pool's Terraform module call. <strong>Changing these on a live pool without also changing the matching Terraform variable creates drift</strong> — floor nodes and natctl-provisioned elastic nodes in the same pool must agree, or buddy pairing/BGP failover/VLAN routing breaks in confusing, inconsistent ways.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Type</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>region</code></td><td>string</td><td>Linode region this pool's nodes are created in.</td></tr>
+            <tr><td><code>vpc_id</code></td><td>int</td><td>The VPC this pool's nodes join.</td></tr>
+            <tr><td><code>public_subnet_id</code> / <code>public_subnet_cidr</code></td><td>int / string</td><td>The VPC subnet elastic nodes' <code>eth1</code> interface lives on.</td></tr>
+            <tr><td><code>firewall_id</code></td><td>int</td><td>Cloud Firewall applied to every node in this pool (Part VIII, 8.1).</td></tr>
+            <tr><td><code>private_subnet_cidrs</code></td><td>list of strings</td><td>VLAN-side CIDR(s) the private client fleet lives on — NOT the VPC subnet above; VPC can't transit-route to non-VPC destinations (Part I, 1.2).</td></tr>
+            <tr><td><code>authorized_keys</code></td><td>list of strings</td><td>SSH public keys installed on every node natctl provisions for this pool.</td></tr>
+            <tr><td><code>root_pass</code></td><td>string</td><td>Root password set on provisioning (SSH key auth is still the expected access path).</td></tr>
+            <tr><td><code>vlan_label</code> / <code>vlan_cidr</code></td><td>string</td><td>The VLAN every node's <code>eth2</code> joins, and its CIDR. Must match this pool's <code>nat-fleet</code> module's own <code>vlan_label</code>/<code>vlan_cidr</code>.</td></tr>
+            <tr><td><code>vlan_reserved_cidr</code></td><td>string</td><td>This pool's own small, wholly-owned sub-block nested inside <code>vlan_cidr</code> — every floor/elastic/observability node's address is drawn from here, never from the wider VLAN a customer's own client fleet also lives on.</td></tr>
+            <tr><td><code>vlan_ip_offset</code> / <code>elastic_ip_offset_start</code></td><td>int</td><td>Host offsets within <code>vlan_reserved_cidr</code> — the floor's addresses start at <code>vlan_ip_offset</code>, elastic nodes' at <code>elastic_ip_offset_start</code>. Compared directly against each other, never summed.</td></tr>
+            <tr><td><code>image</code></td><td>string</td><td>Base OS image for nodes natctl provisions (default <code>linode/ubuntu22.04</code>).</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Per-pool: sizing</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>min_nodes</code> / <code>max_nodes</code></td><td>int</td><td><code>3</code> / <code>12</code></td><td>Bounds on elastic capacity. <strong>Live-overridable — 10.2's <code>set-pool-scaling</code></strong> for a fast, temporary change; edit here for the durable value.</td></tr>
+            <tr><td><code>instance_type</code></td><td>string</td><td><code>g6-dedicated-4</code></td><td>The Linode plan every <em>new</em> elastic node in this pool gets provisioned as — doesn't retroactively resize existing nodes (10.3, "Resize a node's instance plan").</td></tr>
+            <tr><td><code>egress_ips_per_node</code></td><td>int</td><td><code>1</code></td><td>Extra public egress IPs per node, to multiply available ephemeral ports.</td></tr>
+            <tr><td><code>conntrack_max</code></td><td>int</td><td><code>1048576</code></td><td>Per-node connection-tracking table size — size this against expected peak concurrent connections per node (10.1's pre-production checklist).</td></tr>
+            <tr><td><code>natctl_on_node_enabled</code></td><td>bool</td><td><code>false</code></td><td>Whether elastic nodes natctl provisions for this pool also run their own natctl (leader-election-eligible), matching the pool's Terraform <code>natctl_on_node_enabled</code> variable for floor nodes (Part II, 2.3). Keep both in sync.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Per-pool: reserved (sticky) public IPs</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>reserved_ip_enabled</code></td><td>bool</td><td><code>false</code></td><td>Fixes each elastic node's public IP to a Linode Reserved IP (survives instance replacement) instead of an ephemeral one (Part IV, 4.6) — for downstream IP-whitelisting. Account-gated on Linode's side.</td></tr>
+            <tr><td><code>reserved_ip_pool</code></td><td>list of strings</td><td><code>[]</code></td><td>Addresses you already own (from a prior deployment, or reserved out-of-band) for natctl to prefer over minting a brand-new reservation — verified against the account's real unattached reserved IPs before ever being trusted. Only meaningful with <code>reserved_ip_enabled: true</code>.</td></tr>
+            <tr><td><code>reserved_ip_prereserve_to_max</code></td><td>bool</td><td><code>false</code></td><td>Proactively reserves this pool's full <code>max_nodes</code>-sized footprint up front instead of one address at a time as real scale-out happens. No cost guardrail beyond this flag — reserving ahead of need costs real money whether used or not.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Per-pool: HA — buddy-sync and BGP IP failover</h3>
+        <p>See Part IV for what each layer actually protects against.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>conntrack_buddy_sync_enabled</code></td><td>bool</td><td><code>true</code></td><td>Whether this pool's nodes run conntrackd buddy-pair sync (Part IV, 4.3). Only takes effect if <code>natctl_roster_base_url</code> below is also set.</td></tr>
+            <tr><td><code>natctl_roster_base_url</code></td><td>string</td><td><code>""</code></td><td>This pool's own roster API base URL (e.g. <code>http://10.0.0.5:8099</code>) — must match the <code>natctl_roster_url</code> Terraform variable given to this pool's <code>nat-fleet</code> module, so floor and elastic nodes sync against one consistent roster view.</td></tr>
+            <tr><td><code>ip_failover_enabled</code></td><td>bool</td><td><code>false</code></td><td>Whether nodes run FRR (BGP-based IP Sharing, Part IV, 4.4) so a buddy can take over a dead node's public IP. Requires <code>conntrack_buddy_sync_enabled</code>, <code>natctl_roster_base_url</code>, and <code>linode_bgp_dcid</code> below.</td></tr>
+            <tr><td><code>linode_bgp_dcid</code></td><td>int or omit</td><td><em>(unset)</em></td><td>The BGP data-center ID for this pool's region — look it up from Linode's current failover docs before enabling <code>ip_failover_enabled</code>.</td></tr>
+            <tr><td><code>ip_failover_auto_configure</code></td><td>bool</td><td><code>true</code></td><td>Whether natctl calls Linode's IP-sharing API itself as buddy pairings form. <strong>Leave this <code>true</code></strong> — the reverse was live-verified to be a trap: BGP sessions silently never establish at all with no error surfaced anywhere short of a manual <code>vtysh</code> check. Set <code>false</code> only if you specifically want to run the first pairing by hand (10.3, "Enable BGP IP failover for a pool").</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Per-pool: client behavior baseline</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>client_fallback_probe_enabled</code> / <code>client_fallback_probe_interval</code></td><td>bool or null / int or null</td><td><code>null</code> / <code>null</code></td><td><code>null</code> means "no opinion, respect each client's own local <code>LNG_FALLBACK_PROBE_ENABLED</code>/<code>LNG_FALLBACK_PROBE_INTERVAL</code> env var." <strong>Live-overridable — 10.2's <code>set-client-config</code></strong> for a fleet-wide change with no client restart; set here only for this pool's static baseline.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Per-pool: <code>autoscale:</code> block</h3>
+        <p>See Part V, 5.2 for the full semantics (when each trigger fires, the sustained-breach window, step caps). Field-by-field:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>conntrack_high_watermark</code> / <code>conntrack_low_watermark</code></td><td>float</td><td><code>0.70</code> / <code>0.30</code></td><td>Scale-out / scale-in triggers on connection-tracking table occupancy.</td></tr>
+            <tr><td><code>port_headroom_low_watermark</code></td><td>float</td><td><code>0.15</code></td><td>Scale-out trigger: only this fraction of usable source ports per destination remain free.</td></tr>
+            <tr><td><code>throughput_high_watermark</code></td><td>float</td><td><code>0.85</code></td><td>Scale-out trigger: this fraction of the node's real, per-instance-type bandwidth capacity (queried live from Linode's API).</td></tr>
+            <tr><td><code>cpu_high_watermark</code></td><td>float</td><td><code>0.80</code></td><td>Scale-out-only trigger: the busiest core's network-softirq saturation ratio. No scale-in equivalent.</td></tr>
+            <tr><td><code>target_conntrack_ratio</code> / <code>target_port_utilization_ratio</code> / <code>target_throughput_ratio</code> / <code>target_cpu_ratio</code></td><td>float</td><td><code>0.50</code> each</td><td>Where a scale action aims to land each metric after acting, not the trigger watermark itself — see Part V, 5.2's sizing formula.</td></tr>
+            <tr><td><code>sustained_breach_passes</code></td><td>int</td><td><code>2</code></td><td>Consecutive reconcile passes a metric must stay past its watermark before it's trusted enough to act on.</td></tr>
+            <tr><td><code>max_scale_out_step_fraction</code> / <code>max_scale_in_step_fraction</code></td><td>float</td><td><code>1.0</code> / <code>0.5</code></td><td>Caps a single scaling action as a fraction of current (scale-out) or current elastic (scale-in) capacity.</td></tr>
+            <tr><td><code>cooldown_seconds</code></td><td>int</td><td><code>300</code></td><td>No further scaling decision is evaluated for this long after one fires.</td></tr>
+            <tr><td><code>drain_timeout_seconds</code></td><td>int</td><td><code>180</code></td><td>How long a scaling-in node is given to empty out before forced deletion.</td></tr>
+            <tr><td><code>unhealthy_replace_after_seconds</code></td><td>int</td><td><code>900</code></td><td>How long an elastic node must fail its own health check continuously before it's drained and replaced (Part IV, 4.7). Covers a fresh node's full cloud-init boot time, not just steady-state failures — don't set this too low.</td></tr>
+            <tr><td><code>auto_provision_enabled</code></td><td>bool</td><td><code>true</code></td><td>Whether autoscaling is active at all for this pool. <code>min_nodes</code>/<code>max_nodes</code> remain the hard bounds either way.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Per-pool: Terraform-managed internal wiring — do not hand-edit</h3>
+        <p>These exist so natctl's own elastic-node provisioning can fetch the same artifacts Terraform already uploaded for floor nodes (Part VI, 6.2). Every one of them is populated automatically on <code>terraform apply</code> and gets overwritten back to Terraform's own value on the next apply regardless — hand-editing any of these only lasts until then, and in the meantime risks pointing an elastic node at a stale or wrong artifact.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>What it's for</th></tr></thead>
+          <tbody>
+            <tr><td><code>exporter_py_url</code> / <code>buddy_sync_py_url</code> / <code>natctl_file_urls</code></td><td>Source-mode artifact URLs (unused in this compiled-binary repository).</td></tr>
+            <tr><td><code>agent_distribution</code></td><td><code>"source"</code> or <code>"binary"</code> — always <code>"binary"</code> in this repository.</td></tr>
+            <tr><td><code>exporter_bin_url</code> / <code>buddy_sync_bin_url</code> / <code>natctl_bin_url</code></td><td>Compiled-binary artifact URLs elastic nodes fetch at boot.</td></tr>
+            <tr><td><code>nat_exporter_service_url</code> / <code>lng_buddy_sync_service_url</code> / <code>conntrackd_peer_service_url</code> / <code>natctl_service_url</code> / <code>natctl_requirements_txt_url</code></td><td>Static systemd unit files (and, in source mode, <code>requirements.txt</code>) uploaded once per environment.</td></tr>
+            <tr><td><code>object_storage_bucket</code> / <code>object_storage_s3_region</code></td><td>The bucket/region natctl itself uploads a newly-provisioned elastic node's own per-node <code>nftables.conf</code> to, and reads/writes the three live-override objects (10.2's <code>set-pool-scaling</code>/<code>set-vpc-sibling-subnets</code>/<code>set-client-config</code>) from. Required for any of those three commands to work at all for this pool.</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="chapter" id="c10-6">
+        <h2><span class="chno">10.6</span> How to Update Any Field</h2>
+        <p class="lede">10.5 tells you what each field does; this is the actual procedure for changing one safely on a live deployment.</p>
+
+        <h3>Which host(s) you need to touch depends on your placement mode</h3>
+        <p><strong>Single dedicated host</strong> (the default, Part II, 2.3 — natctl only runs on the observability instance): exactly one file, <code>/etc/natctl/config.yaml</code> on that host.</p>
+        <p><strong><code>natctl_on_node_enabled: true</code></strong>: every floor <em>and</em> elastic node in that pool runs its own independent natctl process, each with its own <code>/etc/natctl/config.yaml</code>, read once at that process's own startup. A YAML-only field (anything not flagged "live-overridable" in 10.5) has to be changed on every single one of those nodes — editing it on just one node only changes that one node's own behavior, not the fleet's. This also affects <em>future</em> elastic nodes: a brand-new elastic node's own baked-in config comes from whichever node is currently the leader, using that leader's own in-memory config as of its last restart — so as long as every node gets the same edit-and-restart (which you should be doing anyway, for consistency), future provisioning stays correct automatically, with no separate step needed.</p>
+
+        <h3>The procedure, per host</h3>
+        <ol>
+          <li><strong>Back up the file first</strong> — a single <code>cp</code>, not a real backup system, but enough to make a bad edit trivially reversible: <pre class="code">cp /etc/natctl/config.yaml /etc/natctl/config.yaml.bak</pre></li>
+          <li><strong>Make your edit.</strong> This repository ships compiled binaries with no Python interpreter installed on the node — there's no <code>python3 -c "import yaml..."</code> syntax check available locally on the node itself. If you want to validate the YAML is well-formed before touching a live node, do it on your own machine first (or against your own copy of <code>controller/natctl.example.yaml</code>), then copy the verified file over.</li>
+          <li><strong>Restart natctl:</strong> <pre class="code">systemctl restart natctl</pre></li>
+          <li><strong>Confirm it came back up clean</strong> — a bad edit (invalid YAML, a field set to a value natctl rejects) surfaces here, not at edit time: <pre class="code">systemctl status natctl      # should show "active (running)", not "failed"
+journalctl -u natctl -n 50   # look for a normal reconcile-pass log line, not a startup traceback</pre></li>
+          <li><strong>If it failed to come back up</strong>, restore the backup and restart again: <pre class="code">cp /etc/natctl/config.yaml.bak /etc/natctl/config.yaml
+systemctl restart natctl</pre></li>
+        </ol>
+        <p><strong>Under <code>natctl_on_node_enabled</code>, do this one node at a time, not all at once</strong> — if a bad edit is going to take a node down, you want to find that out with the rest of the fleet still healthy and serving traffic, not discover it after every node has already restarted simultaneously with the same mistake.</p>
+      </section>
+
+      <section class="chapter" id="c10-7">
+        <h2><span class="chno">10.7</span> Where to Look First</h2>
         <p>In rough order of likelihood: a private-subnet instance's routing agent isn't running or can't reach the roster URL; the control plane's API token has expired or lost a scope; or the minimum/maximum bounds are misconfigured for actual current load. The architecture and this book describe exactly how the system is supposed to behave — when real behavior diverges from that, that gap is always the right starting point for debugging, not a sign the design itself is wrong.</p>
       </section>
 
@@ -1608,7 +1779,8 @@ dedicated-acme-corp: 3 node(s), 3 healthy</pre>
     {label:"Part X", title:"Day-2 Operations", chapters:[
       ["c10-1","10.1 Pre-Production Checklist"],["c10-2","10.2 The Operator CLI"],
       ["c10-3","10.3 Common Procedures"],["c10-4","10.4 Troubleshooting Playbook"],
-      ["c10-5","10.5 Where to Look First"]
+      ["c10-5","10.5 Configuration Reference"],["c10-6","10.6 Updating Any Field"],
+      ["c10-7","10.7 Where to Look First"]
     ]}
   ];
 
