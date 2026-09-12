@@ -215,5 +215,9 @@ vpc_sibling_subnet_cidrs: []
 
 linode:
   api_base: https://api.linode.com/v4
-  # Read from $LINODE_TOKEN if unset here.
+  # Prefer $LINODE_TOKEN (in /etc/natctl/env, 0600) over setting this
+  # directly -- this whole file is embedded in plaintext into every
+  # elastic node's cloud-init once natctl_on_node_enabled is set (see
+  # cloud_init.py), so a real token set here ships to every node instead
+  # of staying on one dedicated host.
   token: null

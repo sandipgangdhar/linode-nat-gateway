@@ -110,7 +110,7 @@ def run(cfg: Config, report: Reporter) -> None:
         if node_ssh_host:
             cmd += ["--node-ssh-host", node_ssh_host]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=DRILL_TIMEOUT_SECONDS)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=DRILL_TIMEOUT_SECONDS, check=False)
         except subprocess.TimeoutExpired:
             report.failed(CHECK_ID, f"{pool_name}: node-failure-drill.sh did not complete within {DRILL_TIMEOUT_SECONDS}s", started)
             continue

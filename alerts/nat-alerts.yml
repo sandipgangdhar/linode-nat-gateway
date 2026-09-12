@@ -102,7 +102,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Elevated nftables drop rate on {{ $labels.node }} ({{ $labels.chain }}/{{ $labels.reason }})"
+          summary: "Elevated nftables drop rate on {{ $labels.node }} ({{ $labels.table }}/{{ $labels.reason }})"
           description: "Could indicate a misconfigured allow-list, an attempted policy violation, or a routing issue upstream of this node."
 
       - alert: NATConntrackBuddyUnpaired

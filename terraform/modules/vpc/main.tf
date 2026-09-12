@@ -208,10 +208,10 @@ data "linode_vpc_subnets" "all" {
   vpc_id = var.vpc_id
 }
 
-# Default-deny Cloud Firewall applied to every NAT node. v2 (active-active
-# fleet): each node is fully independent, so there's no peer/VRRP/BGP/
-# conntrackd traffic to allow anymore — just the exporter/healthz port
-# (scraped by natctl, client-agents, and Prometheus) and SSH. Outbound is
+# Default-deny Cloud Firewall applied to every NAT node. Every node is
+# fully independent (active-active fleet), so there's no peer/VRRP/BGP/
+# conntrackd traffic to allow — just the exporter/healthz port (scraped
+# by natctl, client-agents, and Prometheus) and SSH. Outbound is
 # unrestricted because these instances exist to perform egress NAT
 # (tenant-level restriction, if needed, is enforced in nftables on the
 # node, not here).
@@ -257,7 +257,7 @@ resource "linode_firewall" "nat_node" {
     label    = "natctl-api"
     action   = "ACCEPT"
     protocol = "TCP"
-    ports    = "8099"
+    ports    = tostring(var.api_port)
     ipv4     = concat([data.linode_vpc_subnet.public.ipv4], [for s in data.linode_vpc_subnet.private : s.ipv4])
   }
 
@@ -316,7 +316,7 @@ resource "linode_firewall" "control_plane" {
     label    = "natctl-api"
     action   = "ACCEPT"
     protocol = "TCP"
-    ports    = "8099"
+    ports    = tostring(var.api_port)
     ipv4     = concat([data.linode_vpc_subnet.public.ipv4], [for s in data.linode_vpc_subnet.private : s.ipv4])
   }
 

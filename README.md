@@ -59,11 +59,13 @@ ansible/cloud-init/        Cloud-init user-data rendered by Terraform
 ansible/templates/         nftables ruleset, Prometheus/Grafana/Docker Compose configs
 client-agent/               Compiled binary + systemd unit: ECMP routing on private-subnet instances
 buddy-sync/                 Compiled binary + systemd unit: conntrackd buddy-pair sync + BGP IP failover
-controller/                 Compiled natctl binary + systemd unit + natctl.yaml reference (natctl.example.yaml)
+controller/                 Compiled natctl binary + systemd unit
 exporter/nat_exporter/      Compiled Prometheus exporter binary + systemd unit
 dashboards/                 Grafana dashboard JSON
 alerts/                     Prometheus alerting rules
-docs/                       API token setup, OPERATIONS.md (day-2 ops), CLI-GUIDE.md (natctl-cli reference)
+docs/                       API token setup, OPERATIONS.md (day-2 ops), CLI-GUIDE.md (natctl-cli reference),
+                             natctl.yaml / client-agent / buddy-sync env-file references
+                             (natctl.example.yaml, lng-client-agent.env.example, lng-buddy-sync.env.example)
 acceptance-tests/           Post-deploy checks you can run against your own live deployment
 scripts/                    Load-test and day-2 operational scripts
 ```

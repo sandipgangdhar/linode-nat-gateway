@@ -212,22 +212,48 @@ variable "private_subnet_ids" {
 #                              terraform/modules/nat-fleet's
 #                              reserved_ip_pool_fits_node_count check.
 #                              Defaults to [] (fully backward compatible).
+#   node_instance_type_overrides - Optional per-FLOOR-node instance_type
+#                              override, keyed by node_id (e.g.
+#                              "lng-common-2" => "g6-dedicated-8"). Any
+#                              node_id not present here uses this pool's
+#                              own instance_type above. This is how a
+#                              floor node that's been individually
+#                              vertically-scaled via natctl_cli's
+#                              `resize` command (see fleet.py's own
+#                              printed guidance after a successful
+#                              resize) gets represented here, so the next
+#                              `terraform apply` doesn't see drift and
+#                              revert it back to instance_type. See
+#                              terraform/modules/nat-fleet's own
+#                              node_instance_type_overrides variable.
+#                              Defaults to {} (fully backward compatible,
+#                              uniform floor).
 # ---------------------------------------------------------------------------
 
 variable "pools" {
   description = "Every NAT-fleet pool this environment provisions, keyed by a short pool identifier. See this file's own header comment above for the full field-by-field breakdown."
   type = map(object({
-    fleet_label             = string
-    floor_nodes             = number
-    max_nodes               = number
-    instance_type           = string
-    vlan_label              = string
-    vlan_cidr               = string
-    vlan_cidr_reserved      = string
-    private_ip_offset       = number
-    vlan_ip_offset          = number
-    elastic_ip_offset_start = number
-    reserved_ip_pool        = optional(list(string), [])
+    fleet_label                  = string
+    floor_nodes                  = number
+    max_nodes                    = number
+    instance_type                = string
+    vlan_label                   = string
+    vlan_cidr                    = string
+    vlan_cidr_reserved           = string
+    private_ip_offset            = number
+    vlan_ip_offset               = number
+    elastic_ip_offset_start      = number
+    reserved_ip_pool             = optional(list(string), [])
+    node_instance_type_overrides = optional(map(string), {})
+    # These three mirror terraform/modules/nat-fleet's own
+    # egress_ips_per_node/conntrack_max/tags variables, so tuning them
+    # per pool is a pure terraform.tfvars edit -- module.nat_fleet's
+    # call below passes them straight through. Defaults here match the
+    # module's own, so a pool that never sets these gets identical
+    # behavior to leaving them out entirely.
+    egress_ips_per_node = optional(number, 1)
+    conntrack_max       = optional(number, 1048576)
+    tags                = optional(list(string), [])
   }))
 }
 
@@ -237,7 +263,7 @@ variable "observability_vlan_pool" {
 }
 
 variable "observability_private_ip_offset" {
-  description = "Starting host offset within public_subnet_id's CIDR for the observability host's static VPC (eth1) address -- same mechanism as each pool's own private_ip_offset (see the pools variable above), but for the one non-pool instance this environment creates. Defaults to 5, clear of every pool's own private_ip_offset range in a fresh deployment (pools default to 20+). Live-found gap (2026-09-11): this was hardcoded to 5 with no override at all until this variable existed -- harmless for a single deployment, but a real collision (Linode's [400] \"The provided IP is already in use in the subnet\" at apply time) when this environment's public_subnet_id is a VPC subnet ALSO used by a completely separate LNG deployment (different terraform.tfvars/state) that happens to use the same offset for its own observability host -- this project's own pool_vpc_offsets_no_overlap-style checks can only ever see pools/resources within THIS state, never a second deployment's. Change this if you know this subnet is shared with another deployment already using the default. Checked against every pool's own private_ip_offset range at plan time (see main.tf's observability_vpc_offset_no_overlap_pools check) -- but only within this one deployment's own pools, same limitation as every other check here."
+  description = "Starting host offset within public_subnet_id's CIDR for the observability host's static VPC (eth1) address -- same mechanism as each pool's own private_ip_offset (see the pools variable above), but for the one non-pool instance this environment creates. Defaults to 5, clear of every pool's own private_ip_offset range in a fresh deployment (pools default to 20+). If this environment's public_subnet_id is a VPC subnet ALSO used by a completely separate LNG deployment (different terraform.tfvars/state) that happens to use the same offset for its own observability host, this collides at apply time (Linode's [400] \"The provided IP is already in use in the subnet\") -- this project's own pool_vpc_offsets_no_overlap-style checks can only ever see pools/resources within THIS state, never a second deployment's. Change this if you know this subnet is shared with another deployment already using the default. Checked against every pool's own private_ip_offset range at plan time (see main.tf's observability_vpc_offset_no_overlap_pools check) -- but only within this one deployment's own pools, same limitation as every other check here."
   type        = number
   default     = 5
 }
@@ -257,6 +283,12 @@ variable "ip_failover_enabled" {
   description = "Enable BIDIRECTIONAL BGP-based IP Sharing (FRR) between buddy pairs so a dead node's public IP fails over, not just its conntrack state — each node self-announces its own IP and backs up its buddy's simultaneously. Requires linode_bgp_dcid to be set for your region. Applies uniformly to every pool. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3/§4.4."
   type        = bool
   default     = false
+}
+
+variable "conntrack_buddy_sync_enabled" {
+  description = "Whether Terraform-managed floor nodes install/run buddy-sync at all. Applies uniformly to every pool, mirroring natctl.yaml's PoolConfig.conntrack_buddy_sync_enabled (default true), which already gates this the same way for natctl-provisioned elastic nodes. Set this to match that setting, or floor nodes keep running buddy-sync indefinitely even after disabling it for elastic nodes (e.g. to reduce running agents, per a security-hardening pass)."
+  type        = bool
+  default     = true
 }
 
 variable "linode_bgp_dcid" {
@@ -300,6 +332,19 @@ variable "natctl_on_node_enabled" {
   description = "Run natctl on every NAT node (every pool, floor AND elastic) instead of on a single dedicated module.observability host. When true, this file also flips module.observability's run_natctl off (running natctl in two places at once would be redundant and the observability host isn't given its own leader-election identity) and turns on leader_election in the composed natctl.yaml, with ANY node in the fleet eligible to hold leadership."
   type        = bool
   default     = false
+}
+
+# Threaded into module.vpc's/every module.nat_fleet's own api_port
+# variables AND the composed natctl_config_yaml's api.listen_port below,
+# so all three stay in agreement -- previously each hardcoded 8099
+# independently (module.vpc's Cloud Firewall rules, nat-fleet's own
+# nftables ruleset, and this environment's own composed config), so
+# changing the port anywhere actually meant changing it in none of the
+# places that matter.
+variable "api_port" {
+  description = "TCP port natctl's roster API listens on -- must match ApiConfig.listen_port. One value for the whole environment (every pool shares one natctl_config_yaml, so they can't disagree anyway). Default matches ApiConfig's own default."
+  type        = number
+  default     = 8099
 }
 
 variable "natctl_object_storage_endpoint" {

@@ -55,10 +55,9 @@ from __future__ import annotations
 import time
 
 import requests
-
+from lib.config import Config
 from lib.http_client import request_with_backoff
 from lib.reporter import Reporter
-from lib.config import Config
 
 CHECK_ID = "06-observability"
 DESCRIPTION = "Prometheus/Grafana/Alertmanager are reachable, with real NAT data"
@@ -108,7 +107,7 @@ def run(cfg: Config, report: Reporter) -> None:
         except requests.exceptions.RequestException as exc:
             problems.append(f"Alertmanager unreachable at {alertmanager_url}: {exc}")
 
-    for pool_name, pool in cfg.pools.items():
+    for pool_name in cfg.pools:
         try:
             if not _query_has_results(prometheus_url, f'nat_node_healthy{{pool="{pool_name}"}}'):
                 problems.append(f"{pool_name}: no nat_node_healthy series in Prometheus (NAT has no visibility)")

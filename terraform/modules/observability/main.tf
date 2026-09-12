@@ -90,10 +90,12 @@ locals {
       remote_write_url      = var.prometheus_remote_write_url
       remote_write_username = var.prometheus_remote_write_username
       remote_write_password = var.prometheus_remote_write_password
-      # natctl's :8099/metrics only actually exists on THIS host when
-      # this module also runs natctl itself -- see prometheus.yml.tftpl's
-      # own header comment for the natctl-on-node limitation.
+      # natctl's own :<api_port>/metrics only actually exists on THIS
+      # host when this module also runs natctl itself -- see
+      # prometheus.yml.tftpl's own header comment for the
+      # natctl-on-node limitation.
       scrape_natctl_metrics = var.run_natctl
+      api_port              = var.api_port
       # Non-empty only when natctl_on_node_enabled, one target per
       # enabled pool (not one target for the whole fleet, which would
       # miss every pool but the one that address's own natctl instance
@@ -116,6 +118,14 @@ locals {
     private_ip               = var.private_ip
     vpc_prefix               = var.vpc_prefix
     vpc_sibling_subnet_cidrs = var.vpc_sibling_subnet_cidrs
+    # The VLAN interface attached below (dynamic "interface") needs this
+    # template to know vlan_label/vlan_ip too, so the live VLAN NIC boots
+    # with the same DNS-scope-removal override and explicit static-
+    # address config the NAT-node renderers (cloud_init.py/
+    # nat-node.yaml.tftpl) already apply for their own eth1/eth2. See
+    # observability.yaml.tftpl's own runcmd comment.
+    vlan_label = var.vlan_label
+    vlan_ip    = var.vlan_ip
     # Fetched from Object Storage instead of embedded -- see
     # terraform/modules/artifacts' static uploads and nat-fleet's
     # matching treatment.
@@ -188,5 +198,35 @@ resource "linode_instance" "observability" {
     # comfortably under Linode's 16384-byte decoded limit even before
     # gzip.
     user_data = base64gzip(local.cloud_init)
+  }
+}
+
+# object_storage_access_key/secret_key's own descriptions both state
+# "required whenever run_natctl is true, independent of leader_election",
+# but unlike terraform/modules/nat-fleet's identical
+# natctl_on_node_enabled_requires_its_own_dependencies check, nothing
+# here enforced it. A caller setting run_natctl = true with either left
+# at its "" default would apply silently; the first elastic-node
+# autoscale event then fails at runtime (fleet.py's _provision() ->
+# upload_public_object() rejected by Object Storage) with zero
+# plan-time warning.
+check "run_natctl_requires_object_storage_credentials" {
+  assert {
+    condition     = !var.run_natctl || (var.object_storage_access_key != "" && var.object_storage_secret_key != "")
+    error_message = "run_natctl is true but object_storage_access_key/object_storage_secret_key are not both set -- natctl needs them to upload each elastic node's own rendered nftables.conf/artifacts. Set both."
+  }
+}
+
+# vlan_label/vlan_ip are two independent optional variables with
+# independent "" defaults, paired only by convention/description text --
+# the dynamic "interface" block above is gated only on vlan_label != "",
+# with no check that vlan_ip was also supplied. A caller setting
+# vlan_label but leaving vlan_ip empty would still get a real VLAN NIC
+# created with ipam_address = "", either rejected outright by the Linode
+# API at apply time or booting with no usable VLAN address.
+check "vlan_label_requires_vlan_ip" {
+  assert {
+    condition     = var.vlan_label == "" || var.vlan_ip != ""
+    error_message = "vlan_label is set but vlan_ip is not -- the VLAN interface above would be created with an empty ipam_address. Set vlan_ip (a full \"host/prefix\" string, e.g. \"192.168.100.19/22\") alongside vlan_label."
   }
 }

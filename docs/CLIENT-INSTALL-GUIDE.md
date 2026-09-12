@@ -194,7 +194,7 @@ Kubernetes-style clients (pods reschedule far more often than a VM
 reboots) but is the identical code path on a VM too. `NATCTL_ROSTER_URL`
 (what `--roster-url` ultimately sets) accepts a comma-separated list for
 exactly this reason -- list every node in a `natctl_on_node_enabled`
-pool, not one. See `client-agent/lng-client-agent.env.example`'s
+pool, not one. See `docs/lng-client-agent.env.example`'s
 `NATCTL_ROSTER_URL` comment for the source-level detail.
 
 For a single-control-plane pool (the default, not `natctl_on_node_enabled`),
@@ -395,6 +395,6 @@ pick up the fix.
   roster/control-plane design this all sits on top of.
 - `scripts/install-nat-client.sh` — its own header comment is the
   authoritative, most detailed reference for every flag.
-- `client-agent/install.sh`, `client-agent/lng-client-agent.env.example`
+- `client-agent/install.sh`, `docs/lng-client-agent.env.example`
   — for installing `client-agent` directly, without
   `install-nat-client.sh`'s wrapper.

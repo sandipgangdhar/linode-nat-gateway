@@ -71,8 +71,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lib.config import load_config  # noqa: E402
-from lib.reporter import Reporter  # noqa: E402
+from lib.config import load_config
+from lib.reporter import Reporter
 
 _CHECKS_DIR = Path(__file__).resolve().parent / "checks"
 

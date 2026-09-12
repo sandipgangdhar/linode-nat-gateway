@@ -47,4 +47,4 @@ jobs:
       - name: Validate alert rules YAML
         run: python3 -c "import yaml; yaml.safe_load(open('alerts/nat-alerts.yml'))"
       - name: Validate natctl example config
-        run: python3 -c "import yaml; yaml.safe_load(open('controller/natctl.example.yaml'))"
+        run: python3 -c "import yaml; yaml.safe_load(open('docs/natctl.example.yaml'))"

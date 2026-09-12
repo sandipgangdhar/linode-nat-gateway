@@ -142,7 +142,7 @@ pools = {
     instance_type           = "g6-dedicated-8"
     vlan_label              = "lng-vlan-shared" # SAME as common's -- same-VLAN mode. Use a different label for a genuinely separate VLAN instead.
     vlan_cidr               = "192.168.100.0/22" # SAME wide VLAN as common -- only the reserved sub-block below needs to differ
-    vlan_cidr_reserved      = "192.168.105.0/27" # must not overlap common's 192.168.100.0/24 above -- only 32 addresses, so the two offsets below must stay small
+    vlan_cidr_reserved      = "192.168.101.0/27" # nested inside vlan_cidr's /22 (100-103) above, and must not overlap common's 192.168.100.0/24 -- only 32 addresses, so the two offsets below must stay small
     private_ip_offset       = 50 # VPC side -- must not overlap common's 20 (floor_nodes=1) above
     vlan_ip_offset          = 20 # VLAN side -- POOL-LOCAL to vlan_cidr_reserved above (a /27), same small number as common's, safe since it's a separate address space
     elastic_ip_offset_start = 25 # must fit within this pool's own /27 alongside vlan_ip_offset+floor_nodes (20-21) and up to max_nodes-floor_nodes=4 elastic slots (25-28) -- a /27 only has 32 addresses total
@@ -157,15 +157,15 @@ observability_vlan_pool = "common"
 
 # Starting VPC-side host offset for the observability host's own static
 # address -- see variables.tf's observability_private_ip_offset. Defaults
-# to 5 (uncomment only if you need a different value). Live-found gap
-# (2026-09-11): if public_subnet_id above is a VPC subnet ALSO used by a
-# completely separate LNG deployment (different terraform.tfvars/state),
-# and that deployment's own observability host also uses the default 5,
-# your `terraform apply` fails outright with Linode's [400] "The provided
-# IP is already in use in the subnet" -- this project's own plan-time
-# checks can only ever see pools/resources within THIS terraform.tfvars,
-# never a second deployment's state. Pick a value clear of that other
-# deployment's own offsets if you're sharing a subnet this way.
+# to 5 (uncomment only if you need a different value). If public_subnet_id
+# above is a VPC subnet ALSO used by a completely separate LNG deployment
+# (different terraform.tfvars/state), and that deployment's own
+# observability host also uses the default 5, your `terraform apply`
+# fails outright with Linode's [400] "The provided IP is already in use
+# in the subnet" -- this project's own plan-time checks can only ever see
+# pools/resources within THIS terraform.tfvars, never a second
+# deployment's state. Pick a value clear of that other deployment's own
+# offsets if you're sharing a subnet this way.
 # observability_private_ip_offset = 5
 
 # --------------------------------------------------------------------------

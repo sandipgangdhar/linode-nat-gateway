@@ -53,10 +53,11 @@ missing optional fields become a clean SKIP instead of a crash.
 """
 from __future__ import annotations
 
-import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 
 class MissingConfigError(Exception):

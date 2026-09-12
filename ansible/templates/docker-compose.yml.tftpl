@@ -51,11 +51,12 @@ services:
     ports:
       - "9090:9090"
     # lets prometheus.yml.tftpl's natctl_metrics job reach natctl's own
-    # :8099/metrics (fleet-wide node counts) on the HOST, from inside
-    # this container —
+    # :<api_port>/metrics (fleet-wide node counts) on the HOST, from
+    # inside this container —
     # natctl runs natively on the host (see this file's own header
-    # comment), not in a container, so "localhost:8099" from inside here
-    # would resolve to the Prometheus container itself, not the host.
+    # comment), not in a container, so "localhost:<api_port>" from
+    # inside here would resolve to the Prometheus container itself, not
+    # the host.
     # host-gateway requires Docker 20.10+ (this project's image is Ubuntu
     # 22.04 with a current Docker install — fine).
     extra_hosts:

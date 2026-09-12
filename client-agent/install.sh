@@ -16,8 +16,8 @@
 #    /fleet/<dedicated-pool-name> for a tenant with a dedicated pool).
 #    May be a comma-separated list (quote it as one argument) to fail
 #    over across several natctl-on-node peers instead of pointing at a
-#    single node -- see lng-client-agent.env.example's NATCTL_ROSTER_URL
-#    comment for why that matters.
+#    single node -- see docs/lng-client-agent.env.example's
+#    NATCTL_ROSTER_URL comment for why that matters.
 # 2) --iface        - Optional, default eth2 -- this project's VLAN-based
 #    client fleet interface. Override only if your instance's VLAN
 #    interface has a non-default name.

@@ -185,6 +185,12 @@ variable "natctl_roster_url" {
   default     = ""
 }
 
+variable "conntrack_buddy_sync_enabled" {
+  description = "Whether this fleet's Terraform-managed floor nodes install/run buddy-sync at all -- mirrors natctl.yaml's PoolConfig.conntrack_buddy_sync_enabled (default true), which already gates this the same way for natctl-provisioned elastic nodes (controller/natctl/fleet.py's _provision()). Set this to match that setting for the same pool, or floor nodes keep running buddy-sync indefinitely even after disabling it for elastic nodes (e.g. to reduce running agents, per a security-hardening pass). Leaving this true (the default) while natctl_roster_url is empty has no effect either way -- buddy-sync was already off."
+  type        = bool
+  default     = true
+}
+
 variable "ip_failover_enabled" {
   description = "Whether nodes in this fleet run FRR (v5 — replaces lelastic, which was architecturally locked to one role per node) for BIDIRECTIONAL BGP-based IP Sharing: each node self-announces its own eth0 public IP AND backs up its buddy's, so a node's buddy can take over its IP on failure, making buddy-pair conntrack sync (natctl_roster_url above) actually deliver session survival rather than just unusable mirrored state — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3/§4.4 for why both pieces are needed together and how bidirectional coverage was validated live. Requires natctl_roster_url to be set. Requires linode_bgp_dcid below. IP Sharing availability varies by Linode data center — confirm your region supports it before enabling (https://techdocs.akamai.com/cloud-computing/docs/configure-failover-on-a-compute-instance)."
   type        = bool
@@ -219,6 +225,21 @@ variable "natctl_config_yaml" {
   type        = string
   default     = ""
   sensitive   = true
+}
+
+# The rendered nftables.conf.tftpl's own natctl-roster-API input rule
+# hardcoded this to the literal 8099, unlike cloud_init.py's Python-side
+# elastic-node renderer (already parameterized via api_port, threaded
+# from ApiConfig.listen_port). An operator changing api.listen_port away
+# from its 8099 default with natctl_on_node_enabled=true would have
+# floor nodes' own nftables input chain (VLAN's only gate -- Cloud
+# Firewall doesn't filter VLAN traffic) still only open 8099, silently
+# blackholing roster/health/metrics traffic to floor nodes over
+# eth1/eth2 while elastic nodes work fine.
+variable "api_port" {
+  description = "TCP port natctl's roster API listens on (must match ApiConfig.listen_port in natctl.yaml, and terraform/modules/vpc's own api_port) -- opened in this fleet's own nftables ruleset when natctl_on_node_enabled. Default matches ApiConfig's own default."
+  type        = number
+  default     = 8099
 }
 
 variable "linode_token" {
@@ -270,27 +291,27 @@ variable "natctl_file_urls" {
 }
 
 variable "nat_exporter_service_url" {
-  description = "Public URL (terraform/modules/artifacts' nat_exporter_service_url output) this fleet's nodes curl nat-exporter.service from at boot, instead of it being embedded inline -- see nat-node.yaml.tftpl's runcmd. v10."
+  description = "Public URL (terraform/modules/artifacts' nat_exporter_service_url output) this fleet's nodes curl nat-exporter.service from at boot, instead of it being embedded inline -- see nat-node.yaml.tftpl's runcmd."
   type        = string
 }
 
 variable "lng_buddy_sync_service_url" {
-  description = "Public URL (terraform/modules/artifacts' lng_buddy_sync_service_url output) this fleet's nodes curl lng-buddy-sync.service from at boot, when natctl_roster_url is set -- see nat-node.yaml.tftpl's runcmd. v10."
+  description = "Public URL (terraform/modules/artifacts' lng_buddy_sync_service_url output) this fleet's nodes curl lng-buddy-sync.service from at boot, when natctl_roster_url is set -- see nat-node.yaml.tftpl's runcmd."
   type        = string
 }
 
 variable "conntrackd_peer_service_url" {
-  description = "Public URL (terraform/modules/artifacts' conntrackd_peer_service_url output) this fleet's nodes curl the conntrackd@.service TEMPLATE unit from at boot, when natctl_roster_url is set -- see nat-node.yaml.tftpl's runcmd. v10."
+  description = "Public URL (terraform/modules/artifacts' conntrackd_peer_service_url output) this fleet's nodes curl the conntrackd@.service TEMPLATE unit from at boot, when natctl_roster_url is set -- see nat-node.yaml.tftpl's runcmd."
   type        = string
 }
 
 variable "natctl_service_url" {
-  description = "Public URL (terraform/modules/artifacts' natctl_service_url output) this fleet's nodes curl natctl.service from at boot, when natctl_on_node_enabled -- see nat-node.yaml.tftpl's runcmd. v10."
+  description = "Public URL (terraform/modules/artifacts' natctl_service_url output) this fleet's nodes curl natctl.service from at boot, when natctl_on_node_enabled -- see nat-node.yaml.tftpl's runcmd."
   type        = string
 }
 
 variable "natctl_requirements_txt_url" {
-  description = "Public URL (terraform/modules/artifacts' natctl_requirements_txt_url output) this fleet's nodes curl controller/requirements.txt from at boot, when natctl_on_node_enabled -- see nat-node.yaml.tftpl's runcmd. v10."
+  description = "Public URL (terraform/modules/artifacts' natctl_requirements_txt_url output) this fleet's nodes curl controller/requirements.txt from at boot, when natctl_on_node_enabled -- see nat-node.yaml.tftpl's runcmd."
   type        = string
 }
 

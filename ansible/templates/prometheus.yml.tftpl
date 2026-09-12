@@ -33,9 +33,9 @@
 #       polled and merged) is what avoids that, not a single URL.
 #   See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §7.1 "The Metrics Pipeline"
 #   for the general fleet-aware-scraping model this implements.
-# - Also scrapes natctl's OWN :8099/metrics (fleet-wide node counts, see
-#   controller/natctl/api.py's render_natctl_metrics()) -- a single
-#   static target (host.docker.internal:8099, see
+# - Also scrapes natctl's OWN :<api_port>/metrics (fleet-wide node
+#   counts, see controller/natctl/api.py's render_natctl_metrics()) -- a
+#   single static target (host.docker.internal:<api_port>, see
 #   docker-compose.yml.tftpl's extra_hosts), gated on scrape_natctl_metrics
 #   being true (only when THIS host actually runs natctl -- see
 #   terraform/modules/observability/variables.tf's run_natctl). KNOWN
@@ -135,5 +135,5 @@ scrape_configs:
   # (natctl itself, unlike NAT nodes, doesn't autoscale or move).
   - job_name: natctl_metrics
     static_configs:
-      - targets: ["host.docker.internal:8099"]
+      - targets: ["host.docker.internal:${api_port}"]
 %{ endif ~}

@@ -17,10 +17,12 @@
 #    metrics and dashboards.
 # 4) vpc_id / private_subnet_ids   - Reference for wiring up additional
 #    workloads into this same VPC.
-#
-# This environment no longer creates client instances, so there are no
-# client-related outputs here -- see scripts/install-nat-client.sh and
-# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §9.3 instead.
+# 5) client_firewall_id             - Attach to any client instance your
+#    own automation creates -- SSH-only, purpose-built for this. This
+#    environment doesn't create client instances itself, only this one
+#    supporting resource for them -- see scripts/install-nat-client.sh
+#    and docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §9.3 for the rest of
+#    onboarding.
 # -----------------------------------------------------
 # Author:
 # - Sandip Gangdhar
@@ -60,4 +62,9 @@ output "vpc_id" {
 
 output "private_subnet_ids" {
   value = module.vpc.private_subnet_ids
+}
+
+output "client_firewall_id" {
+  description = "A purpose-built, SSH-only firewall for client instances -- attach it to any client instance your own automation creates. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §9.3."
+  value       = module.vpc.client_firewall_id
 }

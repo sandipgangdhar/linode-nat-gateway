@@ -94,6 +94,7 @@ module "vpc" {
   public_subnet_id   = var.public_subnet_id
   private_subnet_ids = var.private_subnet_ids
   admin_cidrs        = var.admin_cidrs
+  api_port           = var.api_port
 }
 
 locals {
@@ -108,14 +109,13 @@ locals {
   # exact same value.
   #
   # var.observability_private_ip_offset (default 5), not a bare literal --
-  # live-found gap (2026-09-11): a hardcoded 5 collided with a SECOND,
-  # entirely separate LNG deployment sharing this same public_subnet_id
-  # (Linode returned [400] "The provided IP is already in use in the
-  # subnet" at apply time), since that other deployment's own
-  # observability host used the exact same hardcoded offset. See that
-  # variable's own description for the full story and
-  # observability_vpc_offset_no_overlap_pools below for what IS checked
-  # (this deployment's own pools) vs. what can't be (a second
+  # a hardcoded 5 would collide with a SECOND, entirely separate LNG
+  # deployment sharing this same public_subnet_id (Linode returns [400]
+  # "The provided IP is already in use in the subnet" at apply time) if
+  # that other deployment's own observability host used the same
+  # hardcoded offset. See that variable's own description for the full
+  # story and observability_vpc_offset_no_overlap_pools below for what
+  # IS checked (this deployment's own pools) vs. what can't be (a second
   # deployment's state, invisible to this one).
   natctl_private_ip = cidrhost(module.vpc.public_subnet_cidr, var.observability_private_ip_offset)
 
@@ -151,8 +151,8 @@ locals {
   # problem to begin with.
   natctl_roster_base_url = (
     var.natctl_on_node_enabled
-    ? "http://localhost:8099"
-    : "http://${local.natctl_private_ip}:8099"
+    ? "http://localhost:${var.api_port}"
+    : "http://${local.natctl_private_ip}:${var.api_port}"
   )
 
   # A stable numeric rank per pool key (its position in the sorted key
@@ -217,6 +217,37 @@ locals {
     )
   ]
 
+  # fleet.py's _provision() computes an
+  # elastic node's VPC (eth1) address as cidrhost(public_subnet_cidr,
+  # offset), reusing the SAME offset value (starting at
+  # elastic_ip_offset_start) it uses for the VLAN side. On the VLAN side
+  # that reuse is safe because each pool's own vlan_cidr_reserved is
+  # already a distinct address space (elastic_ip_offset_start's own
+  # description calls it "POOL-LOCAL" for exactly this reason) -- but the
+  # VPC side has no per-pool reserved sub-block at all, every pool shares
+  # this environment's one public_subnet_cidr. Two pools both left at
+  # elastic_ip_offset_start's identical default (or any other coincidence
+  # of equal/overlapping values) would compute the same VPC address the
+  # first time both scale out an elastic node -- a real duplicate-IP
+  # create_instance call against the live Linode API. This checks each
+  # pool's VPC-side elastic range, [elastic_ip_offset_start,
+  # elastic_ip_offset_start + max_nodes - floor_nodes), against every
+  # OTHER pool's floor range AND elastic range (the floor-vs-floor case
+  # alone is already covered by overlapping_vpc_offset_pool_pairs above).
+  overlapping_elastic_vpc_pool_pairs = [
+    for pair in local.all_pool_pairs : "${pair[0]} <-> ${pair[1]}"
+    if !(
+      var.pools[pair[0]].elastic_ip_offset_start + (var.pools[pair[0]].max_nodes - var.pools[pair[0]].floor_nodes) <= var.pools[pair[1]].private_ip_offset ||
+      var.pools[pair[1]].private_ip_offset + var.pools[pair[1]].floor_nodes <= var.pools[pair[0]].elastic_ip_offset_start
+      ) || !(
+      var.pools[pair[1]].elastic_ip_offset_start + (var.pools[pair[1]].max_nodes - var.pools[pair[1]].floor_nodes) <= var.pools[pair[0]].private_ip_offset ||
+      var.pools[pair[0]].private_ip_offset + var.pools[pair[0]].floor_nodes <= var.pools[pair[1]].elastic_ip_offset_start
+      ) || !(
+      var.pools[pair[0]].elastic_ip_offset_start + (var.pools[pair[0]].max_nodes - var.pools[pair[0]].floor_nodes) <= var.pools[pair[1]].elastic_ip_offset_start ||
+      var.pools[pair[1]].elastic_ip_offset_start + (var.pools[pair[1]].max_nodes - var.pools[pair[1]].floor_nodes) <= var.pools[pair[0]].elastic_ip_offset_start
+    )
+  ]
+
   # Every pool whose own private_ip_offset range contains
   # var.observability_private_ip_offset -- the observability host has
   # only a single fixed VPC address (not a range), so this is a simpler
@@ -231,12 +262,107 @@ locals {
     if var.observability_private_ip_offset >= p.private_ip_offset && var.observability_private_ip_offset < p.private_ip_offset + p.floor_nodes
   ]
 
+  # Same idea as pools_overlapping_observability_offset above, but against
+  # each pool's VPC-side ELASTIC range instead of its floor range -- see
+  # overlapping_elastic_vpc_pool_pairs' own comment for why that range
+  # needs its own collision checks at all.
+  pools_with_elastic_range_overlapping_observability_offset = [
+    for k, p in var.pools : k
+    if var.observability_private_ip_offset >= p.elastic_ip_offset_start && var.observability_private_ip_offset < p.elastic_ip_offset_start + (p.max_nodes - p.floor_nodes)
+  ]
+
   # Every pool whose own floor range reaches its own elastic_ip_offset_start
   # -- a pool's own floor count against its own elastic start, entirely
   # self-contained, nothing to do with any OTHER pool.
   pools_with_floor_reaching_elastic_offset = [
     for k, p in var.pools : k
     if p.vlan_ip_offset + p.floor_nodes > p.elastic_ip_offset_start
+  ]
+
+  # The VPC-side twin of the
+  # self-contained check above -- every pair-based VPC check
+  # (overlapping_vpc_offset_pool_pairs, overlapping_elastic_vpc_pool_pairs)
+  # deliberately excludes self-pairs (pool_rank[pair[0]] < pool_rank[pair[1]]),
+  # so nothing ever checked a SINGLE pool's own private_ip_offset floor
+  # range against its OWN elastic_ip_offset_start range the way this
+  # already happens on the VLAN side above. Unlike the VLAN-side check
+  # (a simple ">" ordering test, safe there because floor always comes
+  # before elastic within vlan_reserved_cidr by convention), the VPC
+  # side has no such ordering convention at all -- the example
+  # environment's own acme pool deliberately places elastic_ip_offset_start
+  # (25) BEFORE private_ip_offset (50), and that's a perfectly valid,
+  # non-colliding configuration. This has to be a real interval-overlap
+  # test, not an ordering assumption, or it would misfire on exactly that
+  # valid case.
+  pools_with_floor_overlapping_own_elastic_vpc_range = [
+    for k, p in var.pools : k
+    if !(
+      p.private_ip_offset + p.floor_nodes <= p.elastic_ip_offset_start ||
+      p.elastic_ip_offset_start + (p.max_nodes - p.floor_nodes) <= p.private_ip_offset
+    )
+  ]
+
+  # vlan_ip_offset has no type-level
+  # validation requiring it be positive. observability_vlan_ip (below)
+  # computes cidrhost(vlan_cidr_reserved, vlan_ip_offset - 1) -- if
+  # vlan_ip_offset is 0, that offset becomes -1, and Terraform's own
+  # cidrhost() treats a negative offset as counting backward FROM THE
+  # END of the range, landing the observability host's VLAN address near
+  # the TOP of vlan_cidr_reserved -- exactly where that pool's elastic
+  # nodes are allocated (near elastic_ip_offset_start), a real collision
+  # this check now catches at plan time instead of apply succeeding
+  # silently.
+  pools_with_non_positive_vlan_ip_offset = [
+    for k, p in var.pools : k
+    if p.vlan_ip_offset < 1
+  ]
+
+  # natctl_http_sd_targets (below) needs one PRE-EXISTING floor node per
+  # pool to seed Prometheus's discovery of that pool's roster -- a pool
+  # with floor_nodes == 0 (scaling purely from elastic capacity) has no
+  # node Terraform itself creates, so it never gets a target here, even
+  # after natctl later provisions real elastic nodes for it (this list is
+  # static, computed once at apply time -- nothing ever regenerates it).
+  # That pool's metrics are then silently invisible in Prometheus
+  # indefinitely, with no plan/apply-time signal that anything is wrong.
+  # Only relevant under natctl_on_node_enabled -- the single-dedicated-host
+  # case's own file_sd_path mechanism has no such gap (every pool answers
+  # the same shared natctl process's /file_sd regardless of its own floor
+  # node count).
+  pools_with_zero_floor_nodes_under_natctl_on_node = var.natctl_on_node_enabled ? [
+    for k, p in var.pools : k
+    if p.floor_nodes == 0
+  ] : []
+
+  # Nothing at the type level stops max_nodes < floor_nodes. Several of
+  # the checks above (and fleet.py's own autoscaling logic) compute the
+  # elastic range's width as max_nodes - floor_nodes -- a negative width
+  # goes unnoticed by an interval-overlap check built on
+  # [start, start+width) (an inverted/empty range never overlaps
+  # anything, so those checks pass silently) while natctl's own
+  # evaluate_autoscale() treats it as "already over max", permanently
+  # blocking that pool's elastic scaling with no plan/apply-time signal
+  # that the config itself is the real problem.
+  pools_with_max_nodes_below_floor_nodes = [
+    for k, p in var.pools : k
+    if p.max_nodes < p.floor_nodes
+  ]
+
+  # fleet_label is documented ("Unique label prefix for this pool's
+  # Linode instances") as needing to be unique, but nothing at the type
+  # level enforces it, unlike vlan_cidr_reserved/private_ip_offset,
+  # both of which get their own dedicated cross-pool overlap checks
+  # above. terraform/modules/nat-fleet's node_ids = ["${var.fleet_label}
+  # -${i+1}"] means two pools sharing a fleet_label (an operator copy-
+  # pasting a pool block for a new tenant and forgetting to change this
+  # one field) would try to create Linode instances with identical
+  # labels -- distinct Terraform resource addresses mean Terraform
+  # itself doesn't catch it, so it only surfaces at APPLY time as a raw
+  # Linode API "[400] Label must be unique among your Linodes" error,
+  # not at plan time the way this file's other pool-config mistakes do.
+  pools_with_duplicate_fleet_label = [
+    for k, p in var.pools : k
+    if length([for k2, p2 in var.pools : k2 if p2.fleet_label == p.fleet_label]) > 1
   ]
 
   # The observability host's own VLAN address, as a full "host/prefix"
@@ -288,6 +414,25 @@ check "observability_vpc_offset_no_overlap_pools" {
   }
 }
 
+# Every pool's VPC-side elastic range must not overlap any OTHER pool's
+# floor range or elastic range -- see overlapping_elastic_vpc_pool_pairs'
+# own comment for the collision this closes.
+check "pool_elastic_vpc_ranges_no_overlap" {
+  assert {
+    condition     = length(local.overlapping_elastic_vpc_pool_pairs) == 0
+    error_message = "These pool pairs have a VPC-side elastic range ([elastic_ip_offset_start, elastic_ip_offset_start+max_nodes-floor_nodes)) that overlaps the other pool's private_ip_offset (floor) range or its own elastic range, on the shared VPC subnet: ${join(", ", local.overlapping_elastic_vpc_pool_pairs)}. Unlike the VLAN side, there is no per-pool reserved sub-block protecting elastic_ip_offset_start on the VPC side -- give every pool's elastic range room clear of every other pool's floor AND elastic ranges too."
+  }
+}
+
+# Same check as above, but against the observability host's single fixed
+# VPC address instead of another pool's range.
+check "observability_vpc_offset_no_overlap_pool_elastic_ranges" {
+  assert {
+    condition     = length(local.pools_with_elastic_range_overlapping_observability_offset) == 0
+    error_message = "observability_private_ip_offset (${var.observability_private_ip_offset}) falls inside these pools' own VPC-side elastic ranges: ${join(", ", local.pools_with_elastic_range_overlapping_observability_offset)}. The observability host and one of that pool's elastic nodes would get the same VPC (eth1) address. Move observability_private_ip_offset outside every pool's [elastic_ip_offset_start, elastic_ip_offset_start+max_nodes-floor_nodes) range."
+  }
+}
+
 # Plan-time validation that a pool's own FLOOR node count can never grow
 # large enough to collide with that same pool's elastic node range. Floor
 # nodes occupy offsets [vlan_ip_offset, vlan_ip_offset+floor_nodes-1]
@@ -300,6 +445,60 @@ check "pool_floor_nodes_below_elastic_offset" {
   assert {
     condition     = length(local.pools_with_floor_reaching_elastic_offset) == 0
     error_message = "These pools have floor_nodes large enough that their floor VLAN offsets reach their own elastic_ip_offset_start: ${join(", ", local.pools_with_floor_reaching_elastic_offset)}. This would be a real IP collision the first time natctl provisions an elastic node for that pool. Lower floor_nodes, or raise elastic_ip_offset_start, for the affected pool(s)."
+  }
+}
+
+# VPC-side twin of the check above -- see
+# pools_with_floor_overlapping_own_elastic_vpc_range's own comment for why
+# this needs a real overlap test rather than the VLAN side's simpler
+# ordering check.
+check "pool_floor_vpc_range_no_overlap_own_elastic_vpc_range" {
+  assert {
+    condition     = length(local.pools_with_floor_overlapping_own_elastic_vpc_range) == 0
+    error_message = "These pools have a VPC-side floor range ([private_ip_offset, private_ip_offset+floor_nodes)) that overlaps their OWN elastic range ([elastic_ip_offset_start, elastic_ip_offset_start+max_nodes-floor_nodes)): ${join(", ", local.pools_with_floor_overlapping_own_elastic_vpc_range)}. This would be a real duplicate-VPC-IP collision the first time natctl provisions an elastic node for that pool. Adjust private_ip_offset, floor_nodes, elastic_ip_offset_start, or max_nodes for the affected pool(s) so the two ranges don't overlap."
+  }
+}
+
+# vlan_ip_offset must be a real, positive host offset -- see
+# pools_with_non_positive_vlan_ip_offset's own comment for why 0 (or
+# negative) is a genuine collision risk, not just an unusual choice.
+check "pool_vlan_ip_offset_is_positive" {
+  assert {
+    condition     = length(local.pools_with_non_positive_vlan_ip_offset) == 0
+    error_message = "These pools have vlan_ip_offset < 1: ${join(", ", local.pools_with_non_positive_vlan_ip_offset)}. vlan_ip_offset must be a positive host offset -- a value of 0 makes observability_vlan_ip's own cidrhost(vlan_cidr_reserved, vlan_ip_offset - 1) call use a NEGATIVE offset, which Terraform interprets as counting backward from the end of the range, landing near where elastic nodes are allocated instead of just below the floor range as intended."
+  }
+}
+
+# See pools_with_zero_floor_nodes_under_natctl_on_node's own comment --
+# under natctl_on_node_enabled, a pool with floor_nodes == 0 never gets a
+# Prometheus scrape target at all, silently and permanently, even once
+# natctl provisions real elastic nodes for it.
+check "pool_has_floor_node_when_natctl_on_node_enabled" {
+  assert {
+    condition     = length(local.pools_with_zero_floor_nodes_under_natctl_on_node) == 0
+    error_message = "These pools have floor_nodes == 0 while natctl_on_node_enabled is true: ${join(", ", local.pools_with_zero_floor_nodes_under_natctl_on_node)}. natctl_http_sd_targets seeds Prometheus's discovery of a pool's roster from that pool's own first FLOOR node -- with zero floor nodes, this pool never gets a scrape target, even after natctl later provisions elastic nodes for it. Give the pool at least one floor node, or scrape it manually until it does."
+  }
+}
+
+# See pools_with_max_nodes_below_floor_nodes's own comment -- an inverted
+# elastic range silently defeats several of the overlap checks above and
+# permanently blocks that pool's autoscaling, with no signal at
+# plan/apply time that the root cause is this pool's own config.
+check "pool_max_nodes_not_below_floor_nodes" {
+  assert {
+    condition     = length(local.pools_with_max_nodes_below_floor_nodes) == 0
+    error_message = "These pools have max_nodes < floor_nodes: ${join(", ", local.pools_with_max_nodes_below_floor_nodes)}. max_nodes must be >= floor_nodes -- the elastic range's width is computed as max_nodes - floor_nodes, and a negative width silently defeats this environment's own overlap checks while permanently blocking that pool's elastic scaling. Raise max_nodes (or lower floor_nodes) for the affected pool(s)."
+  }
+}
+
+# See pools_with_duplicate_fleet_label's own comment -- two pools
+# sharing a fleet_label would only surface as a raw Linode API "Label
+# must be unique" error at apply time, not caught at plan time the way
+# this file's other pool-config mistakes are.
+check "pool_fleet_label_is_unique" {
+  assert {
+    condition     = length(local.pools_with_duplicate_fleet_label) == 0
+    error_message = "These pools share the same fleet_label with at least one other pool: ${join(", ", local.pools_with_duplicate_fleet_label)}. fleet_label must be unique across every pool -- terraform/modules/nat-fleet derives each node's Linode instance label from it (\"${"$"}{fleet_label}-${"$"}{n}\"), so two pools sharing one would try to create instances with identical labels. Give each pool its own fleet_label."
   }
 }
 
@@ -410,6 +609,20 @@ module "nat_fleet" {
   instance_type     = each.value.instance_type
   authorized_keys   = var.authorized_keys
   root_pass         = var.root_pass
+  # See dev-repo terraform/environments/example/variables.tf's matching
+  # comment on the pools map's egress_ips_per_node/conntrack_max/tags
+  # fields -- these were never threaded through at all.
+  egress_ips_per_node = each.value.egress_ips_per_node
+  conntrack_max       = each.value.conntrack_max
+  tags                = each.value.tags
+  # natctl_cli's own `resize` command
+  # prints exact guidance to add this to a pool's tfvars entry (see
+  # fleet.py's resize_node()), but nothing here ever passed it through to
+  # the module that actually declares it -- pasted into a pools map
+  # entry, Terraform's object-type conversion silently dropped the
+  # unrecognized attribute, and the next apply would have reverted the
+  # just-resized node back to this pool's base instance_type.
+  node_instance_type_overrides = each.value.node_instance_type_overrides
 
   vlan_label         = each.value.vlan_label
   vlan_cidr          = each.value.vlan_cidr
@@ -425,7 +638,8 @@ module "nat_fleet" {
   placement_group_enabled = var.placement_group_enabled
   placement_group_policy  = var.placement_group_policy
 
-  natctl_roster_url = local.natctl_roster_base_url # buddy-sync + IP-failover opt-in — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part IV (High Availability)
+  natctl_roster_url            = local.natctl_roster_base_url # buddy-sync + IP-failover opt-in — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part IV (High Availability)
+  conntrack_buddy_sync_enabled = var.conntrack_buddy_sync_enabled
 
   # natctl-on-node (opt-in) — see variables.tf's natctl_on_node_enabled.
   # natctl_config_yaml is defined further down (locals.natctl_config_yaml)
@@ -434,6 +648,7 @@ module "nat_fleet" {
   natctl_on_node_enabled    = var.natctl_on_node_enabled
   natctl_config_yaml        = var.natctl_on_node_enabled ? local.natctl_config_yaml : ""
   linode_token              = var.natctl_on_node_enabled ? var.linode_token : ""
+  api_port                  = var.api_port
   object_storage_access_key = var.natctl_object_storage_access_key
   object_storage_secret_key = var.natctl_object_storage_secret_key
 
@@ -523,6 +738,17 @@ locals {
       # main.py's reconcile_once()) -- a plain in-place Object Storage PUT,
       # entirely decoupled from any instance's own creation payload.
       instance_type = p.instance_type
+      # See dev-repo terraform/environments/example/main.tf's matching
+      # comment -- every pool-map field module.nat_fleet's floor nodes
+      # receive must also reach natctl's own composed config, or every
+      # elastic node this pool's natctl provisions silently falls back
+      # to PoolConfig's own Python-side defaults
+      # (egress_ips_per_node=1, conntrack_max=1048576, tags=[])
+      # regardless of what's actually configured for this pool in
+      # terraform.tfvars.
+      egress_ips_per_node = p.egress_ips_per_node
+      conntrack_max       = p.conntrack_max
+      tags                = p.tags
       # Both offsets are ABSOLUTE host offsets within vlan_reserved_cidr
       # above, compared directly against each other (never summed) --
       # see this file's own pool_floor_nodes_below_elastic_offset check
@@ -530,9 +756,14 @@ locals {
       # wired through here, PoolConfig would silently fall back to its
       # own Python-side default (20) regardless of what this pool's
       # vlan_ip_offset is actually set to in terraform.tfvars.
-      vlan_ip_offset               = p.vlan_ip_offset
-      elastic_ip_offset_start      = p.elastic_ip_offset_start
-      conntrack_buddy_sync_enabled = true
+      vlan_ip_offset          = p.vlan_ip_offset
+      elastic_ip_offset_start = p.elastic_ip_offset_start
+      # See dev-repo terraform/environments/example/main.tf's matching
+      # comment -- hardcoding this true meant natctl's own composed
+      # config could never reflect var.conntrack_buddy_sync_enabled, the
+      # same variable module.nat_fleet (this pool's own floor nodes) now
+      # respects too.
+      conntrack_buddy_sync_enabled = var.conntrack_buddy_sync_enabled
       # var.ip_failover_enabled/var.linode_bgp_dcid must be threaded into
       # this pool's natctl config explicitly, not just into FRR's own
       # cloud-init rendering (a completely separate path) -- FRR alone gets
@@ -545,9 +776,20 @@ locals {
       # ip-sharing manually configured via the API. A silent failure of the
       # whole HA mechanism if these two fields are left out, not just a
       # config nicety.
-      ip_failover_enabled    = var.ip_failover_enabled
-      linode_bgp_dcid        = var.linode_bgp_dcid
-      reserved_ip_enabled    = var.reserved_ip_enabled
+      ip_failover_enabled = var.ip_failover_enabled
+      linode_bgp_dcid     = var.linode_bgp_dcid
+      reserved_ip_enabled = var.reserved_ip_enabled
+      # this was missing entirely,
+      # unlike reserved_ip_enabled right above it -- module.nat_fleet
+      # (this pool's own floor nodes) already receives
+      # each.value.reserved_ip_pool, but natctl itself (both the
+      # single-dedicated-host case and natctl_on_node_enabled) never saw
+      # it, so PoolConfig.reserved_ip_pool silently defaulted to [].
+      # fleet.py's _provision()/prereserve_ips_to_max() reuse addresses
+      # from this list before ever minting a brand-new reservation --
+      # with it missing, an operator's pre-owned addresses were simply
+      # never reused, indistinguishable from having configured nothing.
+      reserved_ip_pool       = p.reserved_ip_pool
       natctl_roster_base_url = local.natctl_roster_base_url
       # Elastic nodes natctl provisions for this pool also get natctl
       # installed on themselves (leader-election-eligible), matching the
@@ -602,7 +844,7 @@ locals {
     reconcile_interval_seconds = 15
     api = {
       listen_host = "0.0.0.0"
-      listen_port = 8099
+      listen_port = var.api_port
       # Lets a vlan_only/vpc_vlan client instance fetch the compiled
       # client-agent binary over the fleet's own VLAN/VPC before it has
       # any other network path -- see controller/natctl/api.py's GET
@@ -696,10 +938,12 @@ locals {
 # PUT, with zero relationship to any linode_instance's own user_data.
 # Every natctl process (floor-node-resident or the observability host)
 # reads this every reconcile pass (FleetController.refresh_pool_scaling())
-# instead of relying on a boot-time-embedded value. Terraform-driven only
-# by design -- terraform.tfvars stays the single source of truth for
-# these two values -- no live natctl_cli override exists for this one,
-# unlike other settings that support one.
+# instead of relying on a boot-time-embedded value. natctl_cli
+# set-pool-scaling can also write this same object directly for an
+# immediate, no-apply-needed update (reaches every natctl instance within
+# one reconcile pass) -- this resource will overwrite that back to these
+# two tfvars-declared values on the next apply, same relationship
+# vpc_sibling_subnets below has with its own live override.
 # PRIVATE (no acl argument, same default-private treatment
 # object_storage.py's read_json_object()/write_json_object() already use
 # for the reserved-IP ownership manifest) -- read via natctl's own
@@ -777,8 +1021,8 @@ module "observability" {
   # This host's VPC interface only ever gets a kernel route for its OWN
   # directly-connected subnet -- without this, a client on ANY other VPC
   # subnet couldn't reach (or get a reply from) natctl's roster API
-  # (8099) here in the default single-control-plane layout, even though
-  # Cloud Firewall's private_subnet_ids rule already allows it -- the
+  # (var.api_port) here in the default single-control-plane layout, even
+  # though Cloud Firewall's private_subnet_ids rule already allows it -- the
   # kernel would simply have no route to send the reply back over. See
   # terraform/modules/vpc's all_subnet_cidrs output (auto-discovered,
   # not hand-maintained).
@@ -856,7 +1100,7 @@ module "observability" {
   # independently polled and merged -- not a single URL with a list
   # value.
   natctl_http_sd_targets = var.natctl_on_node_enabled ? [
-    for k, m in module.nat_fleet : "${values(m.node_vpc_ips)[0]}:8099"
+    for k, m in module.nat_fleet : "${values(m.node_vpc_ips)[0]}:${var.api_port}"
     if length(m.node_vpc_ips) > 0
   ] : []
 

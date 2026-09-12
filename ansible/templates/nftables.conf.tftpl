@@ -32,9 +32,9 @@
 #    (reserved_ip_enabled, see nat-fleet/variables.tf), this node's
 #    Reserved IP address, used for an explicit `snat ip to` instead of
 #    `masquerade`.
-# 5) natctl_on_node_enabled - Opens 8099 (natctl's roster API) on the VPC
-#    interface only, when natctl runs directly on this node -- see the
-#    comment on that rule below.
+# 5) natctl_on_node_enabled - Opens api_port (natctl's roster API,
+#    default 8099) on the VPC interface only, when natctl runs directly
+#    on this node -- see the comment on that rule below.
 #
 # -----------------------------------------------------
 # Usage:
@@ -204,19 +204,19 @@ table inet lng_nat {
 %{ endif ~}
 %{ if natctl_on_node_enabled ~}
     # natctl_on_node_enabled means natctl runs directly on this node and
-    # serves its roster API on 8099 -- this ruleset's own default-drop
+    # serves its roster API on api_port -- this ruleset's own default-drop
     # input policy would otherwise silently drop it before natctl's
     # socket ever sees the packet, even with the separate Cloud Firewall
     # rule (terraform/modules/vpc/main.tf's natctl-api rule) correctly
     # allowing it from outside the node.
-    iifname "${vpc_iface}" tcp dport 8099 accept
+    iifname "${vpc_iface}" tcp dport ${api_port} accept
     # Also reachable over the VLAN -- a true "vlan_only" client has no
     # VPC interface at all, so the rule above alone still leaves it
     # unable to reach the roster. Cloud Firewall does not filter VLAN
     # traffic at all (§3.7), so this rule is the ONLY gate for it --
     # same trust model already used for 9200/exporter above (every VLAN
     # client is already trusted for that).
-    iifname "${vlan_iface}" tcp dport 8099 accept
+    iifname "${vlan_iface}" tcp dport ${api_port} accept
 %{ endif ~}
     counter name drop_input_default drop
   }

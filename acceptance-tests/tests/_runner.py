@@ -39,7 +39,7 @@ def run_module(path: Path) -> tuple[int, int]:
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)
-    except Exception:
+    except Exception:  # noqa: BLE001 -- a test module can raise literally anything at import time
         print(f"  MODULE IMPORT FAILED: {path.name}")
         traceback.print_exc()
         return 0, 1
@@ -54,7 +54,7 @@ def run_module(path: Path) -> tuple[int, int]:
         try:
             fn()
             passed += 1
-        except Exception:
+        except Exception:  # noqa: BLE001 -- a test function can raise literally anything
             failed += 1
             print(f"  FAIL: {path.name}::{name}")
             traceback.print_exc()

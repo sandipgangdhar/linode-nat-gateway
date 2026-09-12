@@ -29,14 +29,13 @@ from pathlib import Path
 _ACCEPTANCE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ACCEPTANCE_ROOT))
 
-from lib.config import load_config, MissingConfigError  # noqa: E402
-from lib.reporter import Reporter  # noqa: E402
+from lib.config import MissingConfigError, load_config
+from lib.reporter import Reporter
 
 
 def _write_config(content: str) -> str:
-    f = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
-    f.write(content)
-    f.close()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(content)
     return f.name
 
 
@@ -119,12 +118,12 @@ def test_reporter_records_every_result_with_status():
     assert statuses == {"a": "PASS", "b": "FAIL", "c": "SKIP"}
 
 
-def test_run_acceptance_tests_discovers_all_eight_checks():
+def test_run_acceptance_tests_discovers_all_six_checks():
     import importlib
 
     checks_dir = _ACCEPTANCE_ROOT / "checks"
     check_files = sorted(checks_dir.glob("check_*.py"))
-    assert len(check_files) == 8, f"expected 8 check modules, found {len(check_files)}: {[p.name for p in check_files]}"
+    assert len(check_files) == 6, f"expected 6 check modules, found {len(check_files)}: {[p.name for p in check_files]}"
 
     sys.path.insert(0, str(_ACCEPTANCE_ROOT))
     for path in check_files:

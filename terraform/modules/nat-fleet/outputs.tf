@@ -39,11 +39,11 @@ output "node_ids" {
 
 output "node_private_ips" {
   description = "Point client instances' ECMP next-hop set at these — see client-agent/."
-  # v9 fix: was `local.node_private_ips`, which was never declared anywhere
-  # in main.tf (a real bug, caught by a live `terraform plan` run) --
-  # main.tf's locals block calls this `node_vlan_ips` (the VLAN-facing IP
-  # client-agent's ECMP next-hop set actually needs -- see main.tf's own
-  # "What this file creates" header comment, item 1).
+  # Despite this output's own name, the value is main.tf's
+  # node_vlan_ips local -- the VLAN-facing IP (eth2), which is what
+  # client-agent's ECMP next-hop set actually needs (see main.tf's own
+  # "What this file creates" header comment, item 1), not the VPC-facing
+  # one.
   value = local.node_vlan_ips
 }
 

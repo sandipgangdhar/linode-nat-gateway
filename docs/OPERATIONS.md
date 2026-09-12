@@ -49,9 +49,10 @@ this release.
 
 ## `natctl.yaml` configuration reference
 
-`natctl` reads one YAML file per environment (see `../controller/natctl.example.yaml`
-for a fully commented starting point covering every field below with real
-example values). This section is the complete field-by-field reference;
+`natctl` reads one YAML file per environment (see `natctl.example.yaml`,
+in this same `docs/` folder, for a fully commented starting point
+covering every field below with real example values). This section is
+the complete field-by-field reference;
 "How to update any field" right after it is the actual step-by-step
 procedure for changing one on a live deployment.
 
@@ -236,7 +237,7 @@ your placement mode.**
    ```bash
    cp /etc/natctl/config.yaml /etc/natctl/config.yaml.bak
    ```
-2. **Make your edit.** This repo ships compiled binaries with no Python interpreter installed on the node (see "How this repository is built" above) — there's no `python3 -c "import yaml..."` syntax check available locally on the node itself. If you want to validate the YAML is well-formed before touching a live node, do it on your own machine first (or against your own copy of `controller/natctl.example.yaml`), then copy the verified file over.
+2. **Make your edit.** This repo ships compiled binaries with no Python interpreter installed on the node (see "How this repository is built" above) — there's no `python3 -c "import yaml..."` syntax check available locally on the node itself. If you want to validate the YAML is well-formed before touching a live node, do it on your own machine first (or against your own copy of `docs/natctl.example.yaml`), then copy the verified file over.
 3. **Restart natctl:**
    ```bash
    systemctl restart natctl
@@ -327,7 +328,7 @@ If you'd rather authorize the first pairing yourself before `natctl` touches it,
 
 If the resized node is a **Terraform floor node**, the command prints the exact `node_instance_type_overrides` block to add to your `.tfvars` — do this immediately, or the next `terraform apply` will see drift and revert the resize.
 
-**Changing the base type** (what future nodes get provisioned as): edit `nat_instance_type` in `terraform.tfvars` (floor) or the pool's `instance_type` in `natctl.yaml` + restart `natctl` (elastic) — neither retroactively resizes existing nodes.
+**Changing the base type** (what future nodes get provisioned as): edit the target pool's own `instance_type` field in `terraform.tfvars`'s `pools` map (floor) or the pool's `instance_type` in `natctl.yaml` + restart `natctl` (elastic) — neither retroactively resizes existing nodes.
 
 ## Common day-2 procedures
 

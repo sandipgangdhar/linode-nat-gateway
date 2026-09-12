@@ -89,6 +89,17 @@ locals {
 
   node_ids = [for i in range(var.node_count) : "${var.fleet_label}-${i + 1}"]
 
+  # Mirrors fleet.py's own elastic-node provisioning path (_provision()),
+  # which derives its natctl_roster_url the same way -- `self.pool.
+  # natctl_roster_base_url if self.pool.conntrack_buddy_sync_enabled else
+  # ""` -- so floor and elastic nodes stay behaviorally identical: buddy-
+  # sync installation (and, since IP failover rides the same roster/
+  # buddy-pairing mechanism, ip_failover_enabled below too) is gated on
+  # this flag exactly the same way on both paths. Used everywhere
+  # var.natctl_roster_url previously fed buddy-sync/ip-failover-related
+  # template content or the dependency check below.
+  effective_natctl_roster_url = var.conntrack_buddy_sync_enabled ? var.natctl_roster_url : ""
+
   # node_id -> its 0-based creation-order index, the same index
   # node_ids[i] used to derive that id in the first place. linode_instance.node
   # below is for_each-keyed by node_id (a set of strings), not count, so
@@ -198,6 +209,45 @@ check "reserved_ip_pool_fits_node_count" {
   assert {
     condition     = !var.reserved_ip_enabled || length(var.reserved_ip_pool) <= var.node_count
     error_message = "reserved_ip_pool has ${length(var.reserved_ip_pool)} address(es) but node_count is only ${var.node_count} -- ${length(var.reserved_ip_pool) - var.node_count} of the supplied address(es) would never be assigned to any node in this pool. Either trim reserved_ip_pool to at most node_count entries, or raise node_count."
+  }
+}
+
+# ip_failover_enabled's own description states it requires both
+# natctl_roster_url and linode_bgp_dcid, but nothing enforced either
+# dependency -- ip_failover_enabled could be set true with
+# natctl_roster_url left at its "" default, and this module would apply
+# successfully. Each node would then self-announce its own public IP as
+# BGP primary (the FRR/ip_failover_enabled cloud-init block doesn't
+# itself check natctl_roster_url), but buddy-sync -- which actually
+# programs a buddy's SECONDARY announcement -- is gated on
+# natctl_roster_url being set and would never install, so no node could
+# ever actually receive a buddy's failover announcement. IP failover
+# would silently never fail over, with no plan-time or apply-time error.
+check "ip_failover_enabled_requires_its_own_dependencies" {
+  assert {
+    condition     = !var.ip_failover_enabled || local.effective_natctl_roster_url != ""
+    error_message = "ip_failover_enabled is true but there is no effective natctl_roster_url -- either natctl_roster_url itself is not set, or conntrack_buddy_sync_enabled is false (which disables buddy-sync installation the same way an unset natctl_roster_url does). buddy-sync (which programs a buddy's secondary BGP announcement) won't install either way -- without it, every node self-announces its own IP but none can ever receive a buddy's failover announcement, so IP failover would never actually fail over. Set natctl_roster_url and leave conntrack_buddy_sync_enabled true."
+  }
+  assert {
+    condition     = !var.ip_failover_enabled || var.linode_bgp_dcid != null
+    error_message = "ip_failover_enabled is true but linode_bgp_dcid is not set -- FRR's BGP peering config needs it to address Linode's route-reflector neighbors (2600:3c0f:<dcid>:34::1-4) for this region. Set linode_bgp_dcid."
+  }
+}
+
+# natctl_config_yaml/linode_token's own descriptions both state "Required
+# if natctl_on_node_enabled", but nothing enforced either dependency.
+# object_storage_access_key/secret_key are left out of this check --
+# they're additionally conditional on leader_election.enabled, which is
+# encoded inside natctl_config_yaml's own composed YAML content and so
+# isn't something this module can cleanly see.
+check "natctl_on_node_enabled_requires_its_own_dependencies" {
+  assert {
+    condition     = !var.natctl_on_node_enabled || var.natctl_config_yaml != ""
+    error_message = "natctl_on_node_enabled is true but natctl_config_yaml is not set -- every node in this fleet would run natctl with an empty config, and natctl's own Config.load() fails to start on it (yaml.safe_load(\"\") -> None, then a TypeError indexing it for \"pools\"). Set natctl_config_yaml (composed once at the environment level, see terraform/environments/example/main.tf's locals.natctl_config_yaml)."
+  }
+  assert {
+    condition     = !var.natctl_on_node_enabled || var.linode_token != ""
+    error_message = "natctl_on_node_enabled is true but linode_token is not set -- every node in this fleet needs it written to /etc/natctl/env so natctl can call the Linode API. Set linode_token."
   }
 }
 
@@ -361,7 +411,13 @@ resource "linode_instance_ip" "extra_egress" {
   for_each = {
     for pair in flatten([
       for node_id in local.node_ids : [
-        for n in range(var.egress_ips_per_node - 1) : {
+        # range()'s own documented quirk for a single argument -- range(-1)
+        # returns [0], the SAME single-element result as range(1), not an
+        # empty list the way range(0) does (confirmed via `terraform
+        # console`) -- so egress_ips_per_node = 0 needs max(..., 0) here
+        # to floor at range(0) = [], the only sensible reading of "0 or
+        # fewer extra IPs" beyond the primary eth0 address.
+        for n in range(max(var.egress_ips_per_node - 1, 0)) : {
           key     = "${node_id}-${n}"
           node_id = node_id
         }
@@ -386,6 +442,30 @@ resource "linode_instance_ip" "extra_egress" {
 # into node_cloud_init below.
 locals {
   object_storage_base_url = "https://${var.object_storage_bucket}.${var.object_storage_s3_region}.linodeobjects.com"
+
+  # Rendered once per node here so content and etag below reference the
+  # exact same value instead of each independently calling templatefile()
+  # with its own hand-copied argument map -- two separately-maintained
+  # copies of the same render would let a future template argument
+  # addition update one and miss the other, making etag stop tracking
+  # content changes so a real config change would never trigger
+  # re-upload of nftables.conf to Object Storage (a stale ruleset
+  # silently ships to the node).
+  nftables_conf_rendered = {
+    for node_id in local.node_ids : node_id => templatefile("${path.module}/../../../ansible/templates/nftables.conf.tftpl", {
+      public_iface         = "eth0"
+      vpc_iface            = "eth1"
+      vlan_iface           = "eth2"
+      private_subnet_cidrs = var.private_subnet_cidrs
+      reserved_public_ip   = var.reserved_ip_enabled ? local.node_reserved_ips[node_id] : ""
+      pool_subnet_cidr     = local.effective_natctl_roster_url != "" ? var.public_subnet_cidr : ""
+      # This local nftables ruleset must open api_port for
+      # natctl_on_node_enabled too -- see that rule's own comment in
+      # nftables.conf.tftpl for the full story.
+      natctl_on_node_enabled = var.natctl_on_node_enabled
+      api_port               = var.api_port
+    })
+  }
 }
 
 resource "linode_object_storage_object" "nftables_conf" {
@@ -396,29 +476,10 @@ resource "linode_object_storage_object" "nftables_conf" {
   access_key = var.object_storage_access_key
   secret_key = var.object_storage_secret_key
 
-  key = "lng-artifacts/${var.pool_name}/${each.key}/nftables.conf"
-  content = templatefile("${path.module}/../../../ansible/templates/nftables.conf.tftpl", {
-    public_iface         = "eth0"
-    vpc_iface            = "eth1"
-    vlan_iface           = "eth2"
-    private_subnet_cidrs = var.private_subnet_cidrs
-    reserved_public_ip   = var.reserved_ip_enabled ? local.node_reserved_ips[each.key] : ""
-    pool_subnet_cidr     = var.natctl_roster_url != "" ? var.public_subnet_cidr : ""
-    # This local nftables ruleset must open 8099 for natctl_on_node_enabled
-    # too -- see that rule's own comment in nftables.conf.tftpl for the
-    # full story.
-    natctl_on_node_enabled = var.natctl_on_node_enabled
-  })
-  acl = "public-read"
-  etag = md5(templatefile("${path.module}/../../../ansible/templates/nftables.conf.tftpl", {
-    public_iface           = "eth0"
-    vpc_iface              = "eth1"
-    vlan_iface             = "eth2"
-    private_subnet_cidrs   = var.private_subnet_cidrs
-    reserved_public_ip     = var.reserved_ip_enabled ? local.node_reserved_ips[each.key] : ""
-    pool_subnet_cidr       = var.natctl_roster_url != "" ? var.public_subnet_cidr : ""
-    natctl_on_node_enabled = var.natctl_on_node_enabled
-  }))
+  key     = "lng-artifacts/${var.pool_name}/${each.key}/nftables.conf"
+  content = local.nftables_conf_rendered[each.key]
+  acl     = "public-read"
+  etag    = md5(local.nftables_conf_rendered[each.key])
 }
 
 locals {
@@ -443,10 +504,10 @@ locals {
       pool_name = var.pool_name
       vpc_ip    = local.node_vpc_ips[node_id]
       vlan_ip   = local.node_vlan_ips[node_id]
-      # M31 Finding 18: prefix lengths for the eth1/eth2 systemd-networkd
-      # DNS-scope-removal override files (see nat-node.yaml.tftpl's own
-      # runcmd comment for the full root cause) -- same source CIDRs
-      # already used elsewhere in this module, just also needed here.
+      # Prefix lengths for the eth1/eth2 systemd-networkd DNS-scope-
+      # removal override files (see nat-node.yaml.tftpl's own runcmd
+      # comment for the full root cause) -- same source CIDRs already
+      # used elsewhere in this module, just also needed here.
       vpc_prefix    = split("/", var.public_subnet_cidr)[1]
       vlan_prefix   = split("/", var.vlan_cidr)[1]
       conntrack_max = var.conntrack_max
@@ -455,7 +516,7 @@ locals {
       # Distinct from private_subnet_cidrs above (that's the VLAN CIDR,
       # for nftables' forward rule -- unrelated).
       vpc_sibling_subnet_cidrs = var.vpc_sibling_subnet_cidrs
-      natctl_roster_url        = var.natctl_roster_url
+      natctl_roster_url        = local.effective_natctl_roster_url
       ip_failover_enabled      = var.ip_failover_enabled
       linode_bgp_dcid          = var.linode_bgp_dcid
       # Empty string (not reserved_ip_enabled) means "keep self-detecting

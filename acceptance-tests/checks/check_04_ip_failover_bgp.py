@@ -108,7 +108,7 @@ def _ssh(ssh_user: str, ssh_key: str | None, host: str, command: str) -> subproc
     if ssh_key:
         cmd += ["-i", ssh_key]
     cmd += [f"{ssh_user}@{host}", command]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=SSH_TIMEOUT_SECONDS)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=SSH_TIMEOUT_SECONDS, check=False)
 
 
 def _ping_loss_percent(target_ip: str, count: int) -> float | None:
@@ -116,7 +116,7 @@ def _ping_loss_percent(target_ip: str, count: int) -> float | None:
     reported packet-loss percentage, or None if the output couldn't be parsed."""
     proc = subprocess.run(
         ["ping", "-c", str(count), target_ip],
-        capture_output=True, text=True, timeout=count + 15,
+        capture_output=True, text=True, timeout=count + 15, check=False,
     )
     match = _LOSS_RE.search(proc.stdout)
     return float(match.group(1)) if match else None

@@ -65,7 +65,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
-
 from lib.config import Config, MissingConfigError
 from lib.http_client import request_with_backoff
 from lib.reporter import Reporter

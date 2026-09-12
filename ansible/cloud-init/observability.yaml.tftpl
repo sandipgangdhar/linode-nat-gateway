@@ -165,7 +165,6 @@ write_files:
 %{ endif ~}
 
 runcmd:
-%{ if length(vpc_sibling_subnet_cidrs) > 0 ~}
   # This host's VPC interface only ever gets a
   # kernel route for its OWN directly-connected subnet -- without these
   # explicit routes, a client on a different
@@ -179,11 +178,36 @@ runcmd:
   # lower-numbered file wins outright over Linode's own boot-time
   # Network Helper for a given interface -- see that file's own comment
   # for why this must restate DHCP=no/Address=, not just add routes).
-  # Only written when this list is actually non-empty, so an environment
-  # that hasn't wired vpc_sibling_subnet_cidrs sees zero behavior change.
+  #
+  # This whole block runs unconditionally, NOT wrapped in an `if
+  # length(vpc_sibling_subnet_cidrs) > 0` directive -- the DNS-scope-
+  # removal override below is what actually fixes the intermittent-
+  # hostname-resolution-hang bug (natctl's own Linode API calls,
+  # Prometheus remote_write), the same fix already applied unconditionally
+  # for every NAT node in nat-node.yaml.tftpl; the per-sibling-subnet
+  # [Route] lines below are the only part that's genuinely conditional
+  # on this list's contents, and the `for` loop already produces zero of
+  # them on its own when it's empty -- no outer `if` needed for that.
   - mkdir -p /etc/systemd/network
   - |
     printf '[Match]\nName=eth1\n\n[Network]\nDHCP=no\nAddress=${private_ip}/${vpc_prefix}\nIPv6PrivacyExtensions=false\n%{ for cidr in vpc_sibling_subnet_cidrs }\n[Route]\nDestination=${cidr}\n%{ endfor }' > /etc/systemd/network/04-lng-eth1-routes.network
+  - systemctl restart systemd-networkd
+%{ if vlan_label != "" ~}
+  # This host's VLAN interface (attached only when vlan_label is set --
+  # see that variable's own description) had NO matching cloud-init
+  # configuration at all before this block existed: no static-address
+  # config, and no DNS-scope-removal override -- the same two gaps the
+  # NAT-node renderers (cloud_init.py/nat-node.yaml.tftpl) already
+  # close for eth1/eth2 on every NAT node, missed here since this host
+  # only started optionally joining a VLAN after those were written.
+  # Without the DNS override, systemd-resolved can pick up a DNS scope
+  # for this link, letting a hostname-based outbound call (natctl's own
+  # Linode API discovery, Prometheus remote-write) intermittently hang
+  # resolving against an unreachable VLAN-side resolver -- the exact
+  # failure mode already root-caused and closed for NAT nodes.
+  - mkdir -p /etc/systemd/network
+  - |
+    printf '[Match]\nName=eth2\n\n[Network]\nDHCP=no\nAddress=${vlan_ip}\nIPv6PrivacyExtensions=false\n' > /etc/systemd/network/04-lng-eth2-no-dns.network
   - systemctl restart systemd-networkd
 %{ endif ~}
 %{ if run_monitoring_stack ~}

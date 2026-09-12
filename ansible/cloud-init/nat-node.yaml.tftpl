@@ -330,17 +330,16 @@ write_files:
 
       ipv6 nht resolve-via-default
 
-  # M31 Finding 20: Linode's own Network Helper reflects every buddy
-  # IP-failover address this node is currently backing up onto eth0 AS
-  # A /24 (e.g. Address=172.236.171.170/24), not a /32 -- creating an
-  # on-link subnet route (172.236.171.0/24 dev eth0 src 172.236.171.170)
-  # that's MORE SPECIFIC than, and so wins over, the default route for
-  # anything else in that same /24 -- including, if Linode's own DNS
-  # resolvers happen to fall in it, this node's own outbound DNS
-  # queries. Live-reproduced during Run 5: natctl's own discover() calls
-  # to api.linode.com failed outright with a DNS NameResolutionError,
-  # leaving this node's roster permanently empty (roster_version stuck
-  # at 0) until fixed. Explicit /32 host routes for each DNS server,
+  # Linode's own Network Helper reflects every buddy IP-failover address
+  # this node is currently backing up onto eth0 AS A /24 (e.g.
+  # Address=172.236.171.170/24), not a /32 -- creating an on-link subnet
+  # route (172.236.171.0/24 dev eth0 src 172.236.171.170) that's MORE
+  # SPECIFIC than, and so wins over, the default route for anything else
+  # in that same /24 -- including, if Linode's own DNS resolvers happen
+  # to fall in it, this node's own outbound DNS queries (breaking
+  # natctl's own discover() calls to api.linode.com with a DNS
+  # NameResolutionError, leaving this node's roster permanently empty).
+  # Explicit /32 host routes for each DNS server,
   # via the default gateway with this node's OWN address as source,
   # override the wrongly-preferred on-link route for exactly those
   # destinations without touching eth0's own addressing (which Network
@@ -371,7 +370,7 @@ write_files:
     permissions: '0644'
     content: |
       [Unit]
-      Description=LNG: pin host routes for Linode's DNS resolvers to this node's own address (M31 Finding 20)
+      Description=LNG: pin host routes for Linode's DNS resolvers to this node's own address
       After=systemd-networkd.service network-online.target
       Wants=network-online.target
 
@@ -466,7 +465,15 @@ runcmd:
   - chown root:root /etc/systemd/system/nat-exporter.service
   - chmod 0644 /etc/systemd/system/nat-exporter.service
   - systemctl daemon-reload
-  - systemctl enable --now nat-exporter
+  # nat-exporter is deliberately NOT started here -- its own
+  # `systemctl enable --now nat-exporter` runs later in this file (see
+  # below), after the ip_failover_enabled block has had a chance to
+  # write its own NAT_PUBLIC_IP line to /etc/nat-exporter/env.
+  # nat-exporter's systemd unit reads that env file only once at process
+  # start, and cloud-init's runcmd never re-runs on a later reboot, so
+  # starting it here would mean the running process never picks up that
+  # value at all. It must start after BOTH NAT_PUBLIC_IPS (written
+  # above) and NAT_PUBLIC_IP (written conditionally, below) exist.
 %{ if ip_failover_enabled ~}
   # Bring up FRR and push this node's own public IP in as router-id +
   # the "primary" self-announcement — self-detected (not known until
@@ -483,9 +490,10 @@ runcmd:
   # its frr:frr system user) is guaranteed present, before frr starts.
   - chown frr:frr /etc/frr/frr.conf
   - systemctl enable --now frr
-  # M31 Finding 20: --now runs it immediately (fixing this exact boot);
-  # `enable` is what actually matters for the reboot case this bug was
-  # found on -- see the write_files entries above for the full write-up.
+  # --now runs it immediately (fixing this exact boot); `enable` is what
+  # actually matters for a later reboot, once a buddy IP-failover address
+  # already exists on eth0 before this unit gets a chance to run -- see
+  # the write_files entries above for the full write-up.
   - systemctl daemon-reload
   - systemctl enable --now lng-dns-route-fixup.service
   - |
@@ -506,12 +514,13 @@ runcmd:
     systemctl restart systemd-networkd
     vtysh -c "configure terminal" -c "router bgp 65001" -c "bgp router-id $PUB_IP" -c "address-family ipv4 unicast" -c "network $PUB_IP/32 route-map primary" -c "exit-address-family" -c "end" -c "write memory"
     echo "NAT_PUBLIC_IP=$${PUB_IP}" >> /etc/lng-buddy-sync/env
-    # M31 Finding 19: same unambiguous self-detected PUB_IP, also given to
-    # the exporter so its egress_reachable probe can pin its source
-    # address instead of picking ambiguously among eth0's addresses once
-    # a buddy IP is also present there -- see exporter.py's own comment.
+    # Same unambiguous self-detected PUB_IP, also given to the exporter
+    # so its egress_reachable probe can pin its source address instead
+    # of picking ambiguously among eth0's addresses once a buddy IP is
+    # also present there -- see exporter.py's own comment.
     echo "NAT_PUBLIC_IP=$${PUB_IP}" >> /etc/nat-exporter/env
 %{ endif ~}
+  - systemctl enable --now nat-exporter
 %{ if natctl_roster_url != "" ~}
   # `systemctl mask` (not just disable) the conntrack-tools package's own
   # default conntrackd.service -- apt installing `conntrackd` auto-enables

@@ -74,3 +74,18 @@ variable "admin_cidrs" {
   description = "List of CIDRs allowed to reach SSH (every firewall this module creates: nat_node, control_plane, client) and, on control_plane specifically, Grafana/Prometheus/Alertmanager (3000/9090/9093). No default -- you must set this explicitly (e.g. your own office/VPN egress IP as a /32, or a broader range if you know what you're doing) rather than silently defaulting to the entire internet."
   type        = list(string)
 }
+
+# Both firewall rules that open natctl's roster API (nat_node's own
+# natctl-api rule, and control_plane's) hardcoded this to the literal
+# 8099 -- the same gap already fixed on the nftables side
+# (ansible/templates/nftables.conf.tftpl's own api_port parameter,
+# threaded from ApiConfig.listen_port via cloud_init.py/fleet.py) but
+# never mirrored here. An operator changing api.listen_port away from
+# its 8099 default with natctl_on_node_enabled=true would have Cloud
+# Firewall -- upstream of and independent from nftables entirely --
+# silently drop the new port regardless of what nftables itself allows.
+variable "api_port" {
+  description = "TCP port natctl's roster API listens on (must match ApiConfig.listen_port in natctl.yaml) -- opened on both nat_node (natctl_on_node_enabled) and control_plane (single-dedicated-host) firewalls. Default matches ApiConfig's own default."
+  type        = number
+  default     = 8099
+}
