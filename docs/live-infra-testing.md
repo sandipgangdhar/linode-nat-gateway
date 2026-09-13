@@ -2117,3 +2117,97 @@ On-node hardening finalization effort considered **complete**.
 
 ---
 
+## Round 2: full exhaustive re-test of every component, from `v0.1.71`
+
+Per the user's explicit follow-up instruction: re-run the ENTIRE product
+end to end — every fleet shape, both control-plane placements, every
+failure mode, autoscaling, IP failover, buddy sync, packet-drop
+behavior during failures — starting fresh from the latest release
+(`v0.1.71`, which also carries the control-plane recovery docs and the
+new terraform node-count risk-check block). **Goal restated by the
+user: 3 consecutive clean full rounds**, same bar as this program
+originally set out with. Any bug found: fix in the dev repo (full YOLO),
+cut a release, and restart the ENTIRE round from scratch.
+
+Refreshed customer repo to `v0.1.71`. Confirmed the node-count risk
+warning text is present and correct in the customer repo's own
+`terraform/environments/example/terraform.tfvars.example` and `main.tf`
+(the new `pool_floor_nodes_below_3_under_natctl_on_node_enabled` check
+block) and in `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html`'s placement
+chapter — all landed correctly through the publish pipeline.
+
+### Round 1, Deployment A — single-dedicated-host mode, multi-fleet
+
+`natctl_on_node_enabled=false`, `common` pool (3 floor, max 5),
+`acme` pool (1 floor, max 3), `ip_failover_enabled=true`. `terraform
+apply` clean (30 resources).
+
+**Stage 1/2 — basic operation, multi-node HA setup**: all 4 floor nodes
+(3 common + 1 acme) healthy within one boot cycle. Prometheus showed
+all 5 targets (4 `nat_exporter` + `natctl_metrics`) up immediately.
+Buddy pairing formed the correct triangle for `common`'s 3 nodes
+(`lng-common-2` as hub, backing up both `lng-common-1` and
+`lng-common-3`). `nftables`/`lng-buddy-sync`/`frr` all active on
+inspection. Clean.
+
+**Stage 3 — single floor node kill**: shut down `lng-common-1`.
+Confirmed via a real ping-based packet-loss check from a peer node
+(not from my own local machine — an early attempt to test this from my
+own laptop produced a spurious "Time to live exceeded" storm that
+turned out to be a local network/TTL routing artifact on my own
+testing machine, unrelated to the product; re-ran correctly from
+inside the account). IP-Sharing reconfigured correctly
+(`lng-common-2` picked up `lng-common-1`'s old public IP), 0% loss
+once measured properly from a real peer. Clean.
+
+**Stage 4 — second floor node kill (multi-node failure)**: shut down
+`lng-common-3` too, leaving only `lng-common-2` as a real floor node.
+`M31 Finding 14`'s sustained-breach guard correctly held off compensating
+on the first below-floor reading, then correctly provisioned elastic
+capacity on the second consecutive reading. Clean.
+
+**Stage 5 — autoscale compensation (scale-out half)**: with 2 of 3
+floor nodes dead, natctl correctly provisioned TWO elastic nodes in
+succession (`common-elastic-100`, then `common-elastic-101`) to restore
+`min_nodes=3`. Buddy pairing recomputed into the expected odd-triangle
+shape once both were healthy (`elastic-100`↔`elastic-101` mutual pair,
+`elastic-101` as hub one-directionally backing up `lng-common-2`) —
+matches the documented design exactly.
+
+**Investigated, not a bug**: mid-boot, `common-elastic-100` briefly
+appeared unhealthy in two separate checks even though Prometheus's own
+`nat_node_health_check`/`nat_bgp_min_peer_established_seconds` metrics
+already showed every underlying check passing. Root-caused to two
+separate testing artifacts on my own side, not the product: (1) a
+grep-based JSON match that could false-positive/false-negative across
+a single-line compact JSON blob when checking multiple nodes' fields
+at once — switched to proper `python3 -m json.tool` parsing for every
+subsequent check; (2) a curl to a freshly-elastic node's OWN public IP
+landed on its buddy instead, due to the buddy's own IP-Sharing
+backup announcement winning the BGP path before the new node's own
+primary announcement had fully converged — an already-documented,
+expected timing behavior, not new. The roster's own `healthy` field
+was correct throughout once read properly; nothing in the product was
+ever actually wrong.
+
+**Investigated, not a bug — buddy IP failover coverage lapses once a
+dead node fully drops out of discovery**: pinging `lng-common-1`'s and
+`lng-common-3`'s old public IPs from a peer succeeded immediately after
+each kill (a live buddy was still assigned), but returned 100% loss
+once buddy pairing later recomputed around the new elastic topology
+(which no longer includes either dead node at all, since `discover()`
+stops returning a `shutdown` instance entirely, not just marking it
+unhealthy). This is consistent with the project's own documented
+design: buddy IP failover bridges the gap for a node's specific
+ephemeral public IP only while that node still has an assigned buddy;
+once it's genuinely gone from the fleet's own model, nothing keeps its
+old address alive, since normal client traffic never targets a NAT
+node's public egress IP directly (ECMP over the VLAN/private path
+does). `reserved_ip_enabled` (not on in this test) is the documented
+mechanism for anyone needing a specific IP to survive node replacement.
+
+Booted `lng-common-1`/`lng-common-3` back online to test the scale-in
+half of Stage 5 and recovery/rejoin — in progress.
+
+---
+
