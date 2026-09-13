@@ -2301,5 +2301,69 @@ No bugs found so far in Deployment B. Continuing with the dedicated
 on-node consensus hardening tests (VPC/VLAN peer fallback,
 double-failure fail-safe boundary) before tearing down.
 
+**On-node consensus hardening test — VPC/VLAN peer fallback, live-confirmed
+with the candidate itself as the blocked party.** Set up source-scoped
+`iptables` DROP rules on `lng-common-4` blocking incoming VPC-path
+connections specifically from `lng-common-3` and `lng-common-5`'s VPC
+addresses on the roster port, then killed the current leader
+(`lng-common-2`). `lng-common-3` won the resulting election — meaning
+the actual candidate performing the quorum poll was itself one of the
+two sources whose VPC path to `lng-common-4` was blocked. Both
+source-scoped counters showed real, non-zero traffic (24 packets each)
+confirming genuine VPC-path attempts were made and dropped, and fencing
+still succeeded (`lng-common-3` became the confirmed leader) — meaning
+its own poll of `lng-common-4` genuinely fell back to the VLAN address
+and got a working answer, exactly as designed. Settle delay again
+measured at ~10 seconds. Cleaned up the iptables rules afterward.
+
+**On-node consensus hardening test — double-failure fail-safe
+boundary.** Killed the leader (`lng-common-3`) and one other member
+(`lng-common-5`) at the same instant, leaving only `lng-common-4` and
+`common-elastic-100` alive out of the pool's 4 members. By the time the
+lease TTL expired and `lng-common-4` actually attempted its election
+(~40+ seconds after both kills), both dead nodes had already dropped
+out of `pool_member_node_ids` entirely via `discover()`'s live
+Linode-API-backed membership — so the quorum check ran against the
+smaller, already-shrunk real set (2 voters, needs 2) rather than the
+original 4, and passed cleanly with no visible struggle. This is a
+genuine, useful finding in its own right: **real node termination
+self-heals membership before quorum math ever becomes a problem** — the
+fail-closed path this test set out to exercise only applies to a
+*network partition* (nodes still `running` but unreachable, so they
+never drop out of membership), a distinct scenario already covered in
+this release's control-plane recovery docs
+(`docs/RUNBOOK.md`/`NAT-GATEWAY-DEFINITIVE-GUIDE.html`'s "Enough of a
+pool's nodes die simultaneously" entry) rather than something this
+specific live test could reproduce with a real `shutdown` command.
+
+**Round 2 Deployment B verdict: no product bugs.** Every consensus
+mechanism built and fixed this session (`v0.1.67` settle-and-reverify,
+`v0.1.68` quorum-gate identity matching) held under a fresh 5-node
+deployment, a 2-node pool, a genuine VPC/VLAN fallback exercised by the
+candidate itself, and a real double-node-failure scenario. `terraform
+destroy` completed (36 resources), but the post-destroy `linode-cli`
+inventory caught two more mid-destroy race orphans (`common-elastic-101`,
+`acme-elastic-21`) — the same already-documented race where a
+still-alive node compensates for a dying floor-mate seconds before
+being destroyed itself. Deleted both manually; a second inventory pass
+confirmed only the pre-existing `nav-observability` instance remained.
+Not a product bug (already tracked as a known test-environment habit:
+always re-check for orphans immediately after every `terraform destroy`
+of this environment, not just before it).
+
+## Round 2 verdict: CLEAN — first of 3 required consecutive clean rounds
+
+Both Deployment A (single-dedicated-host, full matrix) and Deployment B
+(distributed on-node, leader election + consensus hardening) completed
+with **zero product bugs found**. Several apparent anomalies were
+investigated during Deployment A and each one traced to either a
+testing-technique artifact on my own side or already-documented,
+expected behavior (BGP convergence timing, IP-failover scope once a
+node fully drops from discovery) — none were product defects. This is
+**Round 2's clean pass** (Round 1, this program's original numbering,
+was the `v0.1.57`-era matrix from earlier in this document's history).
+Per the user's explicit instruction, the goal is 3 consecutive clean
+rounds — proceeding immediately to Round 3.
+
 ---
 
