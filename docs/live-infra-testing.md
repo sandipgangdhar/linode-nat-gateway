@@ -64,17 +64,18 @@ check.
 
 | # | Stage | Config | Status |
 |---|---|---|---|
-| 1 | Single fleet, single node | 1 pool, `floor_nodes=1`, `natctl_on_node_enabled=false` | ✅ rev 6 |
-| 2 | Single fleet, multi-node (HA mechanisms active) | 1 pool, `floor_nodes=3`, same mode | ✅ rev 6 |
-| 3 | Single-node failure (floor) | Kill 1 of 3 floor nodes, observe ECMP/buddy/BGP/packet-loss | ✅ rev 6 (covered by Stage 2's own test) |
-| 4 | Multi-node failure (floor) | Kill 2 of 3 floor nodes | ✅ rev 6 — confirms a documented design limitation (single-layer buddy redundancy), not a bug; see narrative |
-| 5 | Autoscaling (elastic) | `max_nodes` > floor, trigger scale-out, scale-in | ✅ rev 6 |
-| 6 | Elastic node failure | Kill an elastic node, observe zombie-reap + replace | pending |
+| 1 | Single fleet, single node | 1 pool, `floor_nodes=1`, `natctl_on_node_enabled=false` | pending (rev 7 — rev 6 passed but invalidated by Stage 6's finding) |
+| 2 | Single fleet, multi-node (HA mechanisms active) | 1 pool, `floor_nodes=3`, same mode | pending (rev 7 — see note above) |
+| 3 | Single-node failure (floor) | Kill 1 of 3 floor nodes, observe ECMP/buddy/BGP/packet-loss | pending (rev 7 — see note above) |
+| 4 | Multi-node failure (floor) | Kill 2 of 3 floor nodes | pending (rev 7 — see note above) |
+| 5 | Autoscaling (elastic) | `max_nodes` > floor, trigger scale-out, scale-in | pending (rev 7 — see note above) |
+| 6 | Elastic node failure | Kill an elastic node, observe zombie-reap + replace | pending (rev 7 — not yet actually run to completion; rev 6 found a bug mid-stage) |
 | 7 | Multi-fleet | 2 pools (`common` + a second), same-VLAN mode | pending |
-| 8 | `natctl_on_node_enabled=true` | Repeat the core HA/failure scenarios with distributed control plane + STONITH fencing | pending |
+| 8 | `natctl_on_node_enabled=true` — leader election + leader failover | (a) confirm exactly one node's `GET :8099/status` reports `leader_election.is_leader=true` on a fresh deploy; (b) kill the current leader, confirm a survivor detects the stale lease, STONITH-fences it (Linode API power-off + confirmed `offline`/404 poll — verify via the fencing node's own log, not just inferring it from the dead node's state, since it may already be off), and claims leadership itself (new `term` observed); (c) confirm the NEW leader actually performs a real mutating action afterward (trigger a scale event via `set-pool-scaling` and confirm the new leader's own log shows the provision/drain, not the dead one's); (d) confirm every surviving non-leader node's own `/status` still reports `is_leader=false` (no split-brain) | pending |
 | 9 | Client-agent VLAN bootstrap | `GET /agents/client-agent` fetch path for a `vlan_only` client | pending |
 | 10 | Acceptance test suite | Bundled `acceptance-tests/` against the live deployment | pending |
 | 11 | Security/hardening spot-check | SSH key-only, firewall CIDR scoping, no `0.0.0.0/0` | pending |
+| 12 | Prometheus/Grafana observability | (a) Prometheus's own `/api/v1/targets` shows every `nat-exporter`/natctl scrape target `up`, not just the container running; (b) query a handful of real series directly (`nat_conntrack_utilization_ratio`, `nat_port_available_total`, `natctl_leader_election_is_leader` once Stage 8 is up) and confirm recent, sane data points, not stale/missing; (c) Grafana is reachable and its dashboard provisioning actually succeeded — list dashboards via Grafana's own HTTP API (`/api/search`, authenticated with the generated admin password) rather than just checking the container is "Up"; (d) Prometheus's `/api/v1/rules` shows the alert rules from `alerts/nat-alerts.yml` actually loaded and evaluating (state `inactive`/`pending`/`firing`, not absent); (e) if practical, force one real alert condition (e.g. the port-exhaustion or node-down rule) and confirm it actually reaches Alertmanager | pending |
 
 **Pass counter toward the required 3 consecutive clean runs: 0**
 
@@ -806,6 +807,70 @@ showing zero `common-elastic-*` instances remaining.
 
 **Both scale-out and scale-in confirmed working correctly, end to end,
 live.** No bugs found. Tearing down, proceeding to Stage 6.
+
+---
+
+### Stage 6 — elastic node failure — 🐛 SIXTH REAL BUG FOUND (rev 6)
+
+Redeployed `floor_nodes=1`/`max_nodes=2`. Forced elastic provisioning
+via `set-pool-scaling --min-nodes 2 --max-nodes 2`; one elastic node
+(`common-elastic-100`, id `105074603`) provisioned and became healthy
+within ~4 minutes. Shut it down (`linode-cli linodes shutdown`, `09:11:58`)
+to test natctl's zombie-reap-and-replace mechanism.
+
+**Replacement provisioning worked correctly** — a new elastic node
+(`common-elastic-101`) was provisioned and became healthy by `09:16:52`,
+via the health-floor compensation path (the dead node vanished from
+`discover()` the moment Linode reported it `offline`, dropping
+`healthy_count` below `min_nodes`), not the literal
+`unhealthy_replace_after_seconds` zombie-reap path — that path needs a
+node to stay *visible but unhealthy*, which a node that actually
+disappears from the API never does.
+
+**🐛 But the dead node's own instance was never deleted.** Checked
+directly: `common-elastic-100` (id `105074603`) was still sitting
+`offline` in the account, never reaped, a permanent billable orphan —
+confirmed via `linode-cli linodes view` showing it still present well
+after the replacement had already gone healthy.
+
+**Root cause:** `discover()`'s `status == "running"` filter drops a
+vanished node from `self.nodes` entirely, before
+`_reap_unhealthy_elastic_nodes()`'s unhealthy-duration self-heal (which
+needs the node to stay *visible*) ever gets a chance to see it. Nothing
+else ever calls `delete_instance()` for a node that was never marked
+`draining` by a natctl-initiated scale-in. This is a different root
+cause from every earlier orphan finding this session (those were about
+*rediscovering* an already-gone node from a past deployment or
+exceeding `max_nodes`) — this one is about a node that was genuinely
+part of THIS fleet simply disappearing through any means other than
+natctl's own drain (a crash, a host failure, an operator's own manual
+shutdown), which is arguably the single most realistic elastic-node
+failure mode this feature exists to handle, and the one most exercised
+by this exact test scenario.
+
+**Fix:** `linode-nat-gateway-build` commit `594aa12` — adds
+`FleetController._reap_vanished_elastic_nodes()`, tracking a vanished
+elastic node's `linode_id` the moment `discover()` loses it (mirroring
+the existing IP-failover phantom-tracking pattern), then deleting the
+orphaned instance and freeing its VLAN offset once
+`unhealthy_replace_after_seconds` has elapsed with no reappearance.
+Floor nodes are structurally excluded. 9 new regression tests added
+(discovery-side tracking, the reap method itself including a 404-as-
+already-gone case, and `evaluate_autoscale()` wiring); full suite (786
+passed), `ruff` (34-error baseline unchanged), `python3.11` compile
+check, `terraform fmt -check` all clean. `docs/RUNBOOK.md` and the
+customer-facing `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html` both updated
+with the new log line operators should expect.
+
+Manually cleaned up the live orphan (`linode-cli linodes delete
+105074603`) — unlike earlier sessions' attempts, this succeeded without
+a classifier denial.
+
+**Action:** per the test program's rule, cutting a new release and
+restarting the ENTIRE matrix from Stage 1.
+
+**Pass 1 (rev 6) — INVALIDATED by this finding. Restarting as Pass 1
+(rev 7) once `v0.1.63` is live.**
 
 ---
 
