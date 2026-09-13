@@ -622,6 +622,16 @@ flowchart TB
 
         <p>Running the controller on every node is possible because it is entirely stateless — everything it computes is derived fresh from live discovery and health checks each pass, never read back from storage. The one real problem this placement introduces is the one every active-active control plane has to solve: more than one instance could try to mutate cloud state at the same moment. That problem, and how it's solved, is the next chapter.</p>
 
+        <div class="callout warn">
+          <span class="co-label">Decide your node count before you turn this on</span>
+          The next chapter explains the full safety mechanism this placement relies on, but the short version — worth knowing before you commit to a floor node count, not after — is that how well it protects you depends entirely on how many nodes are in the pool:
+          <ul style="margin:10px 0 0 20px">
+            <li><strong>One node:</strong> there's no failover to speak of — it's always the leader by default, and this placement buys you nothing over the single dedicated host except one fewer instance to run. Use it only if that specific trade-off is what you want.</li>
+            <li><strong>Two nodes — the genuinely risky configuration.</strong> A real network split between exactly two nodes looks, from either side, identical to the other one actually being dead — there's no third node to ask, so the extra corroboration step described in the next chapter cannot help at all here; the pool falls back to a single node's own judgment, unaided, the same as if that step didn't exist. Both nodes can end up trying to act on that judgment in the same window. <strong>Don't run two nodes in this placement for anything where continuous availability matters.</strong></li>
+            <li><strong>Three or more nodes:</strong> this is the point where the extra corroboration step actually means something — a candidate needs genuine agreement from at least one other member before it can act, closing the single-point-of-judgment gap the two-node case has no way around. This is the configuration this placement is actually designed for.</li>
+          </ul>
+        </div>
+
         <h3>Can you switch this on an already-live fleet?</h3>
         <p>Yes, but treat it as a maintenance-window change, not a zero-impact toggle. This setting changes what's embedded in every floor node's own boot configuration, and the infrastructure tooling has no way to update that in place on a running instance — so applying the change destroys and recreates every floor node to pick up the new configuration. Reserved IPs and the deterministic address scheme (Part IV) mean every recreated node comes back with the exact same address it had before, so nothing downstream needs to be reconfigured — but every floor node does go through a real boot cycle to get there.</p>
 

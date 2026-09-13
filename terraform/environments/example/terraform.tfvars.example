@@ -121,6 +121,23 @@ admin_cidrs = ["REPLACE_ME/32"] # e.g. ["203.0.113.4/32"]
 #     pool_vpc_offsets_no_overlap check) -- all pools share this
 #     environment's one public_subnet_id.
 # --------------------------------------------------------------------------
+#
+# If you plan to set natctl_on_node_enabled = true below (running the
+# control plane on every node instead of a dedicated host), a pool's
+# floor_nodes count is a real safety decision, not just a capacity one:
+#   - 1 node: always its own leader by default -- no real failover, and
+#     this mode buys you nothing over the single dedicated host.
+#   - 2 nodes: the genuinely risky configuration. A real network
+#     partition between exactly two nodes is indistinguishable, from
+#     either side, from the other one actually being dead -- there's no
+#     third node to ask, so the quorum-confirmation gate can't add
+#     anything here. Do not use 2 for a pool where continuous
+#     availability matters.
+#   - 3+ nodes: the configuration this mode is actually designed for --
+#     see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.3/§2.4 and
+#     docs/RUNBOOK.md's "Node-count risk profile" for the full detail.
+# This has no bearing on floor_nodes when natctl_on_node_enabled stays
+# false (the default) -- that mode has no leader election at all.
 pools = {
   common = {
     fleet_label             = "lng-common"
@@ -246,6 +263,10 @@ natctl_object_storage_secret_key = "REPLACE_ME"
 # traffic, and this is defense-in-depth, not mathematically perfect
 # mutual exclusion. Only this toggle is opt-in -- the Object Storage block
 # above it is required either way (see its own comment).
+#
+# Before flipping this on, check every pool's floor_nodes count above
+# against the node-count warning right before the pools block -- 2 nodes
+# is a genuinely risky shape for this mode, 3+ is what it's designed for.
 #
 # natctl_on_node_enabled = true
 
