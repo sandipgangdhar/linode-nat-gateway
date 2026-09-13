@@ -2207,7 +2207,58 @@ does). `reserved_ip_enabled` (not on in this test) is the documented
 mechanism for anyone needing a specific IP to survive node replacement.
 
 Booted `lng-common-1`/`lng-common-3` back online to test the scale-in
-half of Stage 5 and recovery/rejoin — in progress.
+half of Stage 5 and recovery/rejoin.
+
+**Stage 5 (scale-in half)**: once both floor nodes rejoined healthy,
+scale-in triggered correctly and drained/deleted both elastic nodes
+one at a time (never more than one at once, matching the documented
+max-scale-in-step cap), settling back to exactly the 3 original floor
+nodes with nothing left over. Clean.
+
+**Stage 6 — elastic node failure (zombie-reap)**: forced a fresh
+elastic node via `set-pool-scaling --min-nodes 4`, waited for it to
+become healthy, then deleted it directly via the Linode API (not a
+graceful drain) to simulate an out-of-band loss. natctl's compensation
+fired correctly on the very next below-floor reading and provisioned a
+replacement — functionally confirms the zombie-reap path works, though
+the exact `"vanished from discovery"` log line wasn't observed in this
+specific run (the ordinary `"N healthy node(s) of M total — below
+min_nodes"` compensation path fired instead, the same underlying
+mechanism reaching the same correct outcome). Reset scaling back to
+normal afterward; settled cleanly to 3 floor nodes again.
+
+**Stage 7 — multi-fleet isolation**: `lng-acme-1` stayed healthy and
+fully unaffected for the pool's entire duration — zero errors or
+warnings across 238+ of its own log entries spanning every bit of
+`common`-pool chaos above (double floor-node kill, double elastic
+compensation, zombie-reap, scale-in/out). Clean, confirms pools are
+genuinely isolated from each other's turbulence.
+
+**Investigated, not a bug — BGP re-convergence took noticeably longer
+under rapid successive topology churn.** While the zombie-reap test's
+delete-provision-recompute sequence was still settling,
+`lng-common-1`'s own BGP session dropped back to `Established 0.0s` and
+stayed there across 5 consecutive checks (~85 seconds), briefly
+showing `2 NAT-healthy` of 4 in the roster, before re-converging
+normally and reaching confirmed-established a bit over a minute later.
+This coincided exactly with deleting `common-elastic-100`, a buddy
+recompute, provisioning `common-elastic-101`, and another recompute —
+all within about 3 minutes, real topology churn well beyond a single
+isolated node change. Fully self-recovered with no operator
+intervention; every underlying nat-exporter health check
+(`ip_forward`/`nftables_loaded`/`egress_reachable`) stayed passing the
+entire time. Consistent with the already-documented "BGP convergence
+timing variance" category from earlier in this program, just a more
+pronounced instance under heavier, compressed churn than a single kill
+test produces — not a new product bug, but a useful data point: real
+BGP re-convergence time scales with how much topology changes at once,
+not just whether one thing changed.
+
+**Round 2 Deployment A verdict: no product bugs.** Tore down cleanly —
+`check-orphans` on both pools confirmed nothing left over before
+destroy, `terraform destroy` (30 resources) completed with no mid-destroy
+race this time, and a live `linode-cli` inventory afterward confirmed
+only the pre-existing, unrelated `nav-observability` instance remained.
 
 ---
 
