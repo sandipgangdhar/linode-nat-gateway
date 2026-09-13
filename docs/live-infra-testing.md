@@ -64,21 +64,21 @@ check.
 
 | # | Stage | Config | Status |
 |---|---|---|---|
-| 1 | Single fleet, single node | 1 pool, `floor_nodes=1`, `natctl_on_node_enabled=false` | pending (rev 9 — invalidated by Stage 12's finding) |
-| 2 | Single fleet, multi-node (HA mechanisms active) | 1 pool, `floor_nodes=3`, same mode | pending (rev 9 — see note above) |
-| 3 | Single-node failure (floor) | Kill 1 of 3 floor nodes, observe ECMP/buddy/BGP/packet-loss | pending (rev 9 — see note above) |
-| 4 | Multi-node failure (floor) | Kill 2 of 3 floor nodes | pending (rev 9 — see note above) |
-| 5 | Autoscaling (elastic) | `max_nodes` > floor, trigger scale-out, scale-in | pending (rev 9 — see note above) |
-| 6 | Elastic node failure | Kill an elastic node, observe zombie-reap + replace | pending (rev 9 — see note above) |
-| 7 | Multi-fleet | 2 pools (`common` + a second), same-VLAN mode | pending (rev 9 — see note above) |
-| 8a | `natctl_on_node_enabled=true` — leader election + leader failover | (a) confirm exactly one node's `GET :8099/status` reports `leader_election.is_leader=true` on a fresh deploy; (b) kill the current leader, confirm a survivor detects the stale lease, STONITH-fences it (Linode API power-off + confirmed `offline`/404 poll — verify via the fencing node's own log, not just inferring it from the dead node's state, since it may already be off), and claims leadership itself (new `term` observed); (c) confirm the NEW leader actually performs a real mutating action afterward (trigger a scale event via `set-pool-scaling` and confirm the new leader's own log shows the provision/drain, not the dead one's); (d) confirm every surviving non-leader node's own `/status` still reports `is_leader=false` (no split-brain) | pending (rev 9 — rev 7 found the 7th real bug, a stale-lease hostname/linode_id identity confusion, fixed in `v0.1.64` and confirmed clean in rev 8) |
-| 8b | `natctl_on_node_enabled=true` — re-run the core mutating-decision scenarios under a distributed control plane | The control plane behaves genuinely differently in this mode (every node evaluates autoscale/health, but only the confirmed leader's mutating calls should ever actually take effect) — a bug could exist in this mode without ever showing up under the default single-dedicated-host mode Stages 1-7 ran in. Re-run, with `natctl_on_node_enabled=true` throughout: (a) **HA failover** (Stage 2's scenario) — kill a floor node, confirm buddy IP failover still reaches 0% loss and that ONLY the current leader's own log shows the IP-Sharing grant/withdrawal, not every node's; (b) **autoscaling** (Stage 5's scenario) — trigger scale-out/scale-in via `set-pool-scaling`, confirm only the leader actually provisions/drains (check every node's log, not just the leader's, to confirm non-leaders evaluated but did not mutate); (c) **elastic node failure** (Stage 6's scenario) — kill an elastic node, confirm the leader (and only the leader) reaps the orphaned instance via `_reap_vanished_elastic_nodes()` | pending (rev 9 — confirmed clean in rev 8, restarting per the full-matrix-after-any-fix rule) |
-| 9 | Client-agent VLAN bootstrap | `GET /agents/client-agent` fetch path for a `vlan_only` client | pending (rev 9 — confirmed clean in rev 8) |
-| 10 | Acceptance test suite | Bundled `acceptance-tests/` against the live deployment | pending (rev 9 — confirmed clean in rev 8) |
-| 11 | Security/hardening spot-check | SSH key-only, firewall CIDR scoping, no `0.0.0.0/0` | pending (rev 9 — confirmed clean in rev 8) |
-| 12 | Prometheus/Grafana observability | (a) Prometheus's own `/api/v1/targets` shows every `nat-exporter`/natctl scrape target `up`, not just the container running; (b) query a handful of real series directly (`nat_conntrack_utilization_ratio`, `nat_port_available_total`, `natctl_leader_election_is_leader` once Stage 8 is up) and confirm recent, sane data points, not stale/missing; (c) Grafana is reachable and its dashboard provisioning actually succeeded — list dashboards via Grafana's own HTTP API (`/api/search`, authenticated with the generated admin password) rather than just checking the container is "Up"; (d) Prometheus's `/api/v1/rules` shows the alert rules from `alerts/nat-alerts.yml` actually loaded and evaluating (state `inactive`/`pending`/`firing`, not absent); (e) if practical, force one real alert condition (e.g. the port-exhaustion or node-down rule) and confirm it actually reaches Alertmanager | pending (rev 9 — rev 8 found the 8th real bug, Prometheus→Alertmanager delivery silently broken, fixed in `v0.1.65`) |
+| 1 | Single fleet, single node | 1 pool, `floor_nodes=1`, `natctl_on_node_enabled=false` | ✅ rev 9 |
+| 2 | Single fleet, multi-node (HA mechanisms active) | 1 pool, `floor_nodes=3`, same mode | ✅ rev 9 |
+| 3 | Single-node failure (floor) | Kill 1 of 3 floor nodes, observe ECMP/buddy/BGP/packet-loss | ✅ rev 9 |
+| 4 | Multi-node failure (floor) | Kill 2 of 3 floor nodes | ✅ rev 9 |
+| 5 | Autoscaling (elastic) | `max_nodes` > floor, trigger scale-out, scale-in | ✅ rev 9 |
+| 6 | Elastic node failure | Kill an elastic node, observe zombie-reap + replace | ✅ rev 9 |
+| 7 | Multi-fleet | 2 pools (`common` + a second), same-VLAN mode | ✅ rev 9 |
+| 8a | `natctl_on_node_enabled=true` — leader election + leader failover | (a) confirm exactly one node's `GET :8099/status` reports `leader_election.is_leader=true` on a fresh deploy; (b) kill the current leader, confirm a survivor detects the stale lease, STONITH-fences it (Linode API power-off + confirmed `offline`/404 poll — verify via the fencing node's own log, not just inferring it from the dead node's state, since it may already be off), and claims leadership itself (new `term` observed); (c) confirm the NEW leader actually performs a real mutating action afterward (trigger a scale event via `set-pool-scaling` and confirm the new leader's own log shows the provision/drain, not the dead one's); (d) confirm every surviving non-leader node's own `/status` still reports `is_leader=false` (no split-brain) | ✅ rev 9 |
+| 8b | `natctl_on_node_enabled=true` — re-run the core mutating-decision scenarios under a distributed control plane | The control plane behaves genuinely differently in this mode (every node evaluates autoscale/health, but only the confirmed leader's mutating calls should ever actually take effect) — a bug could exist in this mode without ever showing up under the default single-dedicated-host mode Stages 1-7 ran in. Re-run, with `natctl_on_node_enabled=true` throughout: (a) **HA failover** (Stage 2's scenario) — kill a floor node, confirm buddy IP failover still reaches 0% loss and that ONLY the current leader's own log shows the IP-Sharing grant/withdrawal, not every node's; (b) **autoscaling** (Stage 5's scenario) — trigger scale-out/scale-in via `set-pool-scaling`, confirm only the leader actually provisions/drains (check every node's log, not just the leader's, to confirm non-leaders evaluated but did not mutate); (c) **elastic node failure** (Stage 6's scenario) — kill an elastic node, confirm the leader (and only the leader) reaps the orphaned instance via `_reap_vanished_elastic_nodes()` | ✅ rev 9 |
+| 9 | Client-agent VLAN bootstrap | `GET /agents/client-agent` fetch path for a `vlan_only` client | ✅ rev 9 |
+| 10 | Acceptance test suite | Bundled `acceptance-tests/` against the live deployment | ✅ rev 9 |
+| 11 | Security/hardening spot-check | SSH key-only, firewall CIDR scoping, no `0.0.0.0/0` | ✅ rev 9 |
+| 12 | Prometheus/Grafana observability | (a) Prometheus's own `/api/v1/targets` shows every `nat-exporter`/natctl scrape target `up`, not just the container running; (b) query a handful of real series directly (`nat_conntrack_utilization_ratio`, `nat_port_available_total`, `natctl_leader_election_is_leader` once Stage 8 is up) and confirm recent, sane data points, not stale/missing; (c) Grafana is reachable and its dashboard provisioning actually succeeded — list dashboards via Grafana's own HTTP API (`/api/search`, authenticated with the generated admin password) rather than just checking the container is "Up"; (d) Prometheus's `/api/v1/rules` shows the alert rules from `alerts/nat-alerts.yml` actually loaded and evaluating (state `inactive`/`pending`/`firing`, not absent); (e) if practical, force one real alert condition (e.g. the port-exhaustion or node-down rule) and confirm it actually reaches Alertmanager | ✅ rev 9 |
 
-**Pass counter toward the required 3 consecutive clean runs: 0**
+**Pass counter toward the required 3 consecutive clean runs: 1 (rev 9 — first fully clean full-matrix pass)**
 
 ---
 
@@ -1757,6 +1757,35 @@ node. Same account-hygiene observation as rev 8 (unrelated `nav-lng-*`
 firewalls on this account, untouched).
 
 No bugs found. Tearing down, proceeding to Stage 12.
+
+---
+
+### Stage 12 — Prometheus/Grafana observability — ✅ PASS, confirms the `v0.1.65` fix (rev 9)
+
+Redeployed 3 floor nodes, `ip_failover_enabled=true`. `terraform
+apply` clean (26 resources).
+
+**(a) Targets**: all 4 scrape targets (`nat_exporter` × 3,
+`natctl_metrics` × 1) reported `up`. **(b) Real metrics**:
+`nat_conntrack_utilization_ratio`/`nat_port_available_total` sane and
+recent across all 3 nodes. **(c) Grafana**: `GET /api/search` confirmed
+the `LNG — NAT Fleet Overview` dashboard genuinely provisioned. **(d)
+Rules**: all 14 alert rules loaded and evaluating.
+
+**(e) Force one real alert — this is the critical re-verification.**
+Confirmed first that Prometheus's own `/api/v1/alertmanagers` now
+shows `http://alertmanager:9093/api/v2/alerts` (the compose service
+name, not `localhost`) — the `v0.1.65` fix genuinely deployed. Shut
+down `lng-common-3` to trigger `NATNodeDown`: transitioned
+`inactive` → `pending` → `firing` after its 1-minute `for` duration,
+and this time **`GET /api/v2/alerts` on Alertmanager immediately
+showed both `NATNodeDown` and `NATPoolBelowFloor` as `active`** — the
+alert genuinely reached Alertmanager. Confirmed via `docker logs` on
+the Prometheus container: no delivery errors at all, clean.
+
+This is the first fully clean pass of Stage 12 since the
+Prometheus→Alertmanager delivery bug was found and fixed. No bugs
+found. Tearing down.
 
 ---
 
