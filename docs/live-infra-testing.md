@@ -964,3 +964,29 @@ outside the fleet for 90 packets each:
 No new bugs found. Cleaned up the test client, tearing down, proceeding
 to Stage 5.
 
+---
+
+### Stage 5 — autoscaling (elastic) — ✅ PASS (rev 7)
+
+Redeployed `floor_nodes=1`/`max_nodes=3`/`ip_failover_enabled=false`.
+Starting point was again 2 nodes (another pre-existing, healthy
+leftover elastic node — correctly left alone since 2 ≤ `max_nodes=3`).
+
+**Scale-out**: triggered via `set-pool-scaling --min-nodes 3
+--max-nodes 3`. Debounce confirmed again (`"only 1/2 consecutive
+pass(es)"` at `05:01:16`, provisioned at `05:01:32`). Reached 3/3
+healthy within ~6 minutes.
+
+**Scale-in**: triggered via `--min-nodes 1 --max-nodes 3`.
+```
+05:06:58  scale-in triggered, draining ['common-elastic-100']
+05:10:12  deleting drained elastic node common-elastic-100 (drained_for=194s, remaining_conns=56)
+05:12:20  scale-in triggered, draining ['common-elastic-101']
+05:15:33  deleting drained elastic node common-elastic-101 (drained_for=193s, remaining_conns=47)
+```
+Both elastic nodes drained one at a time and deleted via the
+`drain_timeout_seconds` fallback, settling back to exactly 1 node.
+
+Both scale-out and scale-in confirmed working correctly again, end to
+end, live. No bugs found. Tearing down, proceeding to Stage 6.
+
