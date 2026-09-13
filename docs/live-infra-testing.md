@@ -69,7 +69,7 @@ check.
 | 3 | Single-node failure (floor) | Kill 1 of 3 floor nodes, observe ECMP/buddy/BGP/packet-loss | pending (rev 7 — see note above) |
 | 4 | Multi-node failure (floor) | Kill 2 of 3 floor nodes | pending (rev 7 — see note above) |
 | 5 | Autoscaling (elastic) | `max_nodes` > floor, trigger scale-out, scale-in | pending (rev 7 — see note above) |
-| 6 | Elastic node failure | Kill an elastic node, observe zombie-reap + replace | pending (rev 7 — not yet actually run to completion; rev 6 found a bug mid-stage) |
+| 6 | Elastic node failure | Kill an elastic node, observe zombie-reap + replace | ✅ rev 7 |
 | 7 | Multi-fleet | 2 pools (`common` + a second), same-VLAN mode | pending |
 | 8a | `natctl_on_node_enabled=true` — leader election + leader failover | (a) confirm exactly one node's `GET :8099/status` reports `leader_election.is_leader=true` on a fresh deploy; (b) kill the current leader, confirm a survivor detects the stale lease, STONITH-fences it (Linode API power-off + confirmed `offline`/404 poll — verify via the fencing node's own log, not just inferring it from the dead node's state, since it may already be off), and claims leadership itself (new `term` observed); (c) confirm the NEW leader actually performs a real mutating action afterward (trigger a scale event via `set-pool-scaling` and confirm the new leader's own log shows the provision/drain, not the dead one's); (d) confirm every surviving non-leader node's own `/status` still reports `is_leader=false` (no split-brain) | pending |
 | 8b | `natctl_on_node_enabled=true` — re-run the core mutating-decision scenarios under a distributed control plane | The control plane behaves genuinely differently in this mode (every node evaluates autoscale/health, but only the confirmed leader's mutating calls should ever actually take effect) — a bug could exist in this mode without ever showing up under the default single-dedicated-host mode Stages 1-7 ran in. Re-run, with `natctl_on_node_enabled=true` throughout: (a) **HA failover** (Stage 2's scenario) — kill a floor node, confirm buddy IP failover still reaches 0% loss and that ONLY the current leader's own log shows the IP-Sharing grant/withdrawal, not every node's; (b) **autoscaling** (Stage 5's scenario) — trigger scale-out/scale-in via `set-pool-scaling`, confirm only the leader actually provisions/drains (check every node's log, not just the leader's, to confirm non-leaders evaluated but did not mutate); (c) **elastic node failure** (Stage 6's scenario) — kill an elastic node, confirm the leader (and only the leader) reaps the orphaned instance via `_reap_vanished_elastic_nodes()` | pending |
@@ -989,4 +989,47 @@ Both elastic nodes drained one at a time and deleted via the
 
 Both scale-out and scale-in confirmed working correctly again, end to
 end, live. No bugs found. Tearing down, proceeding to Stage 6.
+
+---
+
+### Stage 6 — elastic node failure — ✅ PASS (rev 7)
+
+Redeployed `floor_nodes=1`/`max_nodes=2`/`ip_failover_enabled=false`.
+This is the stage that found the sixth real bug in rev 6 (an elastic
+node that vanishes from the Linode API entirely — external shutdown,
+crash, host failure, as opposed to a natctl-initiated drain — never had
+its underlying instance reaped, even though a replacement was correctly
+provisioned via the health-floor path). This rev is the first clean,
+directly-isolated confirmation that the `v0.1.63` fix
+(`_reap_vanished_elastic_nodes()`) actually works end to end in a fresh
+deployment — Stages 1 and 5 this rev only demonstrated the adjacent
+`v0.1.61`/`v0.1.62` ceiling/logging fixes incidentally, via leftover
+cleanup, not this specific fix.
+
+Elastic node `common-elastic-100` (id `105083262`) was provisioned via
+the health-floor path, confirmed healthy (2/2), then shut down directly
+via the Linode API at `11:01:24` local (`05:31:24` UTC) to simulate an
+external failure (not a natctl-initiated drain).
+
+```
+05:46:32  pool common: elastic node common-elastic-100 vanished from
+          discovery >=900s ago and never reappeared -- deleting its
+          orphaned instance
+```
+
+Confirmed via direct Linode API call (`GET
+/v4/linode/instances/105083262` → `404`) that the instance was actually
+deleted, not just logged as intended-to-delete. A replacement node was
+separately, correctly provisioned via the existing health-floor
+compensation path in the meantime, as expected.
+
+One real process note, not a product bug: the fix fired later than
+initially expected during live monitoring (~15 minutes after shutdown,
+not ~90 seconds) — `unhealthy_replace_after_seconds` defaults to `900`
+(`controller/natctl/config.py:141`), not `90` as momentarily assumed
+mid-investigation while cross-checking against a local integration
+repro that used a faster synthetic threshold. No code or config issue;
+the live system used the correct, documented default throughout.
+
+No bugs found. Tearing down, proceeding to Stage 7.
 
