@@ -2262,3 +2262,44 @@ only the pre-existing, unrelated `nav-observability` instance remained.
 
 ---
 
+### Round 2, Deployment B — distributed on-node mode, leader election + consensus hardening
+
+`natctl_on_node_enabled=true`, `common` pool (5 floor, max 5 — for
+quorum arithmetic at scale and the consensus hardening tests below),
+`acme` pool (2 floor, max 2 — to live-confirm the documented 2-node
+fallback). `terraform plan` correctly showed the new
+`pool_floor_nodes_below_3_under_natctl_on_node_enabled` check-block
+warning for `acme` (first real, live confirmation this new guard fires
+end to end in the customer repo, added earlier this round). `terraform
+apply` clean (35 resources).
+
+**Stage 8a — clean election on both pools**: both pools elected exactly
+one leader each within one election cycle from a cold boot —
+`lng-acme-1` (term 4) and `lng-common-1` (term 23). No stale-lease
+confusion, no deadlock (the exact class of bug `v0.1.68` fixed).
+
+**Stage 8a — 5-node leader kill, settle-and-reverify + quorum gate**:
+killed `lng-common-1`. `lng-common-2` fenced it cleanly (confirmed
+offline, then claimed leadership) with the settle-and-reverify delay
+measured at exactly 10 seconds between fence-complete and the final
+leader claim — `election_settle_seconds` firing precisely as
+configured. No competing candidate this time (clean single winner) —
+both `v0.1.67`/`v0.1.68` fixes hold on a fresh 5-node deployment.
+
+**Stage 8a — 2-node fallback, live-confirmed exactly as documented**:
+killed `lng-acme-1` (the acme pool's only other member). `lng-acme-2`'s
+own log showed the exact documented fallback message —
+`"no other pool member available to corroborate before fencing
+lng-acme-1 -- proceeding on this process's own view alone (2-node/1-node
+deployments have no peer to ask...)"` — then fenced and claimed
+leadership safely via the single-view path, again with the settle
+delay measured at exactly 10 seconds. This is the clearest possible
+live confirmation that the documented 2-node limitation behaves
+exactly as stated, not just in prose.
+
+No bugs found so far in Deployment B. Continuing with the dedicated
+on-node consensus hardening tests (VPC/VLAN peer fallback,
+double-failure fail-safe boundary) before tearing down.
+
+---
+
