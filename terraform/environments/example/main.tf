@@ -334,6 +334,24 @@ locals {
     if p.floor_nodes == 0
   ] : []
 
+  # Live-confirmed 2026-09-13 (customer-repo live-test program): a pool's
+  # floor_nodes count under natctl_on_node_enabled is a real safety
+  # decision, not just a capacity one -- see docs/RUNBOOK.md's "Node-count
+  # risk profile" and docs/ARCHITECTURE.md §4.5. 1 node has no real
+  # failover at all; 2 nodes is the genuinely risky shape, since a real
+  # network partition between exactly two nodes is indistinguishable,
+  # from either side, from the other one actually being dead -- there's
+  # no third node for the quorum-confirmation gate to ask, so it can't
+  # add anything there. This check exists purely to put that decision in
+  # front of the person running `terraform plan`/`apply`, every time,
+  # for as long as it stays this way -- not to block the apply outright
+  # (this environment's checks are all advisory; the operator retains
+  # final say, same as every other check in this file).
+  pools_with_floor_nodes_below_3_under_natctl_on_node = var.natctl_on_node_enabled ? [
+    for k, p in var.pools : k
+    if p.floor_nodes < 3
+  ] : []
+
   # Nothing at the type level stops max_nodes < floor_nodes. Several of
   # the checks above (and fleet.py's own autoscaling logic) compute the
   # elastic range's width as max_nodes - floor_nodes -- a negative width
@@ -477,6 +495,13 @@ check "pool_has_floor_node_when_natctl_on_node_enabled" {
   assert {
     condition     = length(local.pools_with_zero_floor_nodes_under_natctl_on_node) == 0
     error_message = "These pools have floor_nodes == 0 while natctl_on_node_enabled is true: ${join(", ", local.pools_with_zero_floor_nodes_under_natctl_on_node)}. natctl_http_sd_targets seeds Prometheus's discovery of a pool's roster from that pool's own FLOOR nodes -- with zero floor nodes, this pool never gets a scrape target, even after natctl later provisions elastic nodes for it. Give the pool at least one floor node, or scrape it manually until it does."
+  }
+}
+
+check "pool_floor_nodes_below_3_under_natctl_on_node_enabled" {
+  assert {
+    condition     = length(local.pools_with_floor_nodes_below_3_under_natctl_on_node) == 0
+    error_message = "These pools run natctl_on_node_enabled with fewer than 3 floor nodes: ${join(", ", local.pools_with_floor_nodes_below_3_under_natctl_on_node)}. 1 node has no real failover at all (it's always its own leader). 2 nodes is the genuinely risky shape: a real network partition between exactly two nodes is indistinguishable, from either side, from the other one actually being dead, so the quorum-confirmation gate has no third node to ask and can't help here -- the pool falls back to a single candidate's own unaided judgment. This is not a bug this check can fix by itself, and this is a warning, not a blocked apply -- if you understand and accept this trade-off (e.g. a non-production environment), proceed deliberately. See docs/RUNBOOK.md's 'Node-count risk profile' and docs/ARCHITECTURE.md section 4.5 for the full detail before running this in production."
   }
 }
 
