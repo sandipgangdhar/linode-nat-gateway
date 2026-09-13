@@ -1519,3 +1519,244 @@ once the new release is live.** Tearing down.
 
 ---
 
+## Pass 1 (rev 9) — from `v0.1.65`
+
+Customer repo refreshed to `v0.1.65` (`git fetch --tags && git checkout
+v0.1.65`, publish workflow run `34752794812` confirmed `success`),
+which includes the Prometheus→Alertmanager delivery fix
+(`linode-nat-gateway-build` commit `9f85899`). Restarting the full
+matrix from Stage 1.
+
+### Stage 1 — single fleet, single node — ✅ PASS (rev 9)
+
+`terraform apply` clean (22 resources). `natctl` active, roster shows
+exactly `lng-common-1`, healthy, no errors/exceptions in the log. No
+bugs found. Tearing down, proceeding to Stage 2.
+
+---
+
+### Stage 2/3 — multi-node HA, BGP IP failover (3 floor nodes) — ✅ PASS (rev 9)
+
+`terraform apply` clean (26 resources). BGP converged, IP-sharing
+grants confirmed. Topology: `lng-common-1` = A, `lng-common-2` = HUB
+(backs up both A and the LEAF), `lng-common-3` = LEAF.
+
+Killed the HUB (`lng-common-2`), pinged its public IP directly from
+outside the fleet: **79/90 received, 12.2% packet loss** — worse than
+this session's typical near-0% result for a genuinely buddy-covered
+node. Investigated rather than waved off: the lost packets were a
+single contiguous block right at the start (sequences 4-14, ~11s),
+with all 75 remaining packets received cleanly — a convergence-window
+pattern, not a persistent fault. Confirmed the IP-sharing grant for
+this exact pairing (`lng-common-1 -> ['172.236.173.125']`) was already
+configured at fleet-formation time, well before the kill — so the
+~11s gap is pure BGP route-convergence timing at the network level
+(the route reflectors noticing the primary's session drop and
+re-converging traffic to the backup's pre-existing announcement), not
+a natctl reaction delay. This is the same class of variance already
+documented multiple times this session (BGP convergence for a given
+peer has ranged from ~0s to several minutes across different observed
+cases) — genuinely worse than usual this run, but not a regression;
+BGP state stayed cleanly Established throughout (checked live via
+`vtysh`). Stage 3 covered by the same test.
+
+No bugs found. Tearing down, proceeding to Stage 4.
+
+---
+
+### Stage 4 — multi-node failure (hub+leaf) — ✅ PASS, reconfirms the design limitation (rev 9)
+
+Redeployed the same 3-node config fresh (26 resources). Topology:
+`lng-common-1` = A, `lng-common-2` = HUB, `lng-common-3` = LEAF.
+
+Killed HUB and LEAF together. Pinged both dead IPs for 90 packets each:
+- **HUB (`172.236.173.36`): 90/90 received, 0.0% packet loss.**
+- **LEAF (`172.236.187.191`): 17/90 received, 81.1% packet loss** — same
+  documented design limitation (no buddy covers the LEAF in a 3-node
+  triangle) as every prior rev, not a regression.
+
+No new bugs found. Tearing down, proceeding to Stage 5.
+
+---
+
+### Stage 5 — autoscaling (elastic) — ✅ PASS (rev 9)
+
+Redeployed `floor_nodes=1`/`max_nodes=3`/`ip_failover_enabled=false`.
+
+**Process note, not a product bug**: the pool started with an unhealthy
+leftover elastic node from Stage 4's own health-floor compensation,
+crash-looping (`nat-exporter.service` in `activating auto-restart`,
+290+ restarts). Root-caused via `journalctl`/`cloud-init-output.log`:
+this elastic node was created (11:33:18 UTC) *during* Stage 4's own
+kill test, and its cloud-init was still fetching artifacts from Object
+Storage when Stage 4's `terraform destroy` ran shortly after — which
+deletes and re-uploads the shared artifact objects on every
+apply/destroy cycle. The `nat-exporter` binary fetch lost that race
+(`curl: (22) ... 403`, consistent with an anonymous GET against a
+briefly-nonexistent key), while `buddy-sync`'s fetch on the same node
+happened to complete first and succeeded. Cloud-init's `runcmd` only
+runs once at first boot, so this specific instance could never
+self-heal. Deleted it and confirmed a clean 1-node baseline before
+proceeding — **process lesson for the rest of this program**: check
+for and clean up leftover elastic nodes immediately after any kill
+test, before running `terraform destroy`, not just before the next
+`terraform apply`.
+
+**Scale-out**: triggered via `set-pool-scaling --min-nodes 3
+--max-nodes 3`. Debounce confirmed again. Two elastic nodes provisioned
+one at a time (`common-elastic-101`, `common-elastic-102`, ~5 minutes
+apart — the autoscaling max-step pacing, not a problem), both
+confirmed genuinely healthy this time (no repeat of the fetch race).
+Reached 3/3 healthy.
+
+**Scale-in**: triggered via `--min-nodes 1 --max-nodes 3`. Both
+elastic nodes drained one at a time and deleted via the
+`drain_timeout_seconds` fallback (`drained_for=192s` each), settling
+back to exactly 1 node.
+
+No bugs found. Tearing down, proceeding to Stage 6.
+
+---
+
+### Stage 6 — elastic node failure — ✅ PASS (rev 9)
+
+Redeployed `floor_nodes=1`/`max_nodes=2`/`ip_failover_enabled=false`,
+clean baseline (no leftovers, applying the Stage 5 process lesson).
+Forced an elastic node (`common-elastic-100`, id `105107579`) via
+`set-pool-scaling --min-nodes 2 --max-nodes 2`, confirmed genuinely
+healthy (2/2), then shut it down directly via the Linode API at
+`17:56:01` local (`12:26:01` UTC) to simulate an external failure.
+
+```
+12:41:16  pool common: elastic node common-elastic-100 vanished from
+          discovery >=900s ago and never reappeared -- deleting its
+          orphaned instance
+```
+
+~921s after shutdown — on schedule. Confirmed via direct Linode API
+call (`404`) that the instance was genuinely deleted. `v0.1.63`'s fix
+continuing to work correctly.
+
+No bugs found. Tearing down, proceeding to Stage 7.
+
+---
+
+### Stage 7 — multi-fleet isolation (`common` + `acme`, same-VLAN mode) — ✅ PASS (rev 9)
+
+Enabled the `acme` pool alongside `common` (`terraform apply` clean,
+26 resources). A leftover elastic node from Stage 6 briefly exceeded
+`common`'s `max_nodes=1` ceiling; the ceiling-drain mechanism cleared
+it automatically. Once settled, both pools' rosters confirmed fully
+isolated (`GET /fleet/common` → exactly `lng-common-1`, `GET
+/fleet/acme` → exactly `lng-acme-1`), `GET /status` shows both pools
+tracked independently, no errors.
+
+No bugs found. Tearing down, proceeding to Stage 8a.
+
+---
+
+### Stage 8a — leader election + leader failover — ✅ PASS (rev 9)
+
+Redeployed `natctl_on_node_enabled=true`, `ip_failover_enabled=true`,
+3 floor nodes. `terraform apply` clean (26 resources).
+
+**(a)**: exactly one leader confirmed (`lng-common-2`, term 12).
+**(b)/(c)**: shut down the leader — a survivor (`lng-common-3`) claimed
+leadership ~65s later (term 13), via a genuine STONITH sequence this
+time (the fenced id matched the actual just-killed leader, confirmed
+`offline`, then claimed): `"fencing previous leader lng-common-2
+(linode_id=105109751) ..."` → `"confirmed 105109751 is offline -- fence
+complete"` → `"lng-common-3 is now the leader (term=13)"`. A real
+mutation (`set-pool-scaling --min-nodes 4 --max-nodes 4`) showed
+`"provisioned elastic node common-elastic-101"` only on the new
+leader's log; the surviving non-leader showed
+`"skipping provision a new elastic node -- not the confirmed leader
+this pass"` at every pass instead.
+**(d)**: the surviving non-leader consistently reported
+`is_leader=false` — no split-brain.
+
+One process note, not a bug: `lng-common-1` briefly self-reported
+unhealthy right after the leader died (a known, already-documented
+quirk — a node's own health check via its private-IP path can give a
+false negative, self-correcting within ~2 reconcile passes via peer
+corroboration, per `docs/RUNBOOK.md`). Confirmed it self-corrected
+within seconds, as documented.
+
+No bugs found. Proceeding to Stage 8b using this same deployment.
+
+---
+
+### Stage 8b — distributed control plane re-tests — ✅ PASS (rev 9)
+
+Re-ran all three core mutating-decision scenarios under
+`natctl_on_node_enabled=true`, reusing Stage 8a's deployment (rebooted
+nodes killed during 8a first, waited for a clean 3/3-healthy floor
+baseline each time).
+
+**(a) HA failover**: killed a non-leader, non-hub floor node
+(`lng-common-1`), pinged its public IP for 90 packets — **90/90
+received, 0.0% packet loss**. The leader's (`lng-common-3`) own log
+showed the actual IP-Sharing grant; the hub's log showed only
+`"skipping configure IP-sharing for ... -- not the confirmed leader
+this pass"` throughout.
+
+**(b) Autoscaling**: confirmed in Stage 8a's own mutation test
+(`provisioned elastic node` only on leader's log, `"skipping provision
+a new elastic node"` on the follower).
+
+**(c) Elastic node failure**: shut down a forced elastic node
+(`common-elastic-100`, id `105111345`) directly via the Linode API.
+~931s later, the leader's own log showed the vanished-node reap and
+deletion; confirmed via direct API call (`404`) the instance was
+genuinely gone, and confirmed both non-leaders' logs show **no
+mention of this reap at all** — the mutation gate is per-call, so
+non-leaders never logged anything about it.
+
+No bugs found. Tearing down, proceeding to Stage 9.
+
+---
+
+### Stage 9 — client-agent VLAN-only bootstrap — ✅ PASS (rev 9)
+
+Redeployed minimal single-floor-node config. Created a fresh
+`vlan_only` test client via a direct API call (same approach as rev 8
+— `linode-cli`'s `--interfaces` flag still no-ops against this CLI
+version). Confirmed `GET /agents/client-agent` and `GET
+/agents/install-nat-client.sh` both work over VLAN, `install-nat-
+client.sh` installed `client-agent` and set the ECMP default route.
+Real NAT egress confirmed end to end: `ping 8.8.8.8` 0% loss, `curl
+https://ifconfig.me` returned the NAT node's own public IP.
+
+No bugs found. Cleaned up the test client, tearing down, proceeding to
+Stage 10.
+
+---
+
+### Stage 10 — acceptance-test suite (read-only checks) — ✅ PASS (rev 9)
+
+Reused the Stage 9 deployment. Ran on the observability host itself
+(roster is VPC-private, not reachable from outside).
+
+```
+[PASS] 01-roster-and-health: common: 1/1 nodes healthy (min_nodes=1)
+[PASS] 06-observability: Prometheus/Grafana/Alertmanager reachable; NAT data is live in Prometheus across 1 pool(s)
+ACCEPTANCE TEST SUMMARY: 2 passed, 0 failed, 0 skipped
+```
+
+No bugs found. Proceeding to Stage 11 (same deployment).
+
+---
+
+### Stage 11 — security/hardening spot-check — ✅ PASS (rev 9)
+
+Reused the same deployment. `admin_cidrs` scoped (`45.119.30.144/32`,
+not `0.0.0.0/0`); every this-deployment firewall `DROP`-default with
+every rule scoped to the admin `/32` or a VPC-internal CIDR; SSH
+password auth confirmed off on both the observability host and the NAT
+node. Same account-hygiene observation as rev 8 (unrelated `nav-lng-*`
+firewalls on this account, untouched).
+
+No bugs found. Tearing down, proceeding to Stage 12.
+
+---
+
