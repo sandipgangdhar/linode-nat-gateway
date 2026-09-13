@@ -932,3 +932,35 @@ failover, autoscaling, and elastic-node-failure scenarios specifically
 log shows each mutation and every other node's log shows the
 skip-message instead.
 
+---
+
+### Stage 4 — multi-node failure (hub+leaf) — ✅ PASS, reconfirms rev 6's finding (rev 7)
+
+Redeployed the same 3-node config fresh. Topology: `lng-common-1` = A
+(survivor), `lng-common-2` = HUB, `lng-common-3` = LEAF. One notable
+timing detail this rev: the hub's *second* relationship briefly hit the
+`bgp_mature` gate for ~2.5 minutes (one of its 4 BGP peers took
+noticeably longer to reach Established than the other 3 — live FRR
+state showed a real, growing Up/Down timer throughout, confirming this
+was genuine BGP convergence variance, not a stuck/broken reading)
+before granting automatically — a normal, self-resolving case of the
+same mechanism seen in earlier passes, not a new finding.
+
+Killed HUB and LEAF together. Pinged both dead IPs directly from
+outside the fleet for 90 packets each:
+- **HUB (`172.236.171.251`): 90/90 received, 0.0% packet loss** — confirms
+  again.
+- **LEAF (`172.236.187.191`): 6/90 received, 93.3% packet loss** — the 6
+  successful pings were all in the first 6 seconds (`icmp_seq=0`
+  through `5`), right as the shutdown command was still propagating;
+  100% loss for the remaining 84 seconds. This is ambient BGP-withdrawal
+  propagation delay (the dead node's own primary route takes a moment
+  to actually disappear upstream), not any buddy coverage — consistent
+  with, and slightly more precise than, rev 6's clean 0/90 result (that
+  run's ping apparently started a few seconds later, after withdrawal
+  had already completed). Same root cause, same documented design
+  limitation, not a regression.
+
+No new bugs found. Cleaned up the test client, tearing down, proceeding
+to Stage 5.
+
