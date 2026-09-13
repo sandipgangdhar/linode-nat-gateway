@@ -1139,3 +1139,241 @@ restarts the ENTIRE matrix from Stage 1, not just this stage.
 **Pass 1 — INVALIDATED by this finding. Restarting as Pass 1 (rev 8)
 once the new release is live.** Tearing down.
 
+---
+
+## Pass 1 (rev 8) — from `v0.1.64`
+
+Customer repo refreshed to `v0.1.64` (`git fetch --tags && git checkout
+v0.1.64`, publish workflow run `34743588846` confirmed `success`),
+which includes the leader-election identity fix
+(`linode-nat-gateway-build` commit `7237fe4`). Restarting the full
+matrix from Stage 1.
+
+### Stage 1 — single fleet, single node — ✅ PASS (rev 8)
+
+`terraform apply` clean (22 resources). `natctl` active, roster shows
+exactly `lng-common-1`, healthy, no leftover elastic nodes this time
+(no ceiling-drain needed), no errors/exceptions in the log. No bugs
+found. Tearing down, proceeding to Stage 2.
+
+---
+
+### Stage 2/3 — multi-node HA, BGP IP failover (3 floor nodes) — ✅ PASS (rev 8)
+
+`terraform apply` clean (26 resources). BGP converged (all 4 route-
+reflector peers reached Established within ~4 minutes, confirmed via
+`vtysh -c "show bgp summary"`'s growing Up/Down timers). Topology:
+`lng-common-1` = A, `lng-common-2` = HUB (backs up both A and the
+LEAF), `lng-common-3` = LEAF.
+
+First attempt at the kill test hit a self-inflicted process error, not
+a product issue: the initial background `ping` was nested inside a
+subshell alongside the shutdown call and got killed early when the
+subshell exited, before capturing a real transition. Rebooted the node
+to get back to a clean baseline, waited for the roster/BGP topology to
+fully re-settle to the original hub arrangement, then re-ran the drill
+correctly (`ping` as a genuine top-level background process). Shut down
+`lng-common-2` (confirmed `offline` via the Linode API throughout) and
+pinged its public IP directly from outside the fleet: **90/90 received,
+0.0% packet loss**. `natctl`'s own log showed the buddy reshuffle
+firing correctly in response (`lng-common-1` picked up covering both
+`lng-common-2`'s and `lng-common-3`'s IPs). Stage 3 covered by the same
+test.
+
+**Bonus incidental confirmation**: while `lng-common-2` was down for
+the (aborted) first attempt, natctl correctly provisioned a compensating
+elastic node (`common-elastic-100`) via the zombie-floor-node health-
+deficit path (§3.4) — confirming that mechanism again, live and
+unprompted, consistent with every prior observation this session. It's
+expected to self-drain via the `max_nodes` ceiling mechanism now that
+all 3 floor nodes are healthy again.
+
+No bugs found. Tearing down (to clear the stray elastic node and get a
+clean baseline), proceeding to Stage 4.
+
+---
+
+### Stage 4 — multi-node failure (hub+leaf) — ✅ PASS, reconfirms prior revs' finding (rev 8)
+
+Deleted the stray leftover elastic node from Stage 2 directly (natctl-
+managed, not Terraform-managed, so `terraform destroy` doesn't touch
+it — same known pattern as every prior rev), then redeployed the same
+3-node config fresh (26 resources). Topology: `lng-common-1` = A,
+`lng-common-2` = HUB, `lng-common-3` = LEAF.
+
+Killed HUB and LEAF together. Pinged both dead IPs directly from
+outside the fleet for 90 packets each:
+- **HUB (`172.236.173.249`): 89/90 received, 1.1% packet loss** —
+  confirms again, consistent with prior revs' near-0% results.
+- **LEAF (`172.236.180.227`): 18/90 received, 80.0% packet loss** — the
+  18 successful pings were early, during the same ambient BGP-
+  withdrawal propagation window documented in rev 7's Stage 4 writeup,
+  before the dead node's own primary route fully disappeared upstream.
+  Same documented design limitation (no buddy backs up the LEAF in a
+  3-node triangle), not a regression.
+
+No new bugs found. Tearing down, proceeding to Stage 5.
+
+---
+
+### Stage 5 — autoscaling (elastic) — ✅ PASS (rev 8)
+
+Redeployed `floor_nodes=1`/`max_nodes=3`/`ip_failover_enabled=false`.
+Starting point was 2 nodes (a leftover elastic node from Stage 4's
+health-floor compensation, same natctl-managed/not-Terraform-managed
+pattern as every prior rev) — following rev 7's precedent, left alone
+since 2 ≤ `max_nodes=3`.
+
+**Scale-out**: triggered via `set-pool-scaling --min-nodes 3
+--max-nodes 3`. Debounce confirmed again (`"only 1/2 consecutive
+pass(es)"` at `07:53:06`, provisioned `common-elastic-101` at
+`07:53:23`). Reached 3/3 healthy by `07:56:34`.
+
+**Scale-in**: triggered via `--min-nodes 1 --max-nodes 3`.
+```
+07:58:49  scale-in triggered, draining ['common-elastic-100']
+08:02:03  deleting drained elastic node common-elastic-100 (drained_for=194s, remaining_conns=50)
+08:04:12  scale-in triggered, draining ['common-elastic-101']
+08:07:24  deleting drained elastic node common-elastic-101 (drained_for=193s, remaining_conns=45)
+```
+Both elastic nodes drained one at a time and deleted via the
+`drain_timeout_seconds` fallback, settling back to exactly 1 node.
+
+No bugs found. Tearing down, proceeding to Stage 6.
+
+---
+
+### Stage 6 — elastic node failure — ✅ PASS (rev 8)
+
+Redeployed `floor_nodes=1`/`max_nodes=2`/`ip_failover_enabled=false`,
+clean baseline (no leftovers this time). Forced an elastic node
+(`common-elastic-100`, id `105092978`) via `set-pool-scaling
+--min-nodes 2 --max-nodes 2`, confirmed healthy (2/2), then shut it
+down directly via the Linode API at `13:53:12` local (`08:23:12` UTC)
+to simulate an external failure.
+
+```
+08:38:25  pool common: elastic node common-elastic-100 vanished from
+          discovery >=900s ago and never reappeared -- deleting its
+          orphaned instance
+```
+
+~913s after shutdown — on schedule for the `900`s default threshold.
+Confirmed via direct Linode API call (`GET
+/v4/linode/instances/105092978` → `404`) that the instance was
+genuinely deleted. This is `v0.1.63`'s `_reap_vanished_elastic_nodes()`
+fix (the sixth real bug) continuing to work correctly, live, in a fresh
+deployment.
+
+No bugs found. Tearing down, proceeding to Stage 7.
+
+---
+
+### Stage 7 — multi-fleet isolation (`common` + `acme`, same-VLAN mode) — ✅ PASS (rev 8)
+
+Enabled the `acme` pool alongside `common` (`terraform apply` clean,
+26 resources). A leftover elastic node from Stage 6
+(`common-elastic-101`, natctl-managed, not Terraform-managed — same
+known pattern as every prior rev) briefly exceeded `common`'s
+`max_nodes=1` ceiling; the already-proven `v0.1.61`/`v0.1.62`
+ceiling-drain mechanism cleared it automatically within ~3 minutes, no
+operator action needed.
+
+Once settled, both pools' rosters confirmed fully isolated:
+- `GET /fleet/common` → exactly `lng-common-1`.
+- `GET /fleet/acme` → exactly `lng-acme-1`.
+
+`GET /status` shows both pools tracked independently (`node_count=1`/
+`healthy_count=1` each). No cross-pool node listing, no shared state,
+no errors. No bugs found. Tearing down, proceeding to Stage 8a.
+
+---
+
+### Stage 8a — leader election + leader failover — ✅ PASS, confirms the `v0.1.64` fix (rev 8)
+
+Redeployed `natctl_on_node_enabled=true`, `ip_failover_enabled=true`,
+3 floor nodes. `terraform apply` clean (26 resources).
+
+**(a)**: queried each node's own `GET :8099/status` directly —
+`lng-common-2` reported `is_leader=true` (term=9), the other two
+`false`. **The stale lease this time named a completely different
+prior identity** (`common-elastic-101`, `linode_id=105087696`, a
+leftover from earlier session activity, not this rev) — `lng-common-2`
+resolved it via a liveness-probe attempt, got `404`, safely treated it
+as fenced, and claimed leadership cleanly. This confirms the fencing
+mechanism handles a stale/foreign lease record safely in general; the
+exact hostname-collision scenario the `v0.1.64` fix targets is more
+directly covered by its 2 new unit tests
+(`test_tick_does_not_renew_a_stale_lease_that_only_matches_by_hostname`,
+`test_verify_before_mutation_false_when_superseded_by_same_hostname_
+different_instance`) than by this particular live draw, since the
+stale record's hostname didn't happen to match any node in this
+deployment.
+
+**(b)/(c)**: shut down the leader (`lng-common-2`) at `14:30:11` local.
+A survivor (`lng-common-1`) claimed leadership ~71s later (`14:31:22`,
+term=10), stable and unflapping for the following several minutes.
+Triggered a real mutation (`set-pool-scaling --min-nodes 4 --max-nodes
+4`) against the new leader — its own log showed both provisions
+(`common-elastic-100` at `09:01:32` UTC, `common-elastic-101` at
+`09:06:43` UTC); the surviving non-leader's log showed the correct
+`"skipping provision a new elastic node -- not the confirmed leader
+this pass"` and `"skipping configure IP-sharing for ... -- not the
+confirmed leader this pass"` throughout, never performing a mutation
+itself.
+
+**(d)**: the surviving non-leader consistently reported
+`is_leader=false` for the entire observation window — no split-brain.
+
+No bugs found — this rev's Stage 8a is the first clean pass of this
+stage since the leader-election identity bug was found. Proceeding to
+Stage 8b using this same deployment (same `natctl_on_node_enabled=true`
+config both stages need).
+
+---
+
+### Stage 8b — distributed control plane re-tests — ✅ PASS (rev 8)
+
+Re-ran all three core mutating-decision scenarios under
+`natctl_on_node_enabled=true`, reusing Stage 8a's deployment (rebooted
+the two nodes killed during 8a first, waited for a clean 3/3-healthy
+floor baseline each time before each sub-test).
+
+**(a) HA failover**: killed a non-leader floor node
+(`lng-common-3`), pinged its public IP for 90 packets — **90/90
+received, 0.0% packet loss**. The leader's (`lng-common-1`) own log
+showed the actual `"updated IP-Sharing for lng-common-1 ->
+['172.236.173.36']"` grant; the hub node's log showed only
+`"skipping configure IP-sharing for ... -- not the confirmed leader
+this pass"` throughout, every single reconcile pass — no mutation from
+a non-leader.
+
+**(b) Autoscaling**: triggered `set-pool-scaling --min-nodes 4
+--max-nodes 4`. The leader's own log showed `"provisioned elastic node
+common-elastic-100"`; a non-leader's log showed `"skipping provision a
+new elastic node -- not the confirmed leader this pass"` — confirmed
+every node evaluates, only the leader mutates.
+
+**(c) Elastic node failure**: shut down the freshly-provisioned
+`common-elastic-100` (id `105097239`) directly via the Linode API.
+~926s later, the leader's own log showed `"elastic node
+common-elastic-100 vanished from discovery >=900s ago ... deleting its
+orphaned instance"` — confirmed via direct API call (`404`) that the
+instance was genuinely deleted, and confirmed via both non-leaders'
+logs that **neither one logged this reap at all** (not even a skip
+message — the mutation gate is per-call, and non-leaders never got far
+enough into that code path to log anything about it).
+
+One process note, not a product bug: a stale SSH host-key warning
+appeared for `lng-common-1`'s reused public IP mid-test — verified via
+the Linode API and the instance's own `uptime`/`machine-id` that the
+underlying instance was continuously running since its original boot,
+never rebuilt or replaced. Purely a local `known_hosts` artifact from
+IP reuse across this session's many teardown/redeploy cycles.
+
+No bugs found. This is the first fully clean pass of Stages 8a+8b since
+the leader-election identity bug was found and fixed. Tearing down,
+proceeding to Stage 9.
+
+---
+
