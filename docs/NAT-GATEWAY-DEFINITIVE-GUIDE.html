@@ -674,6 +674,7 @@ flowchart TB
 
         <h3>What if two nodes really do try to write at the exact same moment?</h3>
         <p>Since the lease record isn't an atomic compare-and-swap, two candidates could, in a narrow and short-lived window, both briefly believe they've won the same election — the design doesn't claim to make that mathematically impossible, only rare. What actually prevents both from mutating cloud state is the separate, per-call check described above: immediately before either one attempts a real mutating action (not once per pass, but freshly for that one specific call), it re-reads the lease record one more time. Only whichever one's check runs first against the current record is allowed to proceed; the other's check will already see the new leader and refuses to act.</p>
+        <p>Live testing found a real edge in that reasoning: two candidates racing to fence the <em>same</em> dead leader don't necessarily finish at the same speed. The faster one's own re-check passes correctly — it really was the sole leader at that exact instant — only for the slower one's write to land moments later and quietly take over, also passing its own re-check correctly. For a short window, both genuinely believed they'd won. An optional extra step closes most of that window in practice: after winning, wait a short, configurable delay, then check once more before ever acting on it — giving a slower competitor a real chance to show up before anything gets mutated. This narrows the window rather than eliminating it outright: a competitor slower than that wait can still land afterward, at which point the same per-call check described above is what catches it — as it did the first time this was observed live, blocking every pending action before any of them reached the cloud provider's API.</p>
 
         <div class="callout warn">
           <span class="co-label">Honest limit, with a concrete scenario</span>
@@ -1573,6 +1574,7 @@ natctl-cli --config /etc/natctl/config.yaml set-vpc-sibling-subnets --clear</pre
             <tr><td><code>fence_confirm_timeout_seconds</code></td><td>float</td><td><code>60.0</code></td><td>How long a new leader waits for confirmation that the previous leader was actually powered off before proceeding.</td></tr>
             <tr><td><code>renewal_retry_attempts</code> / <code>renewal_retry_backoff_seconds</code></td><td>int / float</td><td><code>2</code> / <code>1.0</code></td><td>Bounded retry on the lease-store read/renewal path.</td></tr>
             <tr><td><code>liveness_probe_timeout_seconds</code></td><td>float</td><td><code>3.0</code></td><td>Timeout for the pre-fence check of whether the previous leader's own roster API still answers.</td></tr>
+            <tr><td><code>election_settle_seconds</code></td><td>float</td><td><code>10.0</code></td><td>Extra delay after winning an election, before ever acting on it, specifically to catch a slower competing candidate whose own attempt is still in flight — see Part II, 2.4's "two nodes at the exact same moment" section.</td></tr>
           </tbody>
         </table></div>
 
@@ -1697,6 +1699,49 @@ systemctl restart natctl</pre></li>
         <p>In rough order of likelihood: a private-subnet instance's routing agent isn't running or can't reach the roster URL; the control plane's API token has expired or lost a scope; or the minimum/maximum bounds are misconfigured for actual current load. The architecture and this book describe exactly how the system is supposed to behave — when real behavior diverges from that, that gap is always the right starting point for debugging, not a sign the design itself is wrong.</p>
       </section>
 
+      <section class="chapter" id="c10-8">
+        <h2><span class="chno">10.8</span> Control-Plane Recovery</h2>
+        <p class="lede">Every scenario below is about restoring <em>decisions</em>, not restoring connectivity. In all of them, the NAT data plane keeps forwarding traffic untouched the whole time — nodes don't ask the control plane for permission to forward a packet, and the routing agent keeps using its last-known-good roster rather than dropping traffic the moment a fetch fails. What actually pauses is new elastic capacity, zombie-node replacement, buddy/failover reassignment, and — under the every-node placement — leadership itself.</p>
+
+        <h3>What's genuinely irreplaceable, and what isn't</h3>
+        <p>Your own <code>natctl.yaml</code> is the one thing nothing here can regenerate for you — keep it in version control like any other infrastructure-as-code input. Historical dashboard metrics are the single most valuable, least-reproducible thing the control plane holds — losing that data store loses yesterday's throughput numbers for good, with nothing else in the system to recompute them from. The dashboard layout and alert rules themselves, by contrast, are provisioned fresh from files already shipped with this project and reappear automatically on any fresh start — only hand-made panels, user accounts, and active alert silences are lost if that specific data is destroyed without your own separate backup. Everything else — the fleet's own live state, the leader-election lease, the scrape-target list — is disposable and rebuilds itself from the cloud provider's live API within one reconcile pass; losing it costs a little time, never correctness.</p>
+
+        <h3>Single dedicated host</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Scenario</th><th>Recovery</th></tr></thead>
+          <tbody>
+            <tr><td>The controller process crashed or hung, but the host itself is fine</td><td><code>systemctl restart natctl</code> — it's already configured to restart itself on failure, so this is usually already resolved by the time you notice. No data to restore; the very next pass rebuilds fleet state from the live API.</td></tr>
+            <tr><td>The whole control-plane host is lost (terminated, disk failure, deleted by mistake), but your infrastructure-as-code state is intact</td><td>Re-apply your infrastructure as code — it recreates the host exactly as before. The controller rediscovers the existing fleet by tag automatically; nothing on the NAT nodes themselves needs to change. The dashboard and alert rules reprovision from files; historical metrics and anything hand-made in the dashboard tool are gone unless you kept your own separate backup.</td></tr>
+            <tr><td>The metrics/dashboard/alerting data itself is lost or corrupted, but the host never actually went down</td><td>There's nothing to recover from inside this system if you didn't keep your own backup of that data — a fresh start brings the dashboard and alert rules back from files as always, but history before that point is genuinely gone. Back that data up on your own schedule if this matters to you; it's out of scope for this project by design.</td></tr>
+            <tr><td>Object storage is unreachable</td><td>New elastic-node boots fail partway through (the fetch of the fleet software itself times out), while already-running nodes are unaffected, since they fetched everything at their own boot time. Confirm the bucket and credentials are actually reachable, then reboot any node stuck mid-boot — a stuck elastic node self-heals on its own replacement timer regardless.</td></tr>
+            <tr><td>The cloud provider API token expired, was revoked, or lost a required scope</td><td>Read-only work (discovery, health checks, the roster) keeps working, since it's the same API; only mutating calls start failing. Generate a replacement token with the same scopes, update it in your infrastructure-as-code input, and restart the controller to pick it up immediately rather than waiting for your next full deployment.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Every-node placement</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Scenario</th><th>Recovery</th></tr></thead>
+          <tbody>
+            <tr><td>A single node dies</td><td>Usually nothing to do — this is the ordinary election/fencing sequence described earlier in this part working as intended. Confirm exactly one node reports itself as leader afterward, then investigate <em>why</em> the dead one lost its lease before powering it back on — a fenced node stays off deliberately until you do that yourself.</td></tr>
+            <tr><td>The shared lease store becomes unreachable for the whole fleet, not just one node</td><td>Every node in the pool correctly refuses to assume it's leader while it can't confirm that — a stricter, fleet-wide version of "the control plane goes quiet" rather than one instance's outage. Fix the underlying reachability or credential problem; nothing needs manually re-electing once it's fixed, since every node's very next check resumes normally on its own.</td></tr>
+            <tr><td>A node was fenced and needs to come back</td><td>Confirm it's actually safe to bring back — not still in whatever condition caused it to lose its lease in the first place — then power it back on yourself. It rejoins as a follower automatically with no special "rejoin" step.</td></tr>
+            <tr><td>Enough nodes die at once that survivors can't reach a majority to corroborate a fencing decision</td><td>Tell two situations apart first, since the fix differs: if the missing nodes are genuinely gone, the pool's own membership shrinks to match as the survivors keep discovering the fleet, and this typically resolves itself within a couple of passes. If they're actually still running but network-partitioned away from the survivors, they never drop out of that count, and the survivors can stay stuck indefinitely — confirm which case it is by checking each node's actual status directly with the cloud provider, and if it's a genuine, slow-to-heal partition, you can break the deadlock yourself by powering the unreachable nodes off (this is you performing the same safety action the system would otherwise do on its own) — only do this if you're confident they aren't still safely serving traffic on their own side of the split.</td></tr>
+            <tr><td>The shared lease record itself becomes corrupted or unreadable</td><td>Every node hits the same error reading it, on every pass, and the pool never elects anyone. Inspect the object directly through your object-storage tooling; if it's genuinely unreadable, delete it outright. The very next pass on every node sees no lease at all — the exact same safe path a brand-new pool's first-ever election already uses — and a new leader emerges within one election cycle, no differently than day one.</td></tr>
+            <tr><td>More than one node reports itself as leader for the same pool, and it isn't resolving within a pass or two on its own</td><td>This should never persist past a couple of passes under normal conditions — if it does, something is actively preventing the two from ever seeing each other's writes to the shared lease store, which is rarer and more serious than an ordinary node-to-node network split. Read the lease record directly to see which identity it currently names — that record is the source of truth by construction, not either node's own belief — stop the controller on the other one, resolve the underlying connectivity problem, then let it rejoin normally.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Building a brand-new control plane from nothing</h3>
+        <p>Use this for a genuine disaster, or a deliberate decision to start fresh — migrating accounts, moving regions, or simply no longer trusting the state in an existing coordination bucket. This assumes your NAT node fleet already exists (or is being rebuilt at the same time) and just needs a control plane pointed at it again.</p>
+        <p><strong>Before you start</strong>, decide what to do about the coordination bucket if you're reusing one from a previous control plane. Reusing it is safe by construction — a stale, leftover record from the old control plane is now correctly recognized as stale rather than mistaken for a still-living leader — but if you'd rather start guaranteed-clean instead of relying on that self-correction, delete that pool's lease object from the bucket first; it's harmless if it was never there.</p>
+        <ol>
+          <li><strong>Single dedicated host:</strong> apply your infrastructure as code with the every-node placement turned off (the default) and object storage configured. Verify: the controller service is active, the roster shows every expected node, the dashboard shows live data within a couple of scrape intervals, and every alert rule shows as loaded and evaluating.</li>
+          <li><strong>Every-node placement:</strong> apply your infrastructure as code with the every-node placement turned on and object storage configured — the same bucket serves both the fleet's fetched-at-boot software and the leader-election lease. Verify a single leader emerges within one election cycle (a brand-new deployment has no previous leader to fence at all, so this should only take as long as the built-in jitter delay, plus the settle delay if you've configured one) — check every node's own status and confirm exactly one reports itself as leader.</li>
+          <li><strong>Either way, once the control plane is up:</strong> confirm every client instance's routing agent reconnects and repopulates its own routing table without needing any reconfiguration of its own; trigger a real scale-out and confirm a new node actually gets provisioned and wired into failover, not just evaluated on paper.</li>
+        </ol>
+        <p>What you cannot get back if you skipped your own backups: prior dashboard history, anything hand-made in the dashboard tool beyond what the provisioned files recreate, and any active alert silences from before. Your own <code>natctl.yaml</code> is never at risk from this procedure as long as you kept your own copy — this project never treats it as something needing its own backup schedule, by design; that responsibility stays with you, the same as any other infrastructure-as-code input.</p>
+      </section>
+
       <div class="book-footer">
         <div class="footer-mascot">
           <div class="footer-otto-badge" aria-hidden="true">
@@ -1793,7 +1838,7 @@ systemctl restart natctl</pre></li>
       ["c10-1","10.1 Pre-Production Checklist"],["c10-2","10.2 The Operator CLI"],
       ["c10-3","10.3 Common Procedures"],["c10-4","10.4 Troubleshooting Playbook"],
       ["c10-5","10.5 Configuration Reference"],["c10-6","10.6 Updating Any Field"],
-      ["c10-7","10.7 Where to Look First"]
+      ["c10-7","10.7 Where to Look First"],["c10-8","10.8 Control-Plane Recovery"]
     ]}
   ];
 
