@@ -72,7 +72,14 @@ rule_files:
 alerting:
   alertmanagers:
     - static_configs:
-        - targets: ["localhost:9093"]
+        # Docker Compose's own internal DNS resolves this to the
+        # alertmanager service's container IP on the lng-observability
+        # bridge network -- "localhost" here would resolve to this
+        # Prometheus container itself, not the separate Alertmanager
+        # container, and every alert would silently never be delivered
+        # (connection refused, since nothing listens on 9093 inside
+        # Prometheus's own container).
+        - targets: ["alertmanager:9093"]
 
 %{ if remote_write_url != "" ~}
 # Optional push to an existing monitoring backend (Grafana Cloud, Mimir,
