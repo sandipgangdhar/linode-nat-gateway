@@ -71,7 +71,8 @@ check.
 | 5 | Autoscaling (elastic) | `max_nodes` > floor, trigger scale-out, scale-in | pending (rev 7 — see note above) |
 | 6 | Elastic node failure | Kill an elastic node, observe zombie-reap + replace | pending (rev 7 — not yet actually run to completion; rev 6 found a bug mid-stage) |
 | 7 | Multi-fleet | 2 pools (`common` + a second), same-VLAN mode | pending |
-| 8 | `natctl_on_node_enabled=true` — leader election + leader failover | (a) confirm exactly one node's `GET :8099/status` reports `leader_election.is_leader=true` on a fresh deploy; (b) kill the current leader, confirm a survivor detects the stale lease, STONITH-fences it (Linode API power-off + confirmed `offline`/404 poll — verify via the fencing node's own log, not just inferring it from the dead node's state, since it may already be off), and claims leadership itself (new `term` observed); (c) confirm the NEW leader actually performs a real mutating action afterward (trigger a scale event via `set-pool-scaling` and confirm the new leader's own log shows the provision/drain, not the dead one's); (d) confirm every surviving non-leader node's own `/status` still reports `is_leader=false` (no split-brain) | pending |
+| 8a | `natctl_on_node_enabled=true` — leader election + leader failover | (a) confirm exactly one node's `GET :8099/status` reports `leader_election.is_leader=true` on a fresh deploy; (b) kill the current leader, confirm a survivor detects the stale lease, STONITH-fences it (Linode API power-off + confirmed `offline`/404 poll — verify via the fencing node's own log, not just inferring it from the dead node's state, since it may already be off), and claims leadership itself (new `term` observed); (c) confirm the NEW leader actually performs a real mutating action afterward (trigger a scale event via `set-pool-scaling` and confirm the new leader's own log shows the provision/drain, not the dead one's); (d) confirm every surviving non-leader node's own `/status` still reports `is_leader=false` (no split-brain) | pending |
+| 8b | `natctl_on_node_enabled=true` — re-run the core mutating-decision scenarios under a distributed control plane | The control plane behaves genuinely differently in this mode (every node evaluates autoscale/health, but only the confirmed leader's mutating calls should ever actually take effect) — a bug could exist in this mode without ever showing up under the default single-dedicated-host mode Stages 1-7 ran in. Re-run, with `natctl_on_node_enabled=true` throughout: (a) **HA failover** (Stage 2's scenario) — kill a floor node, confirm buddy IP failover still reaches 0% loss and that ONLY the current leader's own log shows the IP-Sharing grant/withdrawal, not every node's; (b) **autoscaling** (Stage 5's scenario) — trigger scale-out/scale-in via `set-pool-scaling`, confirm only the leader actually provisions/drains (check every node's log, not just the leader's, to confirm non-leaders evaluated but did not mutate); (c) **elastic node failure** (Stage 6's scenario) — kill an elastic node, confirm the leader (and only the leader) reaps the orphaned instance via `_reap_vanished_elastic_nodes()` | pending |
 | 9 | Client-agent VLAN bootstrap | `GET /agents/client-agent` fetch path for a `vlan_only` client | pending |
 | 10 | Acceptance test suite | Bundled `acceptance-tests/` against the live deployment | pending |
 | 11 | Security/hardening spot-check | SSH key-only, firewall CIDR scoping, no `0.0.0.0/0` | pending |
@@ -873,4 +874,61 @@ restarting the ENTIRE matrix from Stage 1.
 (rev 7) once `v0.1.63` is live.**
 
 ---
+
+## Pass 1 (rev 7) — from `v0.1.63`
+
+Customer repo refreshed to `v0.1.63` (`git fetch --tags && git checkout
+v0.1.63`, publish workflow run `34736581845` confirmed `success`),
+which includes the vanished-elastic-node reap fix
+(`linode-nat-gateway-build` commit `594aa12`). Restarting the full
+matrix from Stage 1. This pass also extends the matrix with two new
+stages added at the user's explicit request: Stage 8's leader-election/
+leader-failover sub-tests, and a new Stage 12 for Prometheus/Grafana
+observability.
+
+### Stage 1 — single fleet, single node — ✅ PASS (rev 7)
+
+`terraform apply` clean (22 resources). Docker stack up, `natctl`
+active, `natctl-cli` fetch clean. **Bonus live confirmation**: a
+leftover orphan elastic node from Stage 6 rev 6 (`common-elastic-101`,
+never cleaned up since it wasn't Terraform-managed) was rediscovered on
+startup, correctly identified as exceeding this stage's `max_nodes=1`,
+and automatically drained + deleted —
+`"pool common: 2 total node(s) exceeds max_nodes=1 -- draining
+['common-elastic-101']"` followed by the friendly
+`"already draining every elastic node that could cover the excess --
+waiting for the drain to complete"` (the `v0.1.62` logging fix, not the
+old misleading error), then `"deleting drained elastic node
+common-elastic-101 (drained_for=194s, remaining_conns=51)"`. Confirmed
+via `linode-cli linodes list` — zero elastic instances remain, roster
+settled to exactly 1 node. Both the `v0.1.61` ceiling fix and the
+`v0.1.62` logging fix confirmed working together correctly, live,
+unprompted — this was a real leftover, not a staged test.
+
+---
+
+### Stage 2 — single fleet, multi-node (3 floor nodes), BGP IP failover — ✅ PASS (rev 7)
+
+`terraform apply` clean (26 resources). BGP converged automatically
+(grants at `04:27:12`, zero blocking messages; all 4 route-reflector
+peers Established within ~3 minutes). Core HA failure test re-run in
+full: killed `lng-common-2` (handling node, confirmed via `conntrack`),
+pinged its own public IP directly from outside the fleet — **90/90
+received, 0.0% packet loss**. Stage 3 covered by the same test. No new
+issues — this mechanism continues to pass reliably every time it's
+run.
+
+**Note for this rev's matrix going forward**: the user flagged mid-pass
+that Stages 1–7 only ever exercise the default single-dedicated-
+control-plane mode (`natctl_on_node_enabled=false`) — the control plane
+behaves genuinely differently under `natctl_on_node_enabled=true`
+(every node evaluates autoscale/health, but only the confirmed leader's
+mutating calls take effect via `FleetController._may_mutate()`, logging
+`"skipping <action> -- not the confirmed leader this pass"` for a
+non-leader). Stage 8 is now split into **8a** (leader election/failover
+mechanics, already planned) and a new **8b**: re-running the HA
+failover, autoscaling, and elastic-node-failure scenarios specifically
+*under* `natctl_on_node_enabled=true`, confirming only the leader's own
+log shows each mutation and every other node's log shows the
+skip-message instead.
 
