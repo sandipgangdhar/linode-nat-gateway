@@ -2036,13 +2036,84 @@ form — the fix/habit is the same: always re-check for stray elastic
 nodes via a live `linode-cli`/API inventory immediately after any
 `terraform destroy` of this environment, not just before it.
 
-No product bugs found. Both fixes hold under live re-test. On-node
-hardening finalization effort considered **complete**. Tore down
+No product bugs found. Both fixes hold under live re-test. Tore down
 cleanly (deleted the natctl-managed elastic node manually before
 `terraform destroy`, then caught and deleted one more instance created
 mid-destroy by the same race noted above; verified via a live
 `linode-cli` inventory afterward that only this program's pre-existing,
 unrelated `nav-observability` instance remained).
+
+**Superseded by further in-depth testing below** — per the user's
+follow-up instruction to move on to in-depth testing of the on-node
+consensus design specifically, two more real findings surfaced.
+
+---
+
+### In-depth quorum-gate testing — 🐛 TENTH AND ELEVENTH REAL BUGS FOUND
+
+Per the user's explicit instruction to move past the standard test
+matrix and do dedicated, in-depth live testing of the on-node
+consensus design, deployed a larger scenario: `common` pool with 5
+floor nodes (majority arithmetic at scale, VPC/VLAN peer fallback,
+double-failure fail-safe boundary) and `acme` pool with 2 floor nodes
+(live-confirm the documented 2-node fallback), both
+`natctl_on_node_enabled=true`.
+
+**Tenth bug — a real, live split-brain window.** While setting up a
+VPC/VLAN peer-fallback test, noticed `common-elastic-100` and
+`lng-common-3` both logged `"is now the leader (term=20)"` for the same
+term, 11 seconds apart, after independently racing to fence the same
+dead leader. Rebooted the already-shut-down `common-elastic-100`
+briefly (purely to read its own on-disk journal, then shut it back down
+immediately) to get both sides of the story: the faster candidate's
+own write-then-reverify check passed correctly (it genuinely was the
+sole leader at that instant); 11 seconds later the slower candidate's
+write silently overwrote it, also passing its own reverify correctly.
+Both performed real mutating IP-Sharing calls before the faster one
+discovered, on its *next* reconcile pass ~16s later, that it had been
+superseded. Harmless this time (both computed the identical buddy
+topology) but not a structural guarantee. **Fixed in `v0.1.67`**
+(`election_settle_seconds`, opt-in, off by default): one more delayed
+re-read after winning, before ever trusting that win enough to mutate.
+Reduces, does not eliminate, the window — see `docs/ARCHITECTURE.md`'s
+leader-election section for the full honest limitation.
+
+**Eleventh bug — a total, permanent election deadlock, found while
+live-testing the tenth bug's own fix.** Redeployed fresh (5-node
+`common`) to test `v0.1.67` and the pool never elected a leader at all
+— sat leaderless for 10+ minutes with zero sign of resolving. Root
+cause: `_peer_confirms_leader_unhealthy()` matched the previous leader
+in a peer's roster by hostname (`node_id`) only. Floor-node hostnames
+are deterministic and recur on every fresh `terraform apply` — the
+stale lease from the just-destroyed prior deployment named
+`lng-common-3` under an old, now-gone `linode_id`, but every peer's own
+roster naturally showed `lng-common-3` as healthy (the real, new
+instance now running under that name). Every peer correctly answering
+"yes, that hostname is healthy" made the quorum gate refuse to ever
+fence a record naming nothing still alive — and since a floor node's
+hostname stays occupied for the pool's entire lifetime, this wasn't a
+narrow race, it was permanent. **Fixed in `v0.1.68`**: added
+`linode_id` to `fleet.py`'s roster payload, quorum gate now requires
+both fields to match — a hostname match against a different
+`linode_id` is correctly treated the same as "not found."
+
+**Re-verified live against `v0.1.68`, same exact stale-lease scenario
+that deadlocked before**: leader elected cleanly in ~15 seconds (was:
+permanent deadlock). Killed that leader — a genuine 4-way race occurred
+among all 4 survivors this time. One candidate's own settle-and-
+reverify check passed a fraction of a second *before* a faster-
+finishing rival's competing write landed, but its very next mutation
+attempt was caught and blocked by the pre-existing, per-call
+`verify_before_mutation()` layer (~150ms after the competing write
+landed) — **zero duplicate mutations fired**, a direct, confirmed
+improvement over the tenth bug's own incident. Final IP-sharing state
+verified consistent across all nodes, no conflicts.
+
+No further product bugs found. Both `v0.1.67` and `v0.1.68` hold under
+live re-test, including a genuine multi-way race exercising the exact
+defense-in-depth layering (settle-and-reverify + per-call
+`verify_before_mutation()`) this whole effort was meant to validate.
+On-node hardening finalization effort considered **complete**.
 
 ---
 
