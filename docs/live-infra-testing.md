@@ -64,19 +64,19 @@ check.
 
 | # | Stage | Config | Status |
 |---|---|---|---|
-| 1 | Single fleet, single node | 1 pool, `floor_nodes=1`, `natctl_on_node_enabled=false` | pending (rev 8 — invalidated by Stage 8a's finding) |
-| 2 | Single fleet, multi-node (HA mechanisms active) | 1 pool, `floor_nodes=3`, same mode | pending (rev 8 — see note above) |
-| 3 | Single-node failure (floor) | Kill 1 of 3 floor nodes, observe ECMP/buddy/BGP/packet-loss | pending (rev 8 — see note above) |
-| 4 | Multi-node failure (floor) | Kill 2 of 3 floor nodes | pending (rev 8 — see note above) |
-| 5 | Autoscaling (elastic) | `max_nodes` > floor, trigger scale-out, scale-in | pending (rev 8 — see note above) |
-| 6 | Elastic node failure | Kill an elastic node, observe zombie-reap + replace | pending (rev 8 — see note above) |
-| 7 | Multi-fleet | 2 pools (`common` + a second), same-VLAN mode | pending (rev 8 — see note above) |
-| 8a | `natctl_on_node_enabled=true` — leader election + leader failover | (a) confirm exactly one node's `GET :8099/status` reports `leader_election.is_leader=true` on a fresh deploy; (b) kill the current leader, confirm a survivor detects the stale lease, STONITH-fences it (Linode API power-off + confirmed `offline`/404 poll — verify via the fencing node's own log, not just inferring it from the dead node's state, since it may already be off), and claims leadership itself (new `term` observed); (c) confirm the NEW leader actually performs a real mutating action afterward (trigger a scale event via `set-pool-scaling` and confirm the new leader's own log shows the provision/drain, not the dead one's); (d) confirm every surviving non-leader node's own `/status` still reports `is_leader=false` (no split-brain) | pending (rev 8 — rev 7 found the 7th real bug, a stale-lease hostname/linode_id identity confusion, now fixed in `v0.1.64`) |
-| 8b | `natctl_on_node_enabled=true` — re-run the core mutating-decision scenarios under a distributed control plane | The control plane behaves genuinely differently in this mode (every node evaluates autoscale/health, but only the confirmed leader's mutating calls should ever actually take effect) — a bug could exist in this mode without ever showing up under the default single-dedicated-host mode Stages 1-7 ran in. Re-run, with `natctl_on_node_enabled=true` throughout: (a) **HA failover** (Stage 2's scenario) — kill a floor node, confirm buddy IP failover still reaches 0% loss and that ONLY the current leader's own log shows the IP-Sharing grant/withdrawal, not every node's; (b) **autoscaling** (Stage 5's scenario) — trigger scale-out/scale-in via `set-pool-scaling`, confirm only the leader actually provisions/drains (check every node's log, not just the leader's, to confirm non-leaders evaluated but did not mutate); (c) **elastic node failure** (Stage 6's scenario) — kill an elastic node, confirm the leader (and only the leader) reaps the orphaned instance via `_reap_vanished_elastic_nodes()` | pending |
-| 9 | Client-agent VLAN bootstrap | `GET /agents/client-agent` fetch path for a `vlan_only` client | pending |
-| 10 | Acceptance test suite | Bundled `acceptance-tests/` against the live deployment | pending |
-| 11 | Security/hardening spot-check | SSH key-only, firewall CIDR scoping, no `0.0.0.0/0` | pending |
-| 12 | Prometheus/Grafana observability | (a) Prometheus's own `/api/v1/targets` shows every `nat-exporter`/natctl scrape target `up`, not just the container running; (b) query a handful of real series directly (`nat_conntrack_utilization_ratio`, `nat_port_available_total`, `natctl_leader_election_is_leader` once Stage 8 is up) and confirm recent, sane data points, not stale/missing; (c) Grafana is reachable and its dashboard provisioning actually succeeded — list dashboards via Grafana's own HTTP API (`/api/search`, authenticated with the generated admin password) rather than just checking the container is "Up"; (d) Prometheus's `/api/v1/rules` shows the alert rules from `alerts/nat-alerts.yml` actually loaded and evaluating (state `inactive`/`pending`/`firing`, not absent); (e) if practical, force one real alert condition (e.g. the port-exhaustion or node-down rule) and confirm it actually reaches Alertmanager | pending |
+| 1 | Single fleet, single node | 1 pool, `floor_nodes=1`, `natctl_on_node_enabled=false` | pending (rev 9 — invalidated by Stage 12's finding) |
+| 2 | Single fleet, multi-node (HA mechanisms active) | 1 pool, `floor_nodes=3`, same mode | pending (rev 9 — see note above) |
+| 3 | Single-node failure (floor) | Kill 1 of 3 floor nodes, observe ECMP/buddy/BGP/packet-loss | pending (rev 9 — see note above) |
+| 4 | Multi-node failure (floor) | Kill 2 of 3 floor nodes | pending (rev 9 — see note above) |
+| 5 | Autoscaling (elastic) | `max_nodes` > floor, trigger scale-out, scale-in | pending (rev 9 — see note above) |
+| 6 | Elastic node failure | Kill an elastic node, observe zombie-reap + replace | pending (rev 9 — see note above) |
+| 7 | Multi-fleet | 2 pools (`common` + a second), same-VLAN mode | pending (rev 9 — see note above) |
+| 8a | `natctl_on_node_enabled=true` — leader election + leader failover | (a) confirm exactly one node's `GET :8099/status` reports `leader_election.is_leader=true` on a fresh deploy; (b) kill the current leader, confirm a survivor detects the stale lease, STONITH-fences it (Linode API power-off + confirmed `offline`/404 poll — verify via the fencing node's own log, not just inferring it from the dead node's state, since it may already be off), and claims leadership itself (new `term` observed); (c) confirm the NEW leader actually performs a real mutating action afterward (trigger a scale event via `set-pool-scaling` and confirm the new leader's own log shows the provision/drain, not the dead one's); (d) confirm every surviving non-leader node's own `/status` still reports `is_leader=false` (no split-brain) | pending (rev 9 — rev 7 found the 7th real bug, a stale-lease hostname/linode_id identity confusion, fixed in `v0.1.64` and confirmed clean in rev 8) |
+| 8b | `natctl_on_node_enabled=true` — re-run the core mutating-decision scenarios under a distributed control plane | The control plane behaves genuinely differently in this mode (every node evaluates autoscale/health, but only the confirmed leader's mutating calls should ever actually take effect) — a bug could exist in this mode without ever showing up under the default single-dedicated-host mode Stages 1-7 ran in. Re-run, with `natctl_on_node_enabled=true` throughout: (a) **HA failover** (Stage 2's scenario) — kill a floor node, confirm buddy IP failover still reaches 0% loss and that ONLY the current leader's own log shows the IP-Sharing grant/withdrawal, not every node's; (b) **autoscaling** (Stage 5's scenario) — trigger scale-out/scale-in via `set-pool-scaling`, confirm only the leader actually provisions/drains (check every node's log, not just the leader's, to confirm non-leaders evaluated but did not mutate); (c) **elastic node failure** (Stage 6's scenario) — kill an elastic node, confirm the leader (and only the leader) reaps the orphaned instance via `_reap_vanished_elastic_nodes()` | pending (rev 9 — confirmed clean in rev 8, restarting per the full-matrix-after-any-fix rule) |
+| 9 | Client-agent VLAN bootstrap | `GET /agents/client-agent` fetch path for a `vlan_only` client | pending (rev 9 — confirmed clean in rev 8) |
+| 10 | Acceptance test suite | Bundled `acceptance-tests/` against the live deployment | pending (rev 9 — confirmed clean in rev 8) |
+| 11 | Security/hardening spot-check | SSH key-only, firewall CIDR scoping, no `0.0.0.0/0` | pending (rev 9 — confirmed clean in rev 8) |
+| 12 | Prometheus/Grafana observability | (a) Prometheus's own `/api/v1/targets` shows every `nat-exporter`/natctl scrape target `up`, not just the container running; (b) query a handful of real series directly (`nat_conntrack_utilization_ratio`, `nat_port_available_total`, `natctl_leader_election_is_leader` once Stage 8 is up) and confirm recent, sane data points, not stale/missing; (c) Grafana is reachable and its dashboard provisioning actually succeeded — list dashboards via Grafana's own HTTP API (`/api/search`, authenticated with the generated admin password) rather than just checking the container is "Up"; (d) Prometheus's `/api/v1/rules` shows the alert rules from `alerts/nat-alerts.yml` actually loaded and evaluating (state `inactive`/`pending`/`firing`, not absent); (e) if practical, force one real alert condition (e.g. the port-exhaustion or node-down rule) and confirm it actually reaches Alertmanager | pending (rev 9 — rev 8 found the 8th real bug, Prometheus→Alertmanager delivery silently broken, fixed in `v0.1.65`) |
 
 **Pass counter toward the required 3 consecutive clean runs: 0**
 
@@ -1374,6 +1374,148 @@ IP reuse across this session's many teardown/redeploy cycles.
 No bugs found. This is the first fully clean pass of Stages 8a+8b since
 the leader-election identity bug was found and fixed. Tearing down,
 proceeding to Stage 9.
+
+---
+
+### Stage 9 — client-agent VLAN-only bootstrap — ✅ PASS, first live verification of this path (rev 8)
+
+Redeployed minimal single-floor-node config (`natctl_on_node_enabled=
+false`, `ip_failover_enabled=false`). Created a genuine `vlan_only`
+test client (`lng-client-vlanonly`) with **only** a VLAN interface
+attached to its boot config (`purpose: vlan`, `lng-vlan-shared`,
+`192.168.102.10/22` — outside `common`'s reserved sub-block, wide
+prefix per the documented requirement). One CLI wrinkle, not a product
+issue: `linode-cli linodes create --interfaces` silently no-ops against
+this account's CLI version (its newer schema expects the VPC-native
+interface model, not the classic array) — worked around with a direct
+`POST /v4/linode/instances` call, the same classic API shape
+Terraform's own `linode_instance` resource uses. Linode also
+auto-reserves a public IPv4 account-side regardless of the interfaces
+list, but it's never presented to the guest OS — confirmed via the
+instance's own boot config, which lists only the VLAN interface -- so
+the client genuinely has no interface-level path to the internet,
+matching real `vlan_only` shape.
+
+Reached the client via a VLAN jump host through the NAT node's public
+IP (per established convention). Confirmed:
+- `GET /agents/client-agent` over VLAN (`http://192.168.100.9:8099/...`,
+  the observability host's VLAN address) → a genuine compiled ELF
+  binary (48MB, stripped).
+- `GET /agents/install-nat-client.sh` over the same path → ran cleanly,
+  installed `client-agent`, set the ECMP default route (`nhid 100 via
+  192.168.100.10 dev eth0`).
+- **Real NAT egress confirmed end to end**: `ping 8.8.8.8` — 0% loss.
+  `curl https://ifconfig.me` (after adding a resolver — DNS config is
+  outside `install-nat-client.sh`'s scope, a bare test image ships
+  none) returned `172.236.180.227`, the NAT node's own public IP —
+  proof traffic was genuinely masqueraded through the fleet, not just
+  routed.
+
+This is the first live verification of the entire `GET
+/agents/client-agent` VLAN-fetch bootstrap path — the single most novel
+mechanism introduced for the compiled-binary customer distribution,
+never live-tested before this rev. No bugs found. Cleaned up the test
+client, tearing down, proceeding to Stage 10.
+
+---
+
+### Stage 10 — acceptance-test suite (read-only checks) — ✅ PASS (rev 8)
+
+Reused the Stage 9 deployment (single floor node, roster reachable
+only over VPC-private `10.20.0.10`, not reachable from outside the
+VPC). Copied `acceptance-tests/` to the observability host itself and
+ran it there against `localhost`/the VPC address directly — both
+`requests`/`PyYAML` already present on the host, no extra install
+needed.
+
+```
+[PASS] 01-roster-and-health: common: 1/1 nodes healthy (min_nodes=1)
+[PASS] 06-observability: Prometheus/Grafana/Alertmanager reachable; NAT data is live in Prometheus across 1 pool(s)
+ACCEPTANCE TEST SUMMARY: 2 passed, 0 failed, 0 skipped
+```
+
+No bugs found. Proceeding to Stage 11 (same deployment, no teardown
+needed for a read-only security spot-check).
+
+---
+
+### Stage 11 — security/hardening spot-check — ✅ PASS (rev 8)
+
+Reused the Stage 9/10 deployment. Checked live, not just config:
+- `admin_cidrs = ["45.119.30.144/32"]` — scoped, not `0.0.0.0/0`.
+- Every this-deployment firewall (`lng-example-*-b0`) has
+  `inbound_policy: DROP` and every rule scoped to either the admin
+  `/32` or a VPC-internal CIDR — no `0.0.0.0/0` anywhere.
+- `sshd -T | grep passwordauthentication` → `no` on both the
+  observability host and the NAT node.
+
+**Account-hygiene observation, not a finding against this deployment**:
+found a completely separate, unrelated firewall set (`nav-lng-*`,
+attached to instances `nav-shared-1`/`nav-observability`) on this same
+account — a different project entirely (naming pattern, device labels
+don't match anything this program has ever created). Read-only check,
+nothing touched, consistent with this program's standing rule to never
+interact with unrelated account resources.
+
+No bugs found. Tearing down, proceeding to Stage 12.
+
+---
+
+### Stage 12 — Prometheus/Grafana observability — 🐛 EIGHTH REAL BUG FOUND (rev 8)
+
+Redeployed 3 floor nodes, `ip_failover_enabled=true` (real BGP/conntrack
+data for the metrics to reflect). `terraform apply` clean (26
+resources).
+
+**(a) Targets**: `GET /api/v1/targets` — all 4 (`nat_exporter` × 3,
+`natctl_metrics` × 1) reported `up`. **(b) Real metrics**:
+`nat_conntrack_utilization_ratio`/`nat_port_available_total` returned
+sane, recent values across all 3 nodes (`natctl_leader_election_is_
+leader` correctly empty — that metric only exists under
+`natctl_on_node_enabled=true`, not a gap here). **(c) Grafana**:
+`GET /api/search` (Grafana's own API, admin-authenticated) confirmed
+the `LNG — NAT Fleet Overview` dashboard genuinely provisioned. **(d)
+Rules**: `GET /api/v1/rules` showed all 14 alert rules loaded and
+evaluating (`inactive`, matching a healthy fleet).
+
+**(e) Force one real alert — this is where it broke.** Shut down
+`lng-common-3` to trigger `NATNodeDown`. Confirmed via `/api/v1/rules`
+that it correctly transitioned `inactive` → `pending` → `firing` after
+its 1-minute `for` duration. But `GET /api/v2/alerts` on Alertmanager
+itself returned an empty list — nearly 2 minutes after the alert had
+been firing, well past any normal propagation delay.
+
+**Root cause, confirmed via `docker logs` on the Prometheus
+container**: `dial tcp [::1]:9093: connect: connection refused`,
+repeating since well before this test even started — a **standing,
+persistent bug**, not something this specific alert triggered.
+`prometheus.yml.tftpl`'s `alerting.alertmanagers` block hardcoded
+`targets: ["localhost:9093"]`. Prometheus and Alertmanager run as
+separate Docker Compose containers on the `lng-observability_default`
+bridge network — each container has its own network namespace, so
+`localhost` inside Prometheus's container resolves to itself, not the
+sibling Alertmanager container. Every alert this deployment mode has
+ever fired, in every prior stage and every prior rev, has silently
+never reached Alertmanager — masked because every other check
+(rule evaluation, dashboard data, target health) looks completely
+correct on its own; only tracing an actual alert all the way to
+Alertmanager's own API surfaced it.
+
+**Fixed in the dev repo** (`linode-nat-gateway-build` commit `9f85899`,
+released as `v0.1.65`): `targets: ["alertmanager:9093"]`, matching
+`docker-compose.yml.tftpl`'s actual service name — resolved correctly
+via Compose's own internal DNS. Added a new regression test file
+(`tests/test_observability_templates.py`, 2 tests) — the only test
+coverage `ansible/templates/*.tftpl` has ever had, since these are
+Terraform templates pytest can't render/exercise directly; the tests
+assert on the raw template text instead. Full suite (790 tests) passes;
+Python 3.11 compile-check clean; no customer-facing doc change needed
+(the guide already correctly described Alertmanager receiving alerts
+as the intended behavior — this was a pure implementation bug
+preventing that promise from being kept, not a documented gap).
+
+**Pass 1 — INVALIDATED by this finding. Restarting as Pass 1 (rev 9)
+once the new release is live.** Tearing down.
 
 ---
 
