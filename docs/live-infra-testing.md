@@ -78,7 +78,18 @@ check.
 | 11 | Security/hardening spot-check | SSH key-only, firewall CIDR scoping, no `0.0.0.0/0` | ✅ rev 9 |
 | 12 | Prometheus/Grafana observability | (a) Prometheus's own `/api/v1/targets` shows every `nat-exporter`/natctl scrape target `up`, not just the container running; (b) query a handful of real series directly (`nat_conntrack_utilization_ratio`, `nat_port_available_total`, `natctl_leader_election_is_leader` once Stage 8 is up) and confirm recent, sane data points, not stale/missing; (c) Grafana is reachable and its dashboard provisioning actually succeeded — list dashboards via Grafana's own HTTP API (`/api/search`, authenticated with the generated admin password) rather than just checking the container is "Up"; (d) Prometheus's `/api/v1/rules` shows the alert rules from `alerts/nat-alerts.yml` actually loaded and evaluating (state `inactive`/`pending`/`firing`, not absent); (e) if practical, force one real alert condition (e.g. the port-exhaustion or node-down rule) and confirm it actually reaches Alertmanager | ✅ rev 9 |
 
-**Pass counter toward the required 3 consecutive clean runs: 1 (rev 9 — first fully clean full-matrix pass)**
+**Pass counter — superseded 2026-09-13.** Rev 9 stands as the program's
+first fully clean full-matrix pass. Rev 10 found a 9th real bug at Stage
+8b, invalidating that pass under the original "3 consecutive clean
+passes" criterion. Per the user's explicit instruction, 2 clean passes
+back-to-back were not required after all — instead, once rev 10's
+finding was fixed and released (`v0.1.66`, alongside the
+quorum-confirmation gate the user separately asked for), the next step
+was a dedicated, targeted live re-test of just Stage 8a/8b against that
+release, not a further full-matrix rev. See "Stage 8a/8b — re-test
+against `v0.1.66`" below — that re-test passed cleanly, and the
+on-node-hardening finalization effort is considered complete as of
+that result.
 
 ---
 
@@ -1956,6 +1967,82 @@ rather than continuing the standard full-matrix-restart loop for a
 8a/8b specifically against `v0.1.66`, to properly finalize and validate
 both the quorum-confirmation gate and the Prometheus multi-target fix
 before considering the on-node hardening effort complete. Tearing down.
+
+---
+
+### Stage 8a/8b — re-test against `v0.1.66` — ✅ PASS, both fixes confirmed live
+
+Redeployed `natctl_on_node_enabled=true`, `ip_failover_enabled=true`, 3
+floor nodes, at `v0.1.66` (quorum-confirmation gate + Prometheus
+multi-target fix). `terraform apply` clean (26 resources).
+
+**Quorum-confirmation gate — genuinely exercised, not just the
+no-peers fallback path.** Exactly one leader confirmed
+(`lng-common-3`, after the fresh cluster's own bootstrap correctly
+cleared a stale lease record left over from an earlier rev — the
+lease-store bucket is external to this Terraform stack and persists
+across `terraform destroy`/`apply` cycles of this same environment;
+the fresh `lng-common-3`'s own `linode_id` didn't match the stale
+record's, so per the bug #7 fix it correctly did not self-recognize
+and re-ran a real election instead). Shut down the leader. The FIRST
+election attempt was correctly blocked by the quorum gate: `"only 1/2
+other pool member(s) corroborated lng-common-3 as unreachable (need 3
+of 4 total votes for majority) -- NOT fencing this pass"` — pool
+membership at that instant included 2 elastic nodes natctl had already
+provisioned to compensate for a transient boot-time health dip, so
+total voters legitimately was 4, not 3, and quorum genuinely wasn't
+met yet. A retry ~2 minutes later succeeded once real corroboration
+was available, fenced the correct, current `linode_id`, and a single
+new leader (`lng-common-1`, term 17) took over cleanly. Every survivor
+correctly showed `is_leader=false`. No split-brain, no wrong-node
+fencing.
+
+**Prometheus multi-target fix — confirmed directly.** After the kill,
+`/api/v1/targets` showed active `nat_exporter` scrape targets for
+every currently-known node (both surviving floor nodes plus elastic),
+not the single dead one. `nat_conntrack_utilization_ratio` had live,
+recent data points from both survivors. Forced a genuine excess above
+floor via `set-pool-scaling` (4 min-nodes, then back to 3) to
+reproduce rev 10's exact scenario — scale-in fired correctly this
+time (`"scale-in triggered ..., draining ['common-elastic-103']"`)
+and completed (`"deleting drained elastic node common-elastic-103"`,
+confirmed gone via the Linode API). Previously this exact sequence
+hung indefinitely with zero evaluation logged.
+
+**Process finding, not a product bug**: hit a red herring mid-test — a
+second elastic node (`common-elastic-102`) came up with `natctl.service`
+entirely missing (every artifact fetch 403'd throughout its boot).
+Its creation timestamp (`2026-09-13T16:39:55`) predated this
+deployment's own floor nodes by ~12 minutes, confirming it was an
+orphan left over from the earlier torn-down rev 10 Stage 8b deployment
+that was missed during pre-apply cleanup (elastic nodes are
+natctl-managed, outside Terraform state, so they don't get caught by
+`terraform destroy`). Deleted it and ran `natctl-cli check-orphans`
+(a command that exists for exactly this) to confirm nothing else was
+left over. **Lesson for future revs: run `check-orphans` before every
+fresh `terraform apply`, not just after a kill test.**
+
+**Teardown finding, same root cause, worth flagging for next time**:
+during `terraform destroy`, a still-alive node evaluated
+`healthy_count < min_nodes` (as its floor-node siblings were mid-destroy)
+and provisioned yet another elastic node (`common-elastic-102`, a
+second, unrelated instance reusing the same offset) seconds before
+being destroyed itself — leaving it orphaned with no natctl process
+left to ever manage or reap it, caught only by a post-destroy
+`linode-cli` inventory check and deleted manually. This is the same
+race noted earlier this program ("an in-flight elastic node's
+boot-time artifact fetch can race against terraform destroy") in a new
+form — the fix/habit is the same: always re-check for stray elastic
+nodes via a live `linode-cli`/API inventory immediately after any
+`terraform destroy` of this environment, not just before it.
+
+No product bugs found. Both fixes hold under live re-test. On-node
+hardening finalization effort considered **complete**. Tore down
+cleanly (deleted the natctl-managed elastic node manually before
+`terraform destroy`, then caught and deleted one more instance created
+mid-destroy by the same race noted above; verified via a live
+`linode-cli` inventory afterward that only this program's pre-existing,
+unrelated `nav-observability` instance remained).
 
 ---
 
