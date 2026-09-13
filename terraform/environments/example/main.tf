@@ -476,7 +476,7 @@ check "pool_vlan_ip_offset_is_positive" {
 check "pool_has_floor_node_when_natctl_on_node_enabled" {
   assert {
     condition     = length(local.pools_with_zero_floor_nodes_under_natctl_on_node) == 0
-    error_message = "These pools have floor_nodes == 0 while natctl_on_node_enabled is true: ${join(", ", local.pools_with_zero_floor_nodes_under_natctl_on_node)}. natctl_http_sd_targets seeds Prometheus's discovery of a pool's roster from that pool's own first FLOOR node -- with zero floor nodes, this pool never gets a scrape target, even after natctl later provisions elastic nodes for it. Give the pool at least one floor node, or scrape it manually until it does."
+    error_message = "These pools have floor_nodes == 0 while natctl_on_node_enabled is true: ${join(", ", local.pools_with_zero_floor_nodes_under_natctl_on_node)}. natctl_http_sd_targets seeds Prometheus's discovery of a pool's roster from that pool's own FLOOR nodes -- with zero floor nodes, this pool never gets a scrape target, even after natctl later provisions elastic nodes for it. Give the pool at least one floor node, or scrape it manually until it does."
   }
 }
 
@@ -1114,10 +1114,32 @@ module "observability" {
   # (ansible/templates/prometheus.yml.tftpl loops over this list), each
   # independently polled and merged -- not a single URL with a list
   # value.
-  natctl_http_sd_targets = var.natctl_on_node_enabled ? [
-    for k, m in module.nat_fleet : "${values(m.node_vpc_ips)[0]}:${var.api_port}"
-    if length(m.node_vpc_ips) > 0
-  ] : []
+  #
+  # Found live during the customer-repo live-test program (2026-09-13):
+  # `values(m.node_vpc_ips)[0]` used to take ONLY that pool's first
+  # floor node -- if that specific node ever goes down (a normal,
+  # expected event in exactly the HA architecture this mode exists for:
+  # a leader-election fencing event, a plain crash, a maintenance
+  # reboot), Prometheus's ONLY discovery source for that pool's
+  # nat_exporter targets disappears, permanently, with zero targets ever
+  # discovered again -- not just a temporary gap. Confirmed live: this
+  # silently starved every downstream autoscale metric query, which
+  # then silently prevented scale-in from ever triggering again for
+  # that pool (a Prometheus query failure correctly never counts as a
+  # confirmed-idle reading, so the pool was simply stuck oversized,
+  # forever, with no error surfaced anywhere). Every floor node in a
+  # pool answers /file_sd identically (each computes it fresh from the
+  # same underlying discover()), so listing every one of them as a
+  # separate http_sd_configs entry -- the same multiple-independently-
+  # polled-and-merged mechanism already used across pools -- costs
+  # nothing extra and closes this exact single point of failure: as
+  # long as any one floor node in the pool is still reachable,
+  # Prometheus keeps discovering that pool's targets.
+  natctl_http_sd_targets = var.natctl_on_node_enabled ? flatten([
+    for k, m in module.nat_fleet : [
+      for ip in values(m.node_vpc_ips) : "${ip}:${var.api_port}"
+    ]
+  ]) : []
 
   # Reuse an existing Prometheus/Grafana instead of standing up a
   # second one -- see variables.tf's run_monitoring_stack. Set it false
