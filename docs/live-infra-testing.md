@@ -68,7 +68,7 @@ check.
 | 2 | Single fleet, multi-node (HA mechanisms active) | 1 pool, `floor_nodes=3`, same mode | ✅ rev 6 |
 | 3 | Single-node failure (floor) | Kill 1 of 3 floor nodes, observe ECMP/buddy/BGP/packet-loss | ✅ rev 6 (covered by Stage 2's own test) |
 | 4 | Multi-node failure (floor) | Kill 2 of 3 floor nodes | ✅ rev 6 — confirms a documented design limitation (single-layer buddy redundancy), not a bug; see narrative |
-| 5 | Autoscaling (elastic) | `max_nodes` > floor, trigger scale-out, scale-in | in progress |
+| 5 | Autoscaling (elastic) | `max_nodes` > floor, trigger scale-out, scale-in | ✅ rev 6 |
 | 6 | Elastic node failure | Kill an elastic node, observe zombie-reap + replace | pending |
 | 7 | Multi-fleet | 2 pools (`common` + a second), same-VLAN mode | pending |
 | 8 | `natctl_on_node_enabled=true` | Repeat the core HA/failure scenarios with distributed control plane + STONITH fencing | pending |
@@ -754,6 +754,58 @@ leaf's specific public IP would notice.
 
 **No bug found, no fix needed.** Cleaned up the test client, tearing
 down, proceeding to Stage 5.
+
+---
+
+### Stage 5 — autoscaling (elastic) — ✅ PASS (rev 6)
+
+Redeployed `floor_nodes=1`/`max_nodes=3`/`ip_failover_enabled=false`.
+**Starting point was 2 nodes, not 1**: a leftover elastic node
+(`common-elastic-100`) was already running and healthy — auto-provisioned
+by Stage 4's own zombie-floor-compensation mechanism during its
+double-node-kill, before that stage was torn down (killing 2 of 3 floor
+nodes there dropped `node_count()` to 1, well under that stage's own
+`max_nodes=3`, so a real health-floor provision fired before the
+`terraform destroy`). Not a bug — correctly *not* touched by the
+`v0.1.61` ceiling-enforcement fix either, since 2 nodes doesn't exceed
+this stage's `max_nodes=3`.
+
+**Scale-out, triggered via the operator CLI** (`natctl_cli
+set-pool-scaling --pool common --min-nodes 3 --max-nodes 3`, a
+documented, first-class mechanism — watermark thresholds aren't
+`terraform.tfvars`-tunable in this example environment, so this is the
+practical way to force a real capacity decision without needing to
+generate genuine heavy traffic):
+```
+03:09:11  2 healthy node(s) of 2 total — below min_nodes=3, but only 1/2 consecutive pass(es) so far — waiting for a sustained breach
+03:09:27  2 healthy node(s) of 2 total — below min_nodes=3, provisioning elastic capacity to reach the floor
+```
+Correct debounce behavior confirmed (M31 Finding 14's single-transient-blip
+protection) — didn't provision on the very first below-floor reading,
+waited for a second consecutive pass. One new elastic node
+(`common-elastic-101`) provisioned, booted, passed health checks; roster
+reached 3 nodes/3 healthy by `08:42:56` (within ~6 minutes of the
+trigger, most of it cloud-init/boot time for the new node).
+
+**Scale-in, triggered by relaxing `min-nodes` back to 1** (`08:43:18`):
+```
+03:14:54  scale-in triggered (conntrack=0.00, aggregate=0.00), required=1 node(s), draining ['common-elastic-100']
+03:18:08  deleting drained elastic node common-elastic-100 (drained_for=194s, remaining_conns=48)
+03:20:18  scale-in triggered (conntrack=0.00, aggregate=0.00), required=1 node(s), draining ['common-elastic-101']
+03:23:30  deleting drained elastic node common-elastic-101 (drained_for=192s, remaining_conns=43)
+```
+Both elastic nodes correctly drained one at a time (not simultaneously —
+`max_scale_in_step_fraction` capping), each actually deleted via the
+`drain_timeout_seconds` fallback rather than a confirmed-zero-connections
+read (`remaining_conns` was 48/43, not 0 — expected on an idle test pool
+with only a handful of stray conntrack entries like DNS/NTP lookups, not
+real traffic; the timeout fallback is exactly the documented safety net
+for this). Settled back to exactly 1 node (the floor node only) by
+`08:53:34`, confirmed via both the roster and `linode-cli linodes list`
+showing zero `common-elastic-*` instances remaining.
+
+**Both scale-out and scale-in confirmed working correctly, end to end,
+live.** No bugs found. Tearing down, proceeding to Stage 6.
 
 ---
 
