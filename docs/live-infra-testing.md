@@ -1789,3 +1789,173 @@ found. Tearing down.
 
 ---
 
+## Pass 1 (rev 10) — from `v0.1.65`, 2nd of 3 required consecutive clean passes
+
+Rev 9 completed the entire matrix cleanly (no new bugs) — the first
+fully clean full-matrix pass. Per the standing 3-consecutive-clean-
+passes requirement, restarting the full matrix once more from Stage 1
+with no code changes expected, purely to reconfirm stability on a
+fresh deployment cycle.
+
+### Stage 1 — single fleet, single node — ✅ PASS (rev 10)
+
+`terraform apply` clean (22 resources). `natctl` active, roster shows
+exactly `lng-common-1`, healthy, no errors. No bugs found. Tearing
+down, proceeding to Stage 2.
+
+---
+
+### Stage 2/3 — multi-node HA, BGP IP failover (3 floor nodes) — ✅ PASS (rev 10)
+
+`terraform apply` clean (26 resources). Topology: `lng-common-1` = A,
+`lng-common-2` = HUB, `lng-common-3` = LEAF. Killed the HUB
+(`lng-common-2`), pinged its public IP: **80/90 received, 11.1%
+packet loss** — a contiguous block right at the start (sequences
+7-16, ~10s), fully recovered afterward, same convergence-window
+pattern already documented in rev 9's Stage 2. Confirmed the IP-
+sharing grant for this exact pairing was already configured at
+fleet-formation time, well before the kill — pure BGP route-
+convergence timing at the network level, not a natctl reaction delay
+or regression. Stage 3 covered by the same test.
+
+No bugs found. Tearing down, proceeding to Stage 4.
+
+---
+
+### Stage 4 — multi-node failure (hub+leaf) — ✅ PASS, reconfirms the design limitation (rev 10)
+
+Redeployed the same 3-node config fresh (26 resources). Topology:
+`lng-common-1` = A, `lng-common-2` = HUB, `lng-common-3` = LEAF.
+Killed HUB and LEAF together:
+- **HUB (`172.236.172.138`): 90/90 received, 0.0% packet loss.**
+- **LEAF (`172.236.171.251`): 21/90 received, 76.7% packet loss** — same
+  documented design limitation, not a regression.
+
+No new bugs found. Tearing down, proceeding to Stage 5.
+
+---
+
+### Stage 5 — autoscaling (elastic) — ✅ PASS (rev 10)
+
+Redeployed `floor_nodes=1`/`max_nodes=3`/`ip_failover_enabled=false`,
+clean 1-node baseline.
+
+**Scale-out**: triggered via `set-pool-scaling --min-nodes 3
+--max-nodes 3`. Debounce confirmed. Two elastic nodes provisioned one
+at a time (`common-elastic-100`, `common-elastic-101`), reached 3/3
+healthy (~11 minutes total — both provisioning steps, normal pacing).
+
+**Scale-in**: triggered via `--min-nodes 1 --max-nodes 3`. Both
+elastic nodes drained one at a time and deleted via the
+`drain_timeout_seconds` fallback, settling back to exactly 1 node.
+
+No bugs found. Tearing down, proceeding to Stage 6.
+
+---
+
+### Stage 6 — elastic node failure — ✅ PASS (rev 10)
+
+Redeployed `floor_nodes=1`/`max_nodes=2`/`ip_failover_enabled=false`,
+clean baseline. Forced an elastic node (`common-elastic-100`, id
+`105119594`) via `set-pool-scaling --min-nodes 2 --max-nodes 2`,
+confirmed healthy, then shut it down at `21:07:17` local.
+
+```
+15:52:31  pool common: elastic node common-elastic-100 vanished from
+          discovery >=900s ago and never reappeared -- deleting its
+          orphaned instance
+```
+
+~933s after shutdown — on schedule. Confirmed via direct API call
+(`404`) that the instance was genuinely deleted.
+
+No bugs found. Tearing down, proceeding to Stage 7.
+
+---
+
+### Stage 7 — multi-fleet isolation (`common` + `acme`, same-VLAN mode) — ✅ PASS (rev 10)
+
+Enabled `acme` alongside `common` (`terraform apply` clean, 26
+resources). Both pools' rosters confirmed fully isolated (`GET
+/fleet/common` → exactly `lng-common-1`, `GET /fleet/acme` → exactly
+`lng-acme-1`), `GET /status` shows both pools tracked independently,
+no errors.
+
+No bugs found. Tearing down, proceeding to Stage 8a.
+
+---
+
+### Stage 8a — leader election + leader failover — ✅ PASS (rev 10)
+
+Redeployed `natctl_on_node_enabled=true`, `ip_failover_enabled=true`,
+3 floor nodes. `terraform apply` clean (26 resources). Exactly one
+leader confirmed (`lng-common-1`, term 14). Shut down the leader — a
+survivor (`lng-common-3`) claimed leadership ~69s later (term 15), via
+a clean STONITH sequence (fenced the actual just-killed leader's
+correct `linode_id`, confirmed offline, then claimed). A real mutation
+(`set-pool-scaling --min-nodes 4 --max-nodes 4`) showed both
+provisions only on the new leader's log; the other node showed the
+correct skip message both times. No split-brain.
+
+No bugs found. Proceeding to Stage 8b using this same deployment.
+
+---
+
+### Stage 8b — distributed control plane re-tests — 🐛 NINTH REAL BUG FOUND (rev 10)
+
+Scaled back to floor (3), then re-triggered scale-in
+(`set-pool-scaling --min-nodes 3 --max-nodes 4`) to re-test scale-in
+specifically under `natctl_on_node_enabled=true` with a genuine excess
+above floor — **this exact combination had never actually been
+exercised before across this whole program**: every prior rev's Stage
+8b autoscaling sub-test only re-used Stage 8a's own scale-*out*
+mutation as evidence, never a real scale-*in* under distributed
+control. It hung indefinitely — `healthy_count=4 > min_nodes=3` for
+10+ minutes with zero scale-in evaluation logged at all.
+
+**Root cause, confirmed live**: Stage 8a's own leader-failover test
+killed `lng-common-1` — this pool's *first* floor node. Checked
+Prometheus's own `/api/v1/targets`: **zero active targets for
+`nat_exporter`**, permanently, for the rest of the deployment's life.
+`docker exec ... cat /etc/prometheus/prometheus.yml` showed why:
+`http_sd_configs: - url: http://10.20.0.50:8099/file_sd` — a single
+hardcoded target, `lng-common-1`'s own VPC IP, the exact node just
+killed. `terraform/environments/example/main.tf`'s
+`natctl_http_sd_targets` local used `values(m.node_vpc_ips)[0]` — only
+the first floor node per pool, with zero redundancy. With that one
+target permanently unreachable, Prometheus never discovers any
+`nat_exporter` targets again for this pool, which starves every
+downstream autoscale metric query — and per `evaluate_autoscale()`'s
+own deliberate design (a Prometheus query failure must never look like
+a confirmed-idle reading), the pool was simply stuck oversized
+forever, silently, with no error surfaced anywhere.
+
+**Fixed in the dev repo** (`linode-nat-gateway-build` commit `2dfe080`,
+mirrored into `customer-repo-overlay`'s standalone copy, released as
+part of `v0.1.66`): every floor node in a pool now gets its own
+`http_sd_configs` entry (Prometheus merges all of them), not just the
+first — closing this exact single point of failure using the same
+multiple-independently-polled-and-merged mechanism already used across
+pools.
+
+**Separately, and not itself a bug**: while investigating, used the
+idle wait time productively to design, implement, and unit-test the
+quorum-confirmation gate for STONITH fencing the user had asked for
+(before fencing, a candidate now asks a majority of other live pool
+members — over both VPC and VLAN independently — whether they also
+see the leader as unreachable, rather than trusting its own view
+alone). 7 new unit tests, full 797-test suite passes, documented in
+`RUNBOOK.md`/`ARCHITECTURE.md`/the customer guide including the honest
+2-node limitation. Bundled into the same `v0.1.66` release (commit
+`5fcede0`) since both are on-node-mode hardening work landing together.
+
+**Pass 1 — INVALIDATED by this finding.** Per the user's updated
+instruction (2026-09-13): rev 9 already stands as one full clean pass;
+rather than continuing the standard full-matrix-restart loop for a
+3rd/further rev, the next step is dedicated live re-testing of Stage
+8a/8b specifically against `v0.1.66`, to properly finalize and validate
+both the quorum-confirmation gate and the Prometheus multi-target fix
+before considering the on-node hardening effort complete. Tearing down.
+
+---
+
