@@ -64,14 +64,14 @@ check.
 
 | # | Stage | Config | Status |
 |---|---|---|---|
-| 1 | Single fleet, single node | 1 pool, `floor_nodes=1`, `natctl_on_node_enabled=false` | pending (rev 7 — rev 6 passed but invalidated by Stage 6's finding) |
-| 2 | Single fleet, multi-node (HA mechanisms active) | 1 pool, `floor_nodes=3`, same mode | pending (rev 7 — see note above) |
-| 3 | Single-node failure (floor) | Kill 1 of 3 floor nodes, observe ECMP/buddy/BGP/packet-loss | pending (rev 7 — see note above) |
-| 4 | Multi-node failure (floor) | Kill 2 of 3 floor nodes | pending (rev 7 — see note above) |
-| 5 | Autoscaling (elastic) | `max_nodes` > floor, trigger scale-out, scale-in | pending (rev 7 — see note above) |
-| 6 | Elastic node failure | Kill an elastic node, observe zombie-reap + replace | ✅ rev 7 |
-| 7 | Multi-fleet | 2 pools (`common` + a second), same-VLAN mode | pending |
-| 8a | `natctl_on_node_enabled=true` — leader election + leader failover | (a) confirm exactly one node's `GET :8099/status` reports `leader_election.is_leader=true` on a fresh deploy; (b) kill the current leader, confirm a survivor detects the stale lease, STONITH-fences it (Linode API power-off + confirmed `offline`/404 poll — verify via the fencing node's own log, not just inferring it from the dead node's state, since it may already be off), and claims leadership itself (new `term` observed); (c) confirm the NEW leader actually performs a real mutating action afterward (trigger a scale event via `set-pool-scaling` and confirm the new leader's own log shows the provision/drain, not the dead one's); (d) confirm every surviving non-leader node's own `/status` still reports `is_leader=false` (no split-brain) | pending |
+| 1 | Single fleet, single node | 1 pool, `floor_nodes=1`, `natctl_on_node_enabled=false` | pending (rev 8 — invalidated by Stage 8a's finding) |
+| 2 | Single fleet, multi-node (HA mechanisms active) | 1 pool, `floor_nodes=3`, same mode | pending (rev 8 — see note above) |
+| 3 | Single-node failure (floor) | Kill 1 of 3 floor nodes, observe ECMP/buddy/BGP/packet-loss | pending (rev 8 — see note above) |
+| 4 | Multi-node failure (floor) | Kill 2 of 3 floor nodes | pending (rev 8 — see note above) |
+| 5 | Autoscaling (elastic) | `max_nodes` > floor, trigger scale-out, scale-in | pending (rev 8 — see note above) |
+| 6 | Elastic node failure | Kill an elastic node, observe zombie-reap + replace | pending (rev 8 — see note above) |
+| 7 | Multi-fleet | 2 pools (`common` + a second), same-VLAN mode | pending (rev 8 — see note above) |
+| 8a | `natctl_on_node_enabled=true` — leader election + leader failover | (a) confirm exactly one node's `GET :8099/status` reports `leader_election.is_leader=true` on a fresh deploy; (b) kill the current leader, confirm a survivor detects the stale lease, STONITH-fences it (Linode API power-off + confirmed `offline`/404 poll — verify via the fencing node's own log, not just inferring it from the dead node's state, since it may already be off), and claims leadership itself (new `term` observed); (c) confirm the NEW leader actually performs a real mutating action afterward (trigger a scale event via `set-pool-scaling` and confirm the new leader's own log shows the provision/drain, not the dead one's); (d) confirm every surviving non-leader node's own `/status` still reports `is_leader=false` (no split-brain) | pending (rev 8 — rev 7 found the 7th real bug, a stale-lease hostname/linode_id identity confusion, now fixed in `v0.1.64`) |
 | 8b | `natctl_on_node_enabled=true` — re-run the core mutating-decision scenarios under a distributed control plane | The control plane behaves genuinely differently in this mode (every node evaluates autoscale/health, but only the confirmed leader's mutating calls should ever actually take effect) — a bug could exist in this mode without ever showing up under the default single-dedicated-host mode Stages 1-7 ran in. Re-run, with `natctl_on_node_enabled=true` throughout: (a) **HA failover** (Stage 2's scenario) — kill a floor node, confirm buddy IP failover still reaches 0% loss and that ONLY the current leader's own log shows the IP-Sharing grant/withdrawal, not every node's; (b) **autoscaling** (Stage 5's scenario) — trigger scale-out/scale-in via `set-pool-scaling`, confirm only the leader actually provisions/drains (check every node's log, not just the leader's, to confirm non-leaders evaluated but did not mutate); (c) **elastic node failure** (Stage 6's scenario) — kill an elastic node, confirm the leader (and only the leader) reaps the orphaned instance via `_reap_vanished_elastic_nodes()` | pending |
 | 9 | Client-agent VLAN bootstrap | `GET /agents/client-agent` fetch path for a `vlan_only` client | pending |
 | 10 | Acceptance test suite | Bundled `acceptance-tests/` against the live deployment | pending |
@@ -1032,4 +1032,110 @@ repro that used a faster synthetic threshold. No code or config issue;
 the live system used the correct, documented default throughout.
 
 No bugs found. Tearing down, proceeding to Stage 7.
+
+---
+
+### Stage 7 — multi-fleet isolation (`common` + `acme`, same-VLAN mode) — ✅ PASS (rev 7)
+
+Enabled the `acme` pool alongside `common` in `terraform.tfvars` (both
+on `vlan_label = "lng-vlan-shared"`, `acme`'s `vlan_cidr_reserved`
+nested at `192.168.101.0/27`, `private_ip_offset=60` vs. `common`'s
+`50` — both of `main.tf`'s overlap checks passed at `terraform plan`
+time with no adjustment needed). Scaled down from the template's
+dedicated-tenant sizing (`g6-dedicated-8`, floor=2/max=6) to
+`g6-standard-2`, floor=1/max=1 for both pools — this stage proves
+isolation, not capacity. `terraform apply` clean (26 resources).
+
+Queried both pools' roster endpoints independently:
+- `GET /fleet/common` → exactly `lng-common-1` (`10.20.0.50` /
+  `192.168.100.10` / `172.236.173.125`).
+- `GET /fleet/acme` → exactly `lng-acme-1` (`10.20.0.60` /
+  `192.168.101.20` / `172.236.187.191`).
+
+Neither roster lists the other pool's node — confirmed isolated at the
+roster level. `GET /status` shows both pools tracked as fully separate
+entries (`node_count`/`healthy_count`/`leader_election` each reported
+independently, no shared state). No buddy pairing was exercised in
+either direction (each pool has a single node, so no in-pool pairing
+either — a structural `tests/test_buddy.py` guarantee, not something
+this single-node-per-pool stage could exercise live), but the separate-
+roster-endpoint result is itself the live confirmation that pool
+isolation is real, not just a data-structure guarantee unproven in a
+live multi-pool deployment. No errors/exceptions in the log for either
+pool.
+
+No bugs found. Tearing down, proceeding to Stage 8a.
+
+---
+
+### Stage 8a — leader election + leader failover — 🐛 SEVENTH REAL BUG FOUND (rev 7)
+
+Redeployed `natctl_on_node_enabled=true`, `ip_failover_enabled=true`,
+`common` pool with `floor_nodes=3`/`max_nodes=4`. `terraform apply`
+clean (26 resources); observability host now runs only Prometheus/
+Grafana (no natctl — it runs on every NAT node in this mode).
+
+**(a) Exactly one leader on a fresh deploy** — confirmed: queried each
+node's own `GET :8099/status` directly. `lng-common-3` reported
+`is_leader=true` (term=6); `lng-common-1`/`lng-common-2` both reported
+`is_leader=false`. Each node's own log showed a single clean claim/
+follower settling with no flapping.
+
+**(b)/(c) Kill the leader, confirm fencing + re-election + a real
+mutation from the new leader** — shut down `lng-common-3` at `06:05:31`
+UTC. `lng-common-1` claimed leadership at `06:06:20` UTC (~49s later,
+term=7), confirmed via its own log:
+```
+06:36:10  leader election: no valid lease held (previous leader=lng-common-3)
+          -- attempting election after a randomized jitter delay
+06:36:20  leader election: could not resolve previous leader 105031773's VPC
+          IP for a liveness probe (... -> 404) -- proceeding to fence as usual
+06:36:20  leader election: previous leader 105031773 no longer exists --
+          treating as fenced
+06:36:20  leader election: lng-common-1 is now the leader (term=7)
+```
+
+**This surfaced a real bug, not a clean pass**: `105031773` is not
+`lng-common-3`'s actual instance id in this deployment (confirmed via
+`terraform show -json`: its real id was `105087079`). Root cause:
+`LeaderElection.tick()`'s self-recognition check matched the lease
+record's `leader_node_id` against `self_node_id` (hostname) alone.
+Floor-node hostnames (`lng-common-1/2/3`) are deterministic and recur
+on every fresh `terraform apply` of the same pool shape, but each apply
+creates a genuinely new Linode instance with a new id. The Object
+Storage bucket backing the leader-election lease is not Terraform-
+managed, so a stale lease record from an earlier, already-destroyed
+deployment survived across `terraform destroy`/`apply` cycles. When
+`lng-common-3` booted in *this* deployment, it found a stale record
+already naming `lng-common-3` as leader (term=6, `leader_linode_id`
+from the previous deployment) and matched on hostname, taking the
+*renew* path — which only touches `renewed_at`, never correcting
+`leader_linode_id`. So the lease kept pointing at an instance id from a
+deployment already torn down. It happened to 404 harmlessly here, but
+if that stale id had ever been reassigned by Linode to a genuinely
+unrelated, currently-live instance, the next fencing action would have
+powered off a completely wrong resource — a real safety hazard, not
+just a cosmetic log mismatch.
+
+**Fixed in the dev repo** (`linode-nat-gateway-build` commit `7237fe4`,
+released as `v0.1.64`): both `tick()`'s self-recognition check and
+`verify_before_mutation()`'s safety-critical pre-mutation check now
+also require the lease's `leader_linode_id` to match `self_linode_id`
+before treating a record as "already us." A hostname match with a
+mismatched linode_id now falls through to a normal election instead
+(fencing the stale id, then writing this process's own accurate id in)
+— the same safe path an expired/foreign lease already took. 2 new
+regression tests added (`test_tick_does_not_renew_a_stale_lease_that_
+only_matches_by_hostname`, `test_verify_before_mutation_false_when_
+superseded_by_same_hostname_different_instance`); full suite (788
+tests) passes; Python 3.11 compile-check clean.
+
+**(d) was not reached this rev** (every surviving non-leader still
+correctly reported `is_leader=false` at the point the bug was found,
+but the full 8a/8b sub-test list needs a clean re-run once the fix is
+live) — stopping here per the test program's rule: any bug found
+restarts the ENTIRE matrix from Stage 1, not just this stage.
+
+**Pass 1 — INVALIDATED by this finding. Restarting as Pass 1 (rev 8)
+once the new release is live.** Tearing down.
 
