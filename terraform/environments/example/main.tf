@@ -1074,6 +1074,7 @@ module "observability" {
   natctl_file_urls   = local.natctl_file_urls
   agent_distribution = local.agent_distribution
   natctl_bin_url     = local.natctl_bin_url
+  natctl_cli_bin_url = local.natctl_cli_bin_url
 
   # Static, non-secret systemd unit file + requirements.txt -- see
   # terraform/modules/artifacts/main.tf's header comment.
