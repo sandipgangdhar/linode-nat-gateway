@@ -2367,3 +2367,21 @@ rounds — proceeding immediately to Round 3.
 
 ---
 
+### Round 3, Deployment A — single-dedicated-host mode, multi-fleet (concise re-run)
+
+Same shapes as Round 2's Deployment A (`common`: 3 floor/max 5,
+`acme`: 1 floor/max 3, `natctl_on_node_enabled=false`). Full mechanism
+explanations are in Round 2's section above — this entry only records
+this round's own pass/fail outcome.
+
+- **Stage 1/2** (basic operation, buddy triangle, Prometheus targets): clean.
+- **Stage 3** (single floor kill, packet-loss check from a real peer): 0% loss, clean.
+- **Stage 4** (second floor kill, multi-failure): clean.
+- **Stage 5** (autoscale out then in): elastic compensation provisioned correctly, both floor nodes rebooted and rejoined healthy, scale-in fully removed elastic capacity back to exactly 3 floor nodes. Clean.
+- **Stage 6** (elastic zombie-reap): forced node, deleted directly, replacement provisioned correctly, scaling reset cleanly. Clean.
+- **Stage 7** (multi-fleet isolation): `lng-acme-1` stayed healthy throughout with zero errors in its own logs. Clean.
+
+No new findings, no product bugs. Torn down cleanly.
+
+---
+
