@@ -2554,10 +2554,84 @@ fail-safe boundary — the last of which was genuinely exercised, not
 just theoretically covered, in this final round).
 
 **3-round program status: COMPLETE.** No further live-infra rounds
-are required by the standing instruction. Remaining open item from the
-original ask: a further UX exploration for 2-node clusters beyond the
-existing doc warnings and the Terraform `check` block (tracked
-separately, not a live-infra testing item).
+were required by the standing instruction covering the customer
+repo's own binary-distribution pipeline specifically. The section
+below is a distinct, later round the user asked to have recorded in
+this same file for account-keeping, against the DEV repo directly.
+
+---
+
+## Round 5: comprehensive live-infra round, `natctl_on_node_enabled=true` (dev repo, `pure-nat-gateway` branch)
+
+**Scope note, read before using this section**: unlike every round
+above (customer repo, compiled binaries, standalone overlay
+Terraform), this round tests the **dev repo's own `pure-nat-gateway`
+branch directly** — raw Python source running via native `natctl`
+systemd units, `natctl_on_node_enabled = true` (every NAT node runs
+its own natctl instance; no dedicated control-plane host). It reuses
+this program's same VPC (`lng-customer-livetest-vpc`, id `630143`)
+since the dev repo's own original test VPC no longer exists, but is
+otherwise a separate deployment (`dedicated-duo`, a 2-floor-node pool,
+`label = lng-livetest`) from anything else in this file. Requested by
+the user as a follow-on to an extensive T01-T20 split-brain/resilience
+matrix already run and recorded in the dev repo's own
+`roadmap/M33-2node-resilience-deep-dive.md` — this section covers the
+OTHER product aspects that matrix didn't specifically target: basic
+deploy health, security/firewall hardening, and observability, working
+smallest-to-biggest.
+
+### Security/firewall hardening — PASS, no bug
+
+Inspected the live `dedicated-duo` pool's control-plane-equivalent
+firewall (every node in `natctl_on_node_enabled` mode carries its own
+roster-API port, so this check applies per-node, not to a single
+dedicated host). Confirmed: SSH and Grafana/Prometheus/Alertmanager
+ports (22, 3000, 9090, 9093) are scoped to a single admin `/32`, never
+`0.0.0.0/0`; the roster API port (8099) and Prometheus's own VPC-
+internal port are scoped to the pool's VPC CIDR only, never the public
+internet; default inbound policy is DROP. Matches the hardening
+established in the dev repo's own M2 security milestone — no
+regression found for the on-node placement mode.
+
+### Observability — Finding 10 (moderate), found and fixed
+
+**The bug**: natctl's own `GET /metrics` already exposes
+`natctl_leader_election_is_leader`/`natctl_leader_election_term`
+(added for an earlier milestone's leadership-explainability work) and
+the autoscale-explainability gauges from an even earlier milestone —
+but live querying Prometheus (`natctl_leader_election_is_leader`)
+returned **zero results**. Root cause: Terraform's `natctl_metrics`
+Prometheus scrape job is a single static `host.docker.internal`
+target, correct only when natctl runs on the SAME host as the
+observability stack (the default, single-dedicated-host placement) —
+in `natctl_on_node_enabled` mode, natctl runs on every NAT node
+instead, so that static target scrapes nothing real, and every one of
+these gauges was completely unreachable from Prometheus/Grafana: an
+operator had no way to see who's currently leading a pool, its term,
+or correlate election/fencing events over time, without SSHing to
+each node individually and grepping `journalctl`.
+
+**The fix**: added `GET /natctl_sd` to natctl's roster API — a
+Prometheus http_sd-format discovery endpoint listing every currently-
+discovered node's own `:8099`, mirroring the existing `GET /file_sd`
+mechanism already used for the exporter job. Wired into
+`prometheus.yml.tftpl` as a second, http_sd-based `natctl_metrics` job
+(only rendered when natctl runs on-node), added two Grafana panels
+("Current Leader", "Leadership Term"), and a new alert
+(`NATLeaderElectionSplitBrainOrNoLeader`, firing when the sum of
+`is_leader` across a pool isn't exactly 1 for 2 minutes) — explicitly
+flagged as worth alerting on in an existing code comment but never
+actually wired up until now.
+
+**Live-verified end to end**: re-applied the `artifacts` and
+`observability` Terraform modules (the observability host is rebuilt —
+cloud-init `user_data` is force-replace-on-change, routine, not an
+anomaly), hot-patched the fix onto the still-running `lng-duo-1`/
+`lng-duo-2` (long-lived instances don't re-fetch source on their own),
+and confirmed via a direct Prometheus query that both nodes are now
+scraped correctly, with exactly one (`lng-duo-2`) reading
+`is_leader=1` and the other reading `0` — the correct, healthy
+invariant the new alert is built to watch.
 
 ---
 
