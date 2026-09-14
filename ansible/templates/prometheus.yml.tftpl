@@ -144,3 +144,28 @@ scrape_configs:
     static_configs:
       - targets: ["host.docker.internal:${api_port}"]
 %{ endif ~}
+%{ if length(natctl_http_sd_targets) > 0 ~}
+  # natctl_on_node_enabled mode has NO natctl process on this host at
+  # all -- the static natctl_metrics job above (gated on run_natctl, so
+  # never rendered in this mode) is the only thing that scrapes
+  # is_leader/term and the autoscale-explainability gauges in single-
+  # dedicated-host mode. Without this block those gauges would be
+  # completely unreachable from Prometheus/Grafana here: an operator
+  # would have no way to see who's currently leading a pool, its term,
+  # or election history without SSHing to each node and grepping
+  # journalctl. One natctl instance runs on EVERY node in this mode
+  # instead of a fixed host, so this uses the same http_sd approach as
+  # the nat_exporter job above, against GET /natctl_sd (api.py's
+  # build_natctl_metrics_sd_groups()) instead of /file_sd -- one target
+  # PER CURRENTLY-DISCOVERED node's own :8099, refreshed as natctl
+  # autoscales, not a fixed Terraform-time list.
+  - job_name: natctl_metrics
+    http_sd_configs:
+%{ for target in natctl_http_sd_targets ~}
+      - url: http://${target}/natctl_sd
+        refresh_interval: 30s
+%{ endfor ~}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+%{ endif ~}

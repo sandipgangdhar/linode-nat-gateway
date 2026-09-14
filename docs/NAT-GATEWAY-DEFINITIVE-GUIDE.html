@@ -1144,6 +1144,7 @@ flowchart LR
           <div class="diagram-cap">Fig. 4 — the metrics pipeline, one exporter per node</div>
         </div>
         <p>The scrape target list tracks the fleet automatically as it grows and shrinks — a node added by autoscaling is picked up on the very next scrape cycle with no manual reconfiguration and no restart of the metrics database required.</p>
+        <p>Under the every-node control-plane placement, each node's own natctl instance is scraped the same self-updating way — a second, independent service-discovery target list covering every currently-discovered node's own control-plane port, so the leader-election metrics below stay reachable across every election and every autoscaling change with no restart of the metrics database required there either.</p>
       </section>
 
       <section class="chapter" id="c7-2">
@@ -1197,6 +1198,16 @@ flowchart LR
           </tbody>
         </table></div>
         <p>Between the current-value, watermark, breach-streak, and last-event metrics together, the answer to "why did the pool just scale" is always fully reconstructable from the metrics themselves — never something that requires reading through raw logs.</p>
+
+        <h3>Leader election (every-node placement only)</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Metric</th><th>What it tells you</th></tr></thead>
+          <tbody>
+            <tr><td><code>leader_election_is_leader</code></td><td>1 if this natctl instance is the confirmed leader for a pool as of its most recent reconcile pass, 0 otherwise. Summed across a pool's nodes, this should read exactly 1 at all times.</td></tr>
+            <tr><td><code>leader_election_term</code></td><td>The leadership term this instance last observed or won — a real fencing event always increments it; a step change on more than one node's series at the same moment is the visible signature of a genuine re-election, not itself a fault.</td></tr>
+          </tbody>
+        </table></div>
+        <p>Absent entirely for a pool with leader election disabled (single-dedicated-host placement, where there is only ever one natctl process and nothing to elect between).</p>
       </section>
 
       <section class="chapter" id="c7-3">
@@ -1209,6 +1220,7 @@ flowchart LR
           <div class="card"><span class="tag">BGP &amp; Failover</span><h4>Sessions and roles</h4><p>Peers established vs. configured, per-node session-state timeline, and which role — self-announcer, buddy backup, or both — each node currently holds.</p></div>
           <div class="card"><span class="tag">Kernel Accounting</span><h4>conntrack, straight from the source</h4><p>Insert rate and failure/error/drop rates by node, read directly from the kernel's own connection-tracking statistics.</p></div>
           <div class="card"><span class="tag">Autoscale Explainability</span><h4>Why the pool is the size it is</h4><p>Floor/elastic/min/max counts, current value vs. watermark for every signal — including a dedicated pair of panels for the CPU/softirq trigger, one showing natctl's own aggregate decision view and one showing raw per-node, per-core detail — breach streak per signal, and a panel that renders the exact reason, sustained signal, and computed required count of the most recent scaling decision.</p></div>
+          <div class="card"><span class="tag">Leader Election</span><h4>Who's in charge, and since when</h4><p>Every-node placement only: which node currently holds leadership for each pool, and a timeline of its term — a flat line is the healthy steady state, a step change marks a real re-election.</p></div>
         </div>
       </section>
 
@@ -1231,6 +1243,7 @@ flowchart LR
             <tr><td>Self-announce missing</td><td>A healthy node isn't announcing its own address for 5 minutes</td><td><span class="badge crit">Critical</span></td></tr>
             <tr><td>Connection insert failures high</td><td>Kernel insert-failure rate exceeds a threshold for 5 minutes</td><td><span class="badge warn">Warning</span></td></tr>
             <tr><td>Autoscale ceiling reached</td><td>A signal is breaching while the pool is already at its configured maximum, for 5 minutes</td><td><span class="badge warn">Warning</span></td></tr>
+            <tr><td>Leader-election split-brain or no leader</td><td>Every-node placement only: a pool's confirmed-leader count across its nodes is anything other than exactly 1, for 2 minutes</td><td><span class="badge crit">Critical</span></td></tr>
           </tbody>
         </table></div>
       </section>

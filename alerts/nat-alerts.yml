@@ -168,3 +168,12 @@ groups:
           summary: "Pool {{ $labels.pool }} is breaching a scale-out watermark ({{ $labels.metric }}) but is already at max_nodes"
           description: "natctl cannot add more capacity — this alert exists because natctl won't fire NATConntrackTableCritical-style urgency on its own once it's out of room. Raise max_nodes for this pool or investigate the sustained demand."
 
+      - alert: NATLeaderElectionSplitBrainOrNoLeader
+        expr: sum(natctl_leader_election_is_leader) by (pool) != 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pool {{ $labels.pool }} (natctl_on_node_enabled) has {{ $value }} confirmed leaders, not exactly 1"
+          description: "0 means every node's leader-election is stuck (check Object Storage lease-store reachability and each node's own natctl logs); more than 1 means a genuine split-brain in the fencing/election path, which STONITH fencing is designed to make effectively impossible — either result needs investigation, not just waiting for the next reconcile pass. A couple of reconcile passes' grace (natctl_leader_election_is_leader is only ever scraped every 30s via natctl_sd) already absorbs the handful of seconds a real, healthy re-election normally takes — this alert firing means it did not resolve on its own. Absent entirely for pools with leader_election disabled (single-dedicated-host mode has no is_leader gauge to sum)."
+

@@ -247,6 +247,25 @@ write_files:
       net.netfilter.nf_conntrack_max = ${conntrack_max}
       net.ipv4.tcp_fin_timeout = 20
       net.netfilter.nf_conntrack_tcp_timeout_established = 3600
+      # Live-found, 2026-09-14 (2-node natctl_on_node_enabled hardening
+      # pass): with the kernel's own default of 6, a TCP connect() to a
+      # host that silently drops every packet (a real network partition,
+      # not an actively-refused connection) takes the OS itself roughly
+      # 130-240s to give up -- completely swamping every explicit
+      # botocore/requests connect_timeout this project configures (5s
+      # for the Object Storage lease store, comparable elsewhere), since
+      # those timeouts govern how long the CALLER waits on an already-
+      # connecting socket, not how long the kernel's own SYN retries
+      # take before the connect() syscall itself returns. Live-measured:
+      # a leader-election lease read against a fully packet-dropped
+      # endpoint took 241s to fail, not the configured 5s -- stalling
+      # that node's entire reconcile loop for minutes during exactly
+      # the kind of partition this mode's fencing/quorum logic is meant
+      # to handle gracefully. 3 retries bounds the OS-level connect()
+      # phase to ~15s worst case, well under this project's own 20-45s
+      # reconcile-interval/lease-TTL scale, while still tolerating a
+      # normal multi-second network hiccup.
+      net.ipv4.tcp_syn_retries = 3
 
 %{ if natctl_roster_url != "" ~}
   # Conntrack buddy-pair sync — see buddy-sync/ and docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html

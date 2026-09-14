@@ -61,6 +61,16 @@ pools:
   shared:
     # Required. terraform output natctl_roster_url_shared (or the
     # equivalent for whichever pool you're validating).
+    #
+    # Unlike control_plane's three URLs above, the roster API's port
+    # (8099) is deliberately scoped to VPC-internal sources ONLY by the
+    # Cloud Firewall (terraform/modules/vpc's natctl-api rule) -- never
+    # admin_cidrs, in either control-plane placement. Run this suite
+    # from a host with real VPC-internal network access (a jump host in
+    # the VPC, or a VPN/WireGuard peer routed into it) if check
+    # 01-roster-and-health needs to succeed; a plain admin-CIDR-allowed
+    # workstation can reach control_plane's Prometheus/Grafana above but
+    # not this URL.
     roster_url: "http://203.0.113.50:8099/fleet/shared"
     # This pool's terraform/modules/nat-fleet min_nodes (or node_count if
     # this pool has no elastic floor) -- check 01 fails if fewer than

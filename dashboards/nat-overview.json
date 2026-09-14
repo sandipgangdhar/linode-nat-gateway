@@ -346,7 +346,7 @@
         "x": 0,
         "y": 44
       },
-      "description": "Sum of established FRR BGP sessions across all nodes -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.4 'BGP-Based IP Failover'.",
+      "description": "Sum of established FRR BGP sessions across all nodes -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html \u00a74.4 'BGP-Based IP Failover'.",
       "targets": [
         {
           "expr": "sum(nat_bgp_peers_established_total{pool=~\"$pool\"})",
@@ -582,7 +582,7 @@
         "x": 16,
         "y": 64
       },
-      "description": "Why the most recent scale-out/scale-in fired -- direction, reason, sustained-breach metric(s), and required node count. Value is always 1; the text is carried entirely as labels (metric: natctl_pool_last_scale_event_info -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.2 'The Autoscaling Algorithm').",
+      "description": "Why the most recent scale-out/scale-in fired -- direction, reason, sustained-breach metric(s), and required node count. Value is always 1; the text is carried entirely as labels (metric: natctl_pool_last_scale_event_info -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html \u00a75.2 'The Autoscaling Algorithm').",
       "options": {
         "textMode": "name",
         "colorMode": "background",
@@ -711,7 +711,7 @@
         "x": 0,
         "y": 84
       },
-      "description": "Busiest-core network-softirq saturation ratio, pool-wide -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.2 'The Autoscaling Algorithm'. Scale-out only: unlike conntrack, there is no low (scale-in) watermark for this metric.",
+      "description": "Busiest-core network-softirq saturation ratio, pool-wide -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html \u00a75.2 'The Autoscaling Algorithm'. Scale-out only: unlike conntrack, there is no low (scale-in) watermark for this metric.",
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit"
@@ -750,6 +750,57 @@
         {
           "expr": "rate(nat_cpu_softirq_seconds_total{pool=~\"$pool\"}[1m])",
           "legendFormat": "{{node}} cpu{{cpu}}"
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "title": "Current Leader (natctl_on_node_enabled pools)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 92
+      },
+      "description": "natctl's own leader-election state (is_leader/term, see api.py's render_natctl_metrics()) is only reachable here in natctl_on_node_enabled mode -- without it, an operator has no way to see who currently holds leadership for a pool without SSHing to each node and grepping journalctl. Value is always 1; the node holding it is carried entirely as a label. Empty for pools with leader_election disabled (single-dedicated-host mode), by the same convention as the scale-event panel above.",
+      "options": {
+        "textMode": "name",
+        "colorMode": "background",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "natctl_leader_election_is_leader{pool=~\"$pool\"} == 1",
+          "legendFormat": "{{node_id}} (pool={{pool}})"
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "title": "Leadership Term",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 92
+      },
+      "description": "The leadership term each node last observed or won for its pool -- a real fencing event increments this; a flat line across every node in a pool is the healthy steady state. A step change on more than one node's series at the same moment is the visible signature of a genuine re-election, not itself a fault.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "natctl_leader_election_term{pool=~\"$pool\"}",
+          "legendFormat": "{{node_id}} (pool={{pool}})"
         }
       ]
     }
