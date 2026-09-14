@@ -2561,3 +2561,82 @@ separately, not a live-infra testing item).
 
 ---
 
+## Pending / future work (not yet started)
+
+Recorded here per the user's request so this doesn't get lost between
+sessions. Neither item is required by the completed 3-round program
+above — both are follow-on asks about raising confidence further,
+specifically for `natctl_on_node_enabled=true` at the node count most
+customers are actually expected to run.
+
+### 1. Chaos-engineering-style continuous fault injection (3-node on-node mode)
+
+**Motivation**: everything tested in Rounds 2-4 above was directed,
+single/double-fault, short-duration testing (minutes per scenario).
+That gave real confidence and found real bugs (#10, #11), but it is
+not the same as the sustained, randomized, compounding-fault testing
+(Netflix Chaos Monkey-style) that would be needed to reach the same
+confidence level in `natctl_on_node_enabled=true` at 3 nodes — the
+node count most customers are expected to actually run — as already
+exists for `natctl_on_node_enabled=false`.
+
+**What it would take**, discussed with the user 2026-09-14:
+
+- **A standalone chaos injector**, running on its own box (never one
+  of the pool nodes under test, so it doesn't share fate with what
+  it's breaking), that continuously fires randomized faults at
+  randomized intervals: instance shutdown/reboot via the Linode API,
+  `kill -9` on the natctl process, source-scoped `iptables` VPC/VLAN
+  partitions, simulated Linode API throttling/"busy" responses (a
+  real, already-observed condition — see Round 4 Deployment B above —
+  worth provoking deliberately rather than waiting to hit it by
+  chance), clock skew, Object Storage unreachability, disk pressure.
+- **A standalone invariant monitor**, also on its own box, continuously
+  asserting properties that must never go false: exactly one leader at
+  a time (no split-brain), roster convergence within a bound after any
+  fault, zero sustained packet loss on a continuous synthetic
+  client workload running through the pool the whole time (not just
+  spot pings), no unbounded orphan/instance-count growth.
+- **Run continuously, not as a batch of test cases** — proposed a
+  dedicated, always-on 3-node pool running unattended for 1-2 weeks
+  with faults firing every few minutes, long enough for faults to land
+  during each other's recovery windows (exactly the class of bug
+  directed testing tends to miss — the fail-closed quorum path in
+  Round 4 above was only genuinely exercised because a double-kill
+  happened to land right).
+- **A chaos scorecard**: count of split-brain violations (must stay
+  zero), count of fencing failures needing manual intervention,
+  distribution of election/fencing convergence times under real
+  randomized load.
+- **Explicitly out of scope for now**: formal protocol verification
+  (TLA+ or similar model-checking of the lease/fencing state machine)
+  — named as the other end of the confidence spectrum during this
+  discussion, but not recommended given the protocol's current
+  simplicity and the amount of live fault-testing it has already
+  survived; would only be worth it if correctness needed to be
+  provable rather than empirically strong.
+- **Rough scope**: a few days of engineering to build the injector +
+  monitor, then a 1-2 week unattended soak run (small ongoing Linode
+  cost, mostly idle-tier instances), then a triage pass on whatever
+  the scorecard surfaces.
+
+**Status**: not started. Requires the user's go-ahead before beginning
+(distinct in scope/cost from the completed 3-round program — this is a
+new, longer-running initiative, not a continuation of it).
+
+### 2. 2-node UX hardening exploration
+
+Carried over from the original ask ("for 2 node see if we can do
+anything to improve end user experience"). Current state: an explicit
+doc warning (ARCHITECTURE.md/RUNBOOK.md/customer guide) plus a
+Terraform `check` block are the only mitigations; the underlying
+behavior (no peer to corroborate before fencing at 1-2 nodes) is
+disclosed, not solved. A lightweight witness/third-voter mechanism was
+discussed as the natural next idea but not built — this session's
+earlier evaluation of heavier options (Corosync/Pacemaker/QDevice) had
+already concluded they were disproportionate for this product.
+**Status**: not started, no code investigation done yet on a
+lighter-weight witness approach.
+
+---
+
