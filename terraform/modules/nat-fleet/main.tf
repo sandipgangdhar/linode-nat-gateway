@@ -537,6 +537,8 @@ locals {
       # 16384-byte decoded cloud-init limit). The systemd unit files
       # themselves (previously the only remaining inline pieces) are
       # ALSO fetched -- see terraform/modules/artifacts' static uploads.
+      manifest_url               = var.manifest_url
+      natctl_api_mutation_token  = var.natctl_api_mutation_token
       exporter_py_url            = var.exporter_py_url
       nat_exporter_service_url   = var.nat_exporter_service_url
       buddy_sync_py_url          = var.buddy_sync_py_url

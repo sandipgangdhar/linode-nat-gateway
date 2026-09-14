@@ -175,6 +175,18 @@ variable "prometheus_remote_write_password" {
   default     = ""
 }
 
+variable "manifest_url" {
+  description = "Public URL (terraform/modules/artifacts' manifest_url output) for the SHA-256 integrity manifest -- fetched once at the top of runcmd, then every other curl'd artifact below is verified against it before ever being executed or installed. Found via an independent adversarial security review, 2026-09-14 -- see that module's main.tf local.manifest comment for the incident this closes."
+  type        = string
+}
+
+variable "natctl_api_mutation_token" {
+  description = "Shared secret required by api.py's 4 mutating roster-API routes (drain, pool-scaling/client-config/vpc-sibling-subnets overrides) -- written to /etc/natctl/env as NATCTL_API_MUTATION_TOKEN, only meaningful when run_natctl. \"\" (default) means every mutating request is refused with 401 until an operator sets one -- see api.py's own header comment and config.py's ApiConfig.mutation_token docstring for the confused-deputy/unauthenticated-VLAN-mutation incident this closes."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "natctl_file_urls" {
   description = "Map of natctl/*.py filename -> public URL (terraform/modules/artifacts' natctl_file_urls output), fetched one curl per file at boot instead of embedded inline -- only actually consumed when run_natctl is true. See that module's main.tf header for why (Linode's 16384-byte decoded cloud-init limit -- this alone, even without exporter.py/buddy_sync.py which this instance never installs, was already enough to push this instance's cloud-init over budget once combined with the dashboards/alerts JSON this file also carries)."
   type        = map(string)

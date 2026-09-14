@@ -228,3 +228,49 @@ resource "linode_object_storage_object" "install_nat_client_script" {
   acl    = "public-read"
   etag   = filemd5(local.install_nat_client_script_path)
 }
+
+# ---------------------------------------------------------------------------
+# Integrity manifest -- mirrors the dev repo's terraform/modules/artifacts/
+# main.tf identically (found via an independent adversarial security
+# review, 2026-09-14): every object above is fetched at boot via a plain,
+# unauthenticated curl with no integrity check beyond HTTPS transport
+# trust, and the same Object Storage write credential used for the
+# leader-election lease record is distributed to every node in
+# natctl_on_node_enabled mode -- a single compromised node could plant a
+# malicious replacement for any binary/unit file here, and every OTHER
+# node would fetch and RUN it as root. Same key format as the dev repo
+# (path relative to this module's own prefix directory, e.g. "bin/natctl",
+# "natctl.service") -- consumers (ansible/cloud-init/nat-node.yaml.tftpl's/
+# observability.yaml.tftpl's lng-fetch-verified.sh, copied verbatim from
+# the dev repo) derive the manifest key from any fetch URL by stripping
+# the manifest's own URL directory, so this works identically regardless
+# of which artifacts variant (source or binary) is in play. Deliberately
+# NOT covering nat_overview_json above -- a Grafana dashboard definition
+# is data, not code anything here executes.
+locals {
+  manifest = {
+    "bin/natctl"             = filesha256(local.natctl_bin_path)
+    "bin/nat-exporter"       = filesha256(local.nat_exporter_bin_path)
+    "bin/buddy-sync"         = filesha256(local.buddy_sync_bin_path)
+    "bin/client-agent"       = filesha256(local.client_agent_bin_path)
+    "bin/natctl-cli"         = filesha256(local.natctl_cli_bin_path)
+    "natctl.service"         = filesha256(local.natctl_service_path)
+    "nat-exporter.service"   = filesha256(local.nat_exporter_service_path)
+    "lng-buddy-sync.service" = filesha256(local.lng_buddy_sync_service_path)
+    "conntrackd@.service"    = filesha256(local.conntrackd_peer_service_path)
+    "install-nat-client.sh"  = filesha256(local.install_nat_client_script_path)
+  }
+}
+
+resource "linode_object_storage_object" "manifest" {
+  bucket     = var.bucket
+  region     = var.s3_region
+  access_key = var.access_key
+  secret_key = var.secret_key
+
+  key          = "${local.prefix}/manifest.sha256.json"
+  content      = jsonencode(local.manifest)
+  content_type = "application/json"
+  acl          = "public-read"
+  etag         = md5(jsonencode(local.manifest))
+}

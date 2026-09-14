@@ -308,6 +308,18 @@ variable "exporter_py_url" {
   type        = string
 }
 
+variable "manifest_url" {
+  description = "Public URL (terraform/modules/artifacts' manifest_url output) for the SHA-256 integrity manifest -- fetched once at the top of runcmd, then every other curl'd artifact below is verified against it before ever being executed or installed. Found via an independent adversarial security review, 2026-09-14 -- see that module's main.tf local.manifest comment for the incident this closes."
+  type        = string
+}
+
+variable "natctl_api_mutation_token" {
+  description = "Shared secret required by api.py's 4 mutating roster-API routes (drain, pool-scaling/client-config/vpc-sibling-subnets overrides) -- written to /etc/natctl/env as NATCTL_API_MUTATION_TOKEN, only meaningful when natctl_on_node_enabled (this fleet's own natctl instance). \"\" (default) means every mutating request is refused with 401 until an operator sets one -- see api.py's own header comment and config.py's ApiConfig.mutation_token docstring for the confused-deputy/unauthenticated-VLAN-mutation incident this closes."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "buddy_sync_py_url" {
   description = "Public URL (terraform/modules/artifacts' buddy_sync_py_url output) this fleet's nodes curl buddy_sync.py from at boot, when natctl_roster_url is set -- see nat-node.yaml.tftpl's runcmd."
   type        = string

@@ -108,9 +108,11 @@ locals {
     grafana_dashboards_yml = file("${path.module}/../../../ansible/templates/grafana-dashboards.yml")
     nat_alerts_yml         = file("${path.module}/../../../alerts/nat-alerts.yml")
 
-    run_natctl           = var.run_natctl
-    run_monitoring_stack = var.run_monitoring_stack
-    natctl_file_urls     = var.natctl_file_urls
+    run_natctl                = var.run_natctl
+    run_monitoring_stack      = var.run_monitoring_stack
+    manifest_url              = var.manifest_url
+    natctl_api_mutation_token = var.natctl_api_mutation_token
+    natctl_file_urls          = var.natctl_file_urls
 
     # See this module's vpc_sibling_subnet_cidrs variable and
     # observability.yaml.tftpl's own runcmd comment for the full

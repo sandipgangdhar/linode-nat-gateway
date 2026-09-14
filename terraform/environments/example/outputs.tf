@@ -56,6 +56,12 @@ output "prometheus_url" {
   value       = var.run_monitoring_stack ? module.observability[0].prometheus_url : null
 }
 
+output "natctl_api_mutation_token" {
+  description = "Auto-generated bearer token every mutating natctl_cli command (drain/resize/set-pool-scaling/set-client-config/set-vpc-sibling-subnets) needs when run from OUTSIDE the fleet (a node running the daemon already has it in its own /etc/natctl/env and doesn't need this) -- export it as NATCTL_API_MUTATION_TOKEN before running natctl_cli remotely: `export NATCTL_API_MUTATION_TOKEN=$(terraform output -raw natctl_api_mutation_token)`. Found via an independent adversarial security review, 2026-09-14 -- see api.py's own header comment for the incident this closes."
+  value       = random_password.natctl_api_mutation_token.result
+  sensitive   = true
+}
+
 output "vpc_id" {
   value = module.vpc.vpc_id
 }

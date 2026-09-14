@@ -10,6 +10,12 @@
 # - Terraform >= 1.6 required.
 # - linode/linode provider ~> 2.9 -- do not jump a major version without
 #   re-testing every module, since resource schemas can change.
+# - hashicorp/random ~> 3.6 -- already a transitive dependency via
+#   module.vpc's random_id.fw_suffix; declared here too because this
+#   root module now generates its own random_password.
+#   natctl_api_mutation_token directly (found via an independent
+#   adversarial security review, 2026-09-14 -- see environments/example/
+#   main.tf's matching resource comment).
 #
 # -----------------------------------------------------
 # Author:
@@ -26,6 +32,10 @@ terraform {
     linode = {
       source  = "linode/linode"
       version = "~> 2.9"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
     }
   }
 }

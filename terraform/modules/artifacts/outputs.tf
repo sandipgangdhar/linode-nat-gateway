@@ -95,3 +95,10 @@ output "install_nat_client_script_url" {
   description = "Public URL for scripts/install-nat-client.sh itself -- fetched ONCE by natctl at its own startup (ApiConfig.install_nat_client_script_url), then served over VLAN/VPC via GET /agents/install-nat-client.sh. Unchanged from the dev repo (a plain shell script, not compiled)."
   value       = "${local.base_url}/${linode_object_storage_object.install_nat_client_script.key}"
 }
+
+# Found via an independent adversarial security review, 2026-09-14 -- see
+# main.tf's matching comment above local.manifest for the full incident.
+output "manifest_url" {
+  description = "Public URL for the SHA-256 integrity manifest covering every binary/unit-file object this module uploads (except nat_overview_json, which is data, not executed code). See main.tf's local.manifest comment for the incident this closes."
+  value       = "${local.base_url}/${linode_object_storage_object.manifest.key}"
+}

@@ -69,6 +69,23 @@
 # public URL. It stays a small write_files content: block, same as before.
 #
 # -----------------------------------------------------
+# Integrity verification (found via an independent adversarial security
+# review, 2026-09-14): every fetch above goes through /usr/local/bin/
+# lng-fetch-verified.sh (a write_files entry below) instead of a bare
+# curl -- it fetches manifest_url (terraform/modules/artifacts' SHA-256
+# manifest, covering every object this module uploads) once per boot,
+# then verifies each subsequently-fetched file against it before ever
+# letting a caller treat the file as safe to execute or install. See
+# terraform/modules/artifacts' main.tf local.manifest comment for the
+# full incident this closes: the same Object Storage write credential
+# used for the leader-election lease record is distributed to every node
+# in natctl_on_node_enabled mode, so an unverified fetch would let one
+# compromised node's forged artifact run as root fleet-wide. nftables.conf
+# is deliberately NOT covered -- it's per-node dynamic content uploaded
+# separately by this module, not one of the shared artifacts the manifest
+# covers.
+#
+# -----------------------------------------------------
 # Usage:
 #
 # - Never edit this file's rendered output directly on a running node --
@@ -214,6 +231,9 @@ write_files:
 %{ if object_storage_access_key != "" ~}
       NATCTL_OBJECT_STORAGE_ACCESS_KEY=${object_storage_access_key}
       NATCTL_OBJECT_STORAGE_SECRET_KEY=${object_storage_secret_key}
+%{ endif ~}
+%{ if natctl_api_mutation_token != "" ~}
+      NATCTL_API_MUTATION_TOKEN=${natctl_api_mutation_token}
 %{ endif ~}
 %{ endif ~}
 
@@ -382,6 +402,63 @@ write_files:
       WantedBy=multi-user.target
 %{ endif ~}
 
+  # Found via an independent adversarial security review, 2026-09-14:
+  # every artifact fetched below used to be a plain, unauthenticated
+  # `curl` with no integrity check beyond HTTPS transport trust. The
+  # SAME Object Storage write credential used for the leader-election
+  # lease record is distributed to every node in natctl_on_node_enabled
+  # mode, so a single compromised node could plant a malicious
+  # replacement for any of these objects, and every OTHER node in the
+  # fleet would fetch and RUN it as root at its next boot -- a worse
+  # blast radius than the Linode API token itself, since it doesn't even
+  # need the Linode API. This script fetches the manifest_url integrity
+  # manifest ONCE (cached locally for the rest of this boot, since many
+  # fetches below share it), derives each file's expected SHA-256 by
+  # stripping the manifest's own URL directory from the file's own fetch
+  # URL, then verifies the actual downloaded content against it before
+  # ever letting a caller treat the file as safe. See
+  # terraform/modules/artifacts' main.tf local.manifest comment for the
+  # full incident and manifest-key format this depends on.
+  - path: /usr/local/bin/lng-fetch-verified.sh
+    owner: root:root
+    permissions: '0750'
+    content: |
+      #!/bin/sh
+      # Usage: lng-fetch-verified.sh <manifest_url> <fetch_url> <dest_path>
+      set -eu
+      MANIFEST_URL="$1"
+      FETCH_URL="$2"
+      DEST_PATH="$3"
+      MANIFEST_CACHE=/run/lng-artifact-manifest.json
+
+      if [ ! -s "$MANIFEST_CACHE" ]; then
+        curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "$MANIFEST_URL" -o "$MANIFEST_CACHE"
+      fi
+
+      MANIFEST_DIR=$(dirname "$MANIFEST_URL")
+      KEY=$${FETCH_URL#$MANIFEST_DIR/}
+
+      EXPECTED=$(MANIFEST_CACHE="$MANIFEST_CACHE" KEY="$KEY" python3 -c "
+      import json, os
+      with open(os.environ['MANIFEST_CACHE']) as f:
+          manifest = json.load(f)
+      print(manifest.get(os.environ['KEY'], ''))
+      ")
+
+      if [ -z "$EXPECTED" ]; then
+        echo "lng-fetch-verified: no manifest entry for key '$KEY' (from $FETCH_URL) -- refusing to trust an unverifiable fetch" >&2
+        exit 1
+      fi
+
+      curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "$FETCH_URL" -o "$DEST_PATH"
+
+      ACTUAL=$(sha256sum "$DEST_PATH" | awk '{print $1}')
+      if [ "$ACTUAL" != "$EXPECTED" ]; then
+        echo "lng-fetch-verified: SHA-256 mismatch for $DEST_PATH (expected $EXPECTED, got $ACTUAL) -- refusing to trust this file, aborting boot" >&2
+        rm -f "$DEST_PATH"
+        exit 1
+      fi
+
 runcmd:
   - sysctl --system
   # Linode's own boot-time "Network Helper" (its
@@ -466,15 +543,15 @@ runcmd:
   # the .py source to run.
   - mkdir -p /opt/nat-exporter
 %{ if agent_distribution == "binary" ~}
-  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${exporter_bin_url}" -o /opt/nat-exporter/nat-exporter
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${exporter_bin_url}" /opt/nat-exporter/nat-exporter
   - chown root:root /opt/nat-exporter/nat-exporter
   - chmod 0750 /opt/nat-exporter/nat-exporter
 %{ else ~}
-  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${exporter_py_url}" -o /opt/nat-exporter/exporter.py
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${exporter_py_url}" /opt/nat-exporter/exporter.py
   - chown root:root /opt/nat-exporter/exporter.py
   - chmod 0750 /opt/nat-exporter/exporter.py
 %{ endif ~}
-  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${nat_exporter_service_url}" -o /etc/systemd/system/nat-exporter.service
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${nat_exporter_service_url}" /etc/systemd/system/nat-exporter.service
   - chown root:root /etc/systemd/system/nat-exporter.service
   - chmod 0644 /etc/systemd/system/nat-exporter.service
   - systemctl daemon-reload
@@ -561,16 +638,16 @@ runcmd:
   # here.
   - mkdir -p /opt/lng-buddy-sync
 %{ if agent_distribution == "binary" ~}
-  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${buddy_sync_bin_url}" -o /opt/lng-buddy-sync/buddy-sync
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${buddy_sync_bin_url}" /opt/lng-buddy-sync/buddy-sync
   - chown root:root /opt/lng-buddy-sync/buddy-sync
   - chmod 0750 /opt/lng-buddy-sync/buddy-sync
 %{ else ~}
-  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${buddy_sync_py_url}" -o /opt/lng-buddy-sync/buddy_sync.py
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${buddy_sync_py_url}" /opt/lng-buddy-sync/buddy_sync.py
   - chown root:root /opt/lng-buddy-sync/buddy_sync.py
   - chmod 0750 /opt/lng-buddy-sync/buddy_sync.py
 %{ endif ~}
-  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${lng_buddy_sync_service_url}" -o /etc/systemd/system/lng-buddy-sync.service
-  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${conntrackd_peer_service_url}" -o /etc/systemd/system/conntrackd@.service
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${lng_buddy_sync_service_url}" /etc/systemd/system/lng-buddy-sync.service
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${conntrackd_peer_service_url}" /etc/systemd/system/conntrackd@.service
   - chown root:root /etc/systemd/system/lng-buddy-sync.service /etc/systemd/system/conntrackd@.service
   - chmod 0644 /etc/systemd/system/lng-buddy-sync.service /etc/systemd/system/conntrackd@.service
   - systemctl daemon-reload
@@ -628,7 +705,7 @@ runcmd:
   # environment runs agent_distribution == "binary".
 %{ if agent_distribution == "binary" ~}
   - mkdir -p /opt/natctl
-  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_bin_url}" -o /opt/natctl/natctl
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${natctl_bin_url}" /opt/natctl/natctl
   - chown root:root /opt/natctl/natctl
   - chmod 0750 /opt/natctl/natctl
   # natctl-cli (the operator-facing day-2 CLI -- status/nodes/drain/
@@ -636,18 +713,18 @@ runcmd:
   # PATH for any interactive shell) rather than /opt/natctl, since this
   # is a tool a human runs by hand, not something natctl.service itself
   # execs.
-  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_cli_bin_url}" -o /usr/local/bin/natctl-cli
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${natctl_cli_bin_url}" /usr/local/bin/natctl-cli
   - chown root:root /usr/local/bin/natctl-cli
   - chmod 0755 /usr/local/bin/natctl-cli
 %{ else ~}
   - mkdir -p /opt/natctl/natctl
-  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_requirements_txt_url}" -o /opt/natctl/requirements.txt
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${natctl_requirements_txt_url}" /opt/natctl/requirements.txt
 %{ for rel_path, url in natctl_file_urls ~}
-  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${url}" -o /opt/natctl/natctl/${rel_path}
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${url}" /opt/natctl/natctl/${rel_path}
 %{ endfor ~}
   - chmod -R 0644 /opt/natctl/natctl
 %{ endif ~}
-  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${natctl_service_url}" -o /etc/systemd/system/natctl.service
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${natctl_service_url}" /etc/systemd/system/natctl.service
   - chown root:root /etc/systemd/system/natctl.service
   - chmod 0644 /etc/systemd/system/natctl.service
 %{ if agent_distribution != "binary" ~}

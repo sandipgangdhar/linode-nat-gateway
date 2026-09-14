@@ -23,6 +23,13 @@
 # - Grafana is pre-provisioned with the Prometheus datasource and the
 #   nat-overview dashboard via the provisioning volumes below -- no manual
 #   Grafana setup needed after boot.
+# - Every image below is pinned to a specific version, never `:latest` --
+#   an unpinned tag means every fresh deploy or container restart could
+#   silently pull a different image than the last one, with no record of
+#   what actually changed and no way to test an upgrade before it lands
+#   in production. To upgrade deliberately: bump the version here, test
+#   against a real deployment, then ship it as a normal code change --
+#   same as any other dependency version bump in this project.
 #
 # -----------------------------------------------------
 # Author:
@@ -36,7 +43,7 @@ version: "3.8"
 
 services:
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.14.0
     restart: unless-stopped
     volumes:
       - /opt/lng-observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -63,7 +70,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   alertmanager:
-    image: prom/alertmanager:latest
+    image: prom/alertmanager:v0.34.0
     restart: unless-stopped
     volumes:
       - /opt/lng-observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
@@ -81,7 +88,7 @@ services:
       - "9093:9093"
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.2.1
     restart: unless-stopped
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${grafana_admin_password}

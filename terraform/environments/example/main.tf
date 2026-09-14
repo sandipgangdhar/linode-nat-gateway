@@ -559,6 +559,18 @@ module "artifacts" {
   secret_key = var.natctl_object_storage_secret_key
 }
 
+# Found via an independent adversarial security review, 2026-09-14 -- see
+# that module's own header comment for the full incident (Cloud Firewall
+# doesn't filter VLAN traffic, and the default single-dedicated-host
+# control plane renders no nftables of its own). Auto-generated, not
+# operator-supplied like root_pass/grafana_admin_password -- see the dev
+# repo's identical resource comment for why. Mirrors the dev repo's
+# environments/example/main.tf byte-for-byte.
+resource "random_password" "natctl_api_mutation_token" {
+  length  = 48
+  special = false
+}
+
 locals {
   # Short aliases for module.artifacts's outputs -- referenced from BOTH
   # module.nat_fleet below AND the natctl_pools composition further down
@@ -570,6 +582,11 @@ locals {
   exporter_py_url   = module.artifacts.exporter_py_url
   buddy_sync_py_url = module.artifacts.buddy_sync_py_url
   natctl_file_urls  = module.artifacts.natctl_file_urls
+  # SHA-256 integrity manifest -- see module.artifacts' own main.tf
+  # local.manifest comment for the incident this closes (same independent
+  # adversarial security review, 2026-09-14).
+  manifest_url              = module.artifacts.manifest_url
+  natctl_api_mutation_token = random_password.natctl_api_mutation_token.result
 
   # This environment always runs compiled agents, not Python source -- see
   # terraform/modules/artifacts (this repo's standalone, binary-only
@@ -712,6 +729,14 @@ module "nat_fleet" {
   natctl_service_url          = module.artifacts.natctl_service_url
   natctl_requirements_txt_url = module.artifacts.natctl_requirements_txt_url
 
+  # SHA-256 integrity manifest covering the artifacts above, and the
+  # bearer token api.py's mutating routes require -- both found via an
+  # independent adversarial security review, 2026-09-14. See
+  # module.artifacts' main.tf local.manifest comment and
+  # random_password.natctl_api_mutation_token's comment above.
+  manifest_url              = module.artifacts.manifest_url
+  natctl_api_mutation_token = local.natctl_api_mutation_token
+
   # Per-node dynamic conf upload (nftables.conf) -- reuses the SAME
   # Object Storage bucket module.artifacts and natctl's leader-election
   # lease already use. See terraform/modules/nat-fleet/main.tf's header
@@ -843,6 +868,10 @@ locals {
       exporter_py_url   = local.exporter_py_url
       buddy_sync_py_url = local.buddy_sync_py_url
       natctl_file_urls  = local.natctl_file_urls
+      # SHA-256 integrity manifest -- see module.artifacts' own main.tf
+      # local.manifest comment for the incident this closes (an
+      # independent adversarial security review, 2026-09-14).
+      manifest_url = local.manifest_url
 
       agent_distribution = local.agent_distribution
       exporter_bin_url   = local.exporter_bin_url
@@ -884,6 +913,13 @@ locals {
     api = {
       listen_host = "0.0.0.0"
       listen_port = var.api_port
+      # Deliberately null -- set via NATCTL_API_MUTATION_TOKEN in
+      # /etc/natctl/env instead (this composed document is embedded
+      # directly in cloud-init user_data, retrievable via the Metadata
+      # API, so no real secret belongs here). Found via an independent
+      # adversarial security review, 2026-09-14 -- see api.py's own
+      # header comment for the incident this closes.
+      mutation_token = null
       # Lets a vlan_only/vpc_vlan client instance fetch the compiled
       # client-agent binary over the fleet's own VLAN/VPC before it has
       # any other network path -- see controller/natctl/api.py's GET
@@ -1105,6 +1141,14 @@ module "observability" {
   # terraform/modules/artifacts/main.tf's header comment.
   natctl_service_url          = module.artifacts.natctl_service_url
   natctl_requirements_txt_url = module.artifacts.natctl_requirements_txt_url
+
+  # SHA-256 integrity manifest covering the artifacts above, and the
+  # bearer token api.py's mutating routes require -- both found via an
+  # independent adversarial security review, 2026-09-14. See
+  # module.artifacts' main.tf local.manifest comment and
+  # random_password.natctl_api_mutation_token's comment above.
+  manifest_url              = module.artifacts.manifest_url
+  natctl_api_mutation_token = local.natctl_api_mutation_token
 
   # Pre-built Grafana dashboard JSON, fetched at boot instead of
   # embedded -- see terraform/modules/artifacts/main.tf's header comment.
