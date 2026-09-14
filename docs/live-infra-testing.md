@@ -2385,3 +2385,57 @@ No new findings, no product bugs. Torn down cleanly.
 
 ---
 
+### Round 3, Deployment B — distributed on-node mode, leader election + consensus hardening (concise re-run)
+
+Same shapes as Round 2's Deployment B (`common`: 5 floor/max 5, `acme`:
+2 floor/max 2). Full mechanism explanations are in Round 2's section
+above.
+
+- **Clean election, both pools**: `lng-common-1` and `lng-acme-1` each elected cleanly from cold boot.
+- **5-node leader kill**: `lng-common-4` fenced `lng-common-1` and claimed leadership; settle-and-reverify measured at ~10.2s again.
+- **2-node fallback**: killed `lng-acme-1`; `lng-acme-2`'s log showed the exact documented fallback message and fenced safely; settle delay ~10.1s.
+
+Continuing with the VPC/VLAN peer fallback and double-failure boundary
+tests before tearing down.
+
+**VPC/VLAN peer fallback**: same methodology as Round 2 — source-scoped
+`iptables` blocks on a target node for two other candidates' VPC paths,
+then killed the leader. `lng-common-2` (one of the two blocked sources)
+won the election; both counters showed real traffic (24 and 20 packets)
+confirming genuine VPC-path attempts were dropped, and fencing still
+succeeded — the candidate's own poll fell back to VLAN successfully.
+Cleaned up afterward.
+
+**Double-failure fail-safe boundary**: killed the leader (`lng-common-2`)
+and one other member (`lng-common-3`) simultaneously. Same result as
+Round 2 — by the time the lease TTL expired and `lng-common-5`
+attempted its election (~57 seconds after both kills), both dead nodes
+had already dropped out of `pool_member_node_ids` via live discovery,
+so quorum math ran against the smaller, already-shrunk real set and
+passed cleanly on the first attempt. Consistent with Round 2's finding:
+real termination self-heals membership before quorum math becomes a
+problem.
+
+**Round 3 Deployment B verdict: no product bugs.** `check-orphans` on
+both pools flagged 3 elastic nodes as unhealthy right as the double-
+failure test's compensation was still booting — deleted all of them
+manually before destroying, rather than spending time distinguishing
+genuinely-booting from orphaned given the heavy churn just inflicted.
+`terraform destroy` hit one transient Linode API error (`500 Service
+unavailable`) deleting an already-fenced instance — a real infra-side
+hiccup, not a product issue — and completed cleanly on a plain retry
+(19 remaining resources). Live `linode-cli` inventory afterward
+confirmed only the pre-existing `nav-observability` instance remained.
+
+## Round 3 verdict: CLEAN — second of 3 required consecutive clean rounds
+
+Both Deployment A and Deployment B completed with zero product bugs,
+matching Round 2's result stage for stage — including both dedicated
+on-node consensus hardening tests (VPC/VLAN fallback, double-failure
+boundary) reproducing the same clean outcomes as Round 2. One more
+consecutive clean round closes out this testing effort per the user's
+explicit instruction. Proceeding immediately to Round 4 (this
+program's numbering — the 3rd of the 3 required rounds).
+
+---
+
