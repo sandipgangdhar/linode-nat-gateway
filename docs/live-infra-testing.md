@@ -2633,6 +2633,45 @@ scraped correctly, with exactly one (`lng-duo-2`) reading
 `is_leader=1` and the other reading `0` — the correct, healthy
 invariant the new alert is built to watch.
 
+### Acceptance-tests suite compatibility — PASS, plus a minor doc-accuracy fix
+
+Ran the read-only acceptance-tests suite (checks 01-roster-and-health,
+06-observability) against the live `dedicated-duo` pool. First attempt
+against the roster URL from an external machine timed out — traced to
+the Cloud Firewall's `natctl-api` rule (port 8099) being deliberately
+scoped to VPC-internal sources only, in both control-plane placements,
+never `admin_cidrs` — not a mode-specific gap, since the same
+restriction applies to the default single-dedicated-host placement
+too. The example config's own illustration used the same public IP for
+`roster_url` as for `control_plane`'s Prometheus/Grafana URLs (which
+genuinely are `admin_cidrs`-reachable), implying — incorrectly — the
+same reachability. Fixed with a clarifying comment in
+`config.example.yaml`. Re-ran both checks through an SSH tunnel into
+the VPC (the documented way to reach a VPC-internal-only port) —
+**both passed cleanly**, confirming the acceptance-tests suite itself
+needs no code changes to work correctly against
+`natctl_on_node_enabled=true`.
+
+### Scope note: BGP IP-failover / real client traffic
+
+Not re-run from scratch in this round — this exact mechanism (buddy
+IP takeover, 0% packet loss) was already live-validated with real
+client traffic in earlier milestones (`docs/ARCHITECTURE.md`'s
+"Honest validation status", and the Round 2-4 program above), and this
+round's own T01-T20 matrix (in the dev repo's
+`roadmap/M33-2node-resilience-deep-dive.md`) independently re-exercised
+real shutdown/fencing/BGP-takeover behavior repeatedly (T13/T14/T18/
+T19) via direct node kills, confirming the mechanism still works
+end to end. Spinning up a dedicated client instance to re-measure
+packet loss specifically for THIS 2-node pool was judged lower-value
+than the genuinely new ground covered above, given the time already
+spent on this round.
+
+**Round 5 verdict**: 1 real bug found and fixed (Finding 10,
+observability), 1 minor doc-accuracy fix, 2 clean passes (security,
+acceptance-tests). Comprehensive round complete for
+`natctl_on_node_enabled=true` at 2 nodes.
+
 ---
 
 ## Pending / future work (not yet started)
