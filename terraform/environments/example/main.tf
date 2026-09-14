@@ -678,6 +678,12 @@ module "nat_fleet" {
   # just-resized node back to this pool's base instance_type.
   node_instance_type_overrides = each.value.node_instance_type_overrides
 
+  # 2-node quorum-witness role -- see dev-repo terraform/environments/
+  # example/variables.tf's matching comment on the pools map's fields.
+  witness_enabled           = each.value.witness_enabled
+  witness_instance_type     = each.value.witness_instance_type
+  witness_private_ip_offset = each.value.witness_private_ip_offset
+
   vlan_label         = each.value.vlan_label
   vlan_cidr          = each.value.vlan_cidr
   vlan_reserved_cidr = each.value.vlan_cidr_reserved

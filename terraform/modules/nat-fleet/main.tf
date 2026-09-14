@@ -121,6 +121,42 @@ locals {
     local.node_ids[i] => cidrhost(var.public_subnet_cidr, var.private_ip_offset + i)
   }
 
+  # 2-node quorum-witness role: one static VPC IP, same derivation as
+  # node_vpc_ips above, just from its own offset (witness_private_ip_offset)
+  # instead of sharing the floor nodes' range.
+  witness_id     = "${var.fleet_label}-witness"
+  witness_vpc_ip = var.witness_enabled ? cidrhost(var.public_subnet_cidr, var.witness_private_ip_offset) : null
+}
+
+# Catches the one collision this module can see on its own -- a witness
+# offset landing inside THIS pool's own floor-node VPC range. Cross-pool
+# collisions (this pool's witness against a DIFFERENT pool's
+# private_ip_offset range) need a caller-level check across every pool
+# sharing this subnet -- see witness_private_ip_offset's own description.
+check "witness_private_ip_offset_does_not_collide_with_this_pools_floor_nodes" {
+  assert {
+    condition = (
+      !var.witness_enabled ||
+      var.witness_private_ip_offset < var.private_ip_offset ||
+      var.witness_private_ip_offset >= var.private_ip_offset + var.node_count
+    )
+    # error_message's own string interpolation is NOT short-circuited by the
+    # condition above the way the boolean `||` chain is -- it's evaluated
+    # unconditionally even when the assert passes cleanly via
+    # !var.witness_enabled, and witness_private_ip_offset's own default is
+    # `null` (see that variable's declaration) for the overwhelming majority
+    # of pools, which never set a witness at all. A bare
+    # "${var.witness_private_ip_offset}" here made terraform plan/apply fail
+    # outright -- "Cannot include a null value in a string template" -- for
+    # ANY pool without witness_enabled, not just one with a genuine offset
+    # collision. The ternary below IS lazily evaluated (unlike a plain `||`
+    # interpolation chain), so the null-valued branch's interpolation never
+    # actually runs when witness_enabled is false.
+    error_message = var.witness_enabled ? "witness_private_ip_offset (${var.witness_private_ip_offset}) falls inside this pool's own floor-node VPC range (${var.private_ip_offset}..${var.private_ip_offset + var.node_count - 1}) -- pick an offset outside it." : "unreachable -- condition already passed"
+  }
+}
+
+locals {
   # Addresses are selected from vlan_reserved_cidr (this fleet's own
   # small, wholly-owned sub-block), not var.vlan_cidr directly -- see
   # that variable's own
@@ -582,5 +618,70 @@ locals {
       natctl_bin_url     = var.natctl_bin_url
       natctl_cli_bin_url = var.natctl_cli_bin_url
     })
+  }
+
+  # 2-node quorum-witness role -- see witness-node.yaml.tftpl's own
+  # header for exactly what subset of node_cloud_init above this reuses
+  # (natctl-on-node's config.yaml/env/fetch-verify/systemd-unit content
+  # only; no FRR/nftables/exporter/buddy-sync/VLAN at all).
+  witness_cloud_init = var.witness_enabled ? templatefile("${path.module}/../../../ansible/cloud-init/witness-node.yaml.tftpl", {
+    node_name                   = local.witness_id
+    node_id                     = local.witness_id
+    vpc_ip                      = local.witness_vpc_ip
+    vpc_prefix                  = split("/", var.public_subnet_cidr)[1]
+    vpc_sibling_subnet_cidrs    = var.vpc_sibling_subnet_cidrs
+    manifest_url                = var.manifest_url
+    natctl_api_mutation_token   = var.natctl_api_mutation_token
+    natctl_file_urls            = var.natctl_file_urls
+    natctl_requirements_txt_url = var.natctl_requirements_txt_url
+    natctl_service_url          = var.natctl_service_url
+    natctl_config_yaml          = var.natctl_config_yaml
+    linode_token                = var.linode_token
+    object_storage_access_key   = var.object_storage_access_key
+    object_storage_secret_key   = var.object_storage_secret_key
+    agent_distribution          = var.agent_distribution
+    natctl_bin_url              = var.natctl_bin_url
+  }) : ""
+}
+
+# 2-node quorum-witness role (see witness_enabled's own description).
+# Only two interfaces -- public (its own internet path for artifact
+# fetches/Linode API calls) and VPC (the actual path it uses to
+# health-check the real nodes it corroborates about, and to reach
+# Object Storage for the leader-election lease) -- deliberately no VLAN
+# interface at all, since it never serves client traffic. Tagged with
+# its OWN witness tag, never the plain pool tag linode_instance.node
+# above carries -- see fleet.py's WITNESS_TAG_SUFFIX for why this
+# matters (list_instances_by_tag() has no floor/elastic-tag requirement
+# of its own, so sharing the plain pool tag would silently make this
+# instance look like an ordinary floor node to every real node's own
+# discover(), pulling it into buddy pairing/IP-failover/the ECMP
+# roster/autoscale accounting it was never meant to be part of).
+resource "linode_instance" "witness" {
+  count = var.witness_enabled ? 1 : 0
+
+  label           = local.witness_id
+  region          = var.region
+  type            = var.witness_instance_type
+  image           = var.image
+  authorized_keys = var.authorized_keys
+  root_pass       = var.root_pass
+  firewall_id     = var.firewall_id
+  tags            = concat(var.tags, ["lng", "lng-witness", "lng-pool-${var.pool_name}-witness"])
+
+  interface {
+    purpose = "public"
+  }
+
+  interface {
+    purpose   = "vpc"
+    subnet_id = var.public_subnet_id
+    ipv4 {
+      vpc = local.witness_vpc_ip
+    }
+  }
+
+  metadata {
+    user_data = base64gzip(local.witness_cloud_init)
   }
 }

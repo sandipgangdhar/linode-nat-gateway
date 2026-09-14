@@ -148,6 +148,46 @@ variable "instance_type" {
   default     = "g6-dedicated-4"
 }
 
+# 2-node quorum-witness role (docs/ARCHITECTURE.md's "witness node"
+# section): a network partition between exactly 2 real nodes is
+# indistinguishable, from either side, from one of them actually being
+# dead -- there's no third party to break the tie, no matter how good
+# the fencing logic is (see docs/RUNBOOK.md's "Node-count risk profile").
+# A witness closes this the only way it can actually be closed: adding a
+# genuine third independent voter, just one that never forwards traffic
+# and costs a fraction of a real floor node (a g6-nanode-1 is enough --
+# it only ever runs natctl's own control-plane logic). Set this true for
+# any pool whose floor_nodes (plus any elastic capacity it can't count
+# on being durably present) stays below 3 -- see controller/natctl/
+# leader_election.py's LeaderElection.witness_only and fleet.py's
+# discover_witnesses() for the mechanism this provisions into. Off by
+# default: every pool with 3+ floor nodes already has a real 3rd (or
+# more) voter and gains nothing from one.
+variable "witness_enabled" {
+  description = "Provision a permanent, natctl-only quorum-witness instance for this pool (see this file's own comment above). Only meaningful with natctl_on_node_enabled -- a witness has nothing to vote in otherwise."
+  type        = bool
+  default     = false
+}
+
+variable "witness_instance_type" {
+  description = "Instance type for the witness above, if enabled. A witness never forwards traffic or runs FRR/nftables -- the cheapest generally-available type is enough."
+  type        = string
+  default     = "g6-nanode-1"
+}
+
+variable "witness_private_ip_offset" {
+  description = "Host offset (within public_subnet's CIDR) for the witness's own VPC IP, if enabled -- same \"give it a non-overlapping offset\" contract as private_ip_offset above, just for one address instead of a range. No default: an operator must pick a value that doesn't collide with this or any other pool's private_ip_offset range in the same subnet, the same explicit-choice convention private_ip_offset itself already requires (see terraform/environments/example/main.tf's pool_vpc_offsets_no_overlap check for the cross-pool half of this -- extend it to cover this value too when wiring up a witness in that environment). Enforced via the witness_private_ip_offset_is_set_when_witness_enabled check below, not a variable validation block here -- Terraform restricts a variable's own validation condition to referencing only that same variable, never another one (var.witness_enabled here), a real constraint this repo's own local Terraform version didn't enforce but CI's did, caught live via the publish pipeline's own safety gate failing on the assembled customer-repo tree."
+  type        = number
+  default     = null
+}
+
+check "witness_private_ip_offset_is_set_when_witness_enabled" {
+  assert {
+    condition     = !var.witness_enabled || var.witness_private_ip_offset != null
+    error_message = "witness_private_ip_offset must be set whenever witness_enabled is true."
+  }
+}
+
 variable "node_instance_type_overrides" {
   description = "Optional per-node instance_type override, keyed by node_id (e.g. \"lng-shared-2\" => \"g6-dedicated-8\"). Any node_id not present here uses instance_type above. This is how Terraform represents a floor whose nodes have been individually vertically-scaled via natctl_cli's `resize` command without drift on the next `terraform apply` -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.4 (Vertical Scaling). Left empty (default) for a uniform floor, the original behavior."
   type        = map(string)

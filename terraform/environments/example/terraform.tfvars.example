@@ -131,11 +131,15 @@ admin_cidrs = ["REPLACE_ME/32"] # e.g. ["203.0.113.4/32"]
 #     partition between exactly two nodes is indistinguishable, from
 #     either side, from the other one actually being dead -- there's no
 #     third node to ask, so the quorum-confirmation gate can't add
-#     anything here. Do not use 2 for a pool where continuous
-#     availability matters.
+#     anything here. Set witness_enabled = true for this pool (see the
+#     acme example below) to add a real, cheap (g6-nanode-1) third
+#     voter that closes this gap without a full 3rd NAT-capable node --
+#     it never forwards traffic, only votes.
 #   - 3+ nodes: the configuration this mode is actually designed for --
 #     see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.3/§2.4 and
 #     docs/RUNBOOK.md's "Node-count risk profile" for the full detail.
+#     Already has a real 3rd (or more) voter -- witness_enabled gains it
+#     nothing.
 # This has no bearing on floor_nodes when natctl_on_node_enabled stays
 # false (the default) -- that mode has no leader election at all.
 pools = {
@@ -163,6 +167,14 @@ pools = {
     private_ip_offset       = 50 # VPC side -- must not overlap common's 20 (floor_nodes=1) above
     vlan_ip_offset          = 20 # VLAN side -- POOL-LOCAL to vlan_cidr_reserved above (a /27), same small number as common's, safe since it's a separate address space
     elastic_ip_offset_start = 25 # must fit within this pool's own /27 alongside vlan_ip_offset+floor_nodes (20-21) and up to max_nodes-floor_nodes=4 elastic slots (25-28) -- a /27 only has 32 addresses total
+    # 2-node quorum-witness role (only meaningful once natctl_on_node_enabled
+    # = true below -- see this file's own comment on floor_nodes above).
+    # Only relevant here because acme's floor_nodes is 2; common's is 1
+    # and would need one too if natctl_on_node_enabled were ever turned
+    # on for it.
+    witness_enabled           = true
+    witness_instance_type     = "g6-nanode-1" # never forwards traffic -- the cheapest generally-available type is enough
+    witness_private_ip_offset = 52            # VPC side -- must not collide with THIS pool's own private_ip_offset range (50-51, floor_nodes=2) or any other pool's
   }
 }
 
