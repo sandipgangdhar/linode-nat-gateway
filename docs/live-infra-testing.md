@@ -2738,8 +2738,62 @@ recovering under the deployed fix.
 **Round 6 verdict**: 35/38 clean, 5 bugs found and fixed and
 live-verified, 1 bug (Finding 13) found, root-caused, and fixed but not
 yet live-verified, 2 honest trade-offs documented, 1 test correctly
-blocked by the harness. Next: live-verify Finding 13, then a second
-full comprehensive round.
+blocked by the harness. Finding 13 was live-verified the same session,
+shortly after this round closed — released as v0.1.74.
+
+---
+
+## Round 7: witness-node feature + comprehensive round 2 (same day, 2026-09-14)
+
+Built and shipped the 2-node UX hardening answer flagged as pending
+below: the witness-node role (`witness_enabled` on a pool) — a small,
+permanent, Terraform-managed instance that votes in leader-election
+quorum corroboration and independently health-checks a pool's real
+nodes, without ever forwarding traffic or joining buddy pairing/
+autoscale. Full mechanism writeup: dev repo's `docs/ARCHITECTURE.md`
+§4.5.1. Released as v0.1.75.
+
+**3 new live tests against the real `dedicated-duo` pool (2 floor
+nodes + 1 witness), all correct behavior:**
+
+- **T39 (false-positive lease lapse)**: a floor node's `natctl` alone
+  was stopped (its actual NAT service stayed healthy). The witness's
+  own independent health check correctly vouched for it, and the
+  surviving node correctly withheld fencing — a real, demonstrated
+  reduction in false-positive fencing a bare 2-node pool (no peer to
+  ask at all) would not have gotten.
+- **T40 (genuine failure)**: the same node's `natctl` *and*
+  `nat-exporter` were stopped together. The witness correctly flagged
+  it unhealthy, and the survivor fenced it for real via the normal
+  STONITH path and took over — with the fleet's own autoscaler
+  correctly compensating for the lost floor capacity.
+- **T41 (witness down + genuine leader death, compounded)**: a real,
+  useful finding, not just a clean pass. With the witness's own
+  `natctl` also stopped, the surviving node could not reach majority
+  (`"only 0/1 other pool member(s) corroborated ... need 2 of 3 total
+  votes"`) and stayed stuck, leaderless — *worse in this narrow window*
+  than a bare 2-node pool with no witness would have been, since a
+  witness raises the total-voter denominator without necessarily
+  adding a reachable vote when it's down itself. This is consistent
+  with the project's fail-closed philosophy (stuck-but-safe, not a
+  split-brain risk) and is documented as an honest trade-off rather
+  than fixed in code: **a witness is now itself a dependency for
+  automatic recovery**, worth its own monitoring alongside the real
+  nodes. No new operator procedure needed — the existing "survivors
+  can't reach majority" troubleshooting entry already covers it.
+
+**Comprehensive pass**: security/firewall and observability both
+re-checked against the witness addition — no regressions. The witness
+shares the pool's existing firewall (no new ports needed) and never
+contributes to the `NATLeaderElectionSplitBrainOrNoLeader` alert's sum
+in any way that changes its meaning (its own `is_leader` reads `0`
+permanently, by design).
+
+**Round 7 verdict**: 2-node UX hardening closed out for real (see
+"Pending / future work" below, now marked resolved). 3/3 new witness
+tests behaved correctly, one surfacing a genuine, now-documented
+trade-off rather than a bug. Pool restored to its clean 2-floor +
+1-witness baseline after every test.
 
 ---
 
@@ -2806,19 +2860,25 @@ exists for `natctl_on_node_enabled=false`.
 (distinct in scope/cost from the completed 3-round program — this is a
 new, longer-running initiative, not a continuation of it).
 
-### 2. 2-node UX hardening exploration
+### 2. 2-node UX hardening exploration — RESOLVED (2026-09-14): the witness-node role
 
 Carried over from the original ask ("for 2 node see if we can do
-anything to improve end user experience"). Current state: an explicit
-doc warning (ARCHITECTURE.md/RUNBOOK.md/customer guide) plus a
-Terraform `check` block are the only mitigations; the underlying
-behavior (no peer to corroborate before fencing at 1-2 nodes) is
-disclosed, not solved. A lightweight witness/third-voter mechanism was
-discussed as the natural next idea but not built — this session's
-earlier evaluation of heavier options (Corosync/Pacemaker/QDevice) had
-already concluded they were disproportionate for this product.
-**Status**: not started, no code investigation done yet on a
-lighter-weight witness approach.
+anything to improve end user experience"). A lightweight witness/
+third-voter mechanism was discussed as the natural next idea (heavier
+options like Corosync/Pacemaker/QDevice were evaluated and rejected as
+disproportionate for this product) and this session, it was actually
+built: `witness_enabled`/`witness_instance_type`/
+`witness_private_ip_offset` on a pool provisions a small (`g6-nanode-1`
+is enough), permanent, Terraform-managed instance that votes in
+leader-election quorum corroboration and independently health-checks
+the pool's real nodes — without ever forwarding traffic, holding a
+public IP, or joining buddy pairing/IP-failover/the ECMP roster/
+autoscale. Full mechanism writeup: dev repo's `docs/ARCHITECTURE.md`
+§4.5.1. Live-verified on a real `dedicated-duo` pool the same day —
+see "Round 7" below for the full test results. **Status: closed** — an
+explicit doc warning is no longer the only mitigation; a pool that
+wants continuous availability at 2 real nodes now has a real, cheap way
+to get it.
 
 ---
 
