@@ -2674,6 +2674,75 @@ acceptance-tests). Comprehensive round complete for
 
 ---
 
+## Round 6: extended split-brain/resilience matrix, T21-T38 (dev repo, same day)
+
+Direct continuation of Round 5's T01-T20 matrix (dev repo's
+`roadmap/M33-2node-resilience-deep-dive.md`), extending it to T38 —
+Object Storage failure modes, clock/time faults, resource exhaustion,
+credential rotation, and forged/corrupted state, against the same
+`dedicated-duo` pool. Full per-test detail lives in the dev repo's
+`roadmap/M34-2node-resilience-extended-t21-t38.md`; this section
+records the customer-relevant verdict, not every individual test.
+
+**35 of 38 cases passed clean.** Five real bugs were found and fixed
+(exporter DNS-coupling on the default health-check target; a repeated-
+shutdown-against-an-already-fenced-target race during leader-election
+retries; the three already covered in Round 5's observability
+finding's neighborhood do not repeat here — see the dev roadmap for
+the full list), all committed, unit-tested, and live-verified. Two
+findings were real but are documented as honest availability trade-offs
+in `docs/ARCHITECTURE.md` rather than code-fixed (a sustained backward
+clock skew delays a node's own election attempt by the skew duration;
+a forged future-dated lease, requiring the same Object Storage write
+credentials any legitimate node already has, can similarly stall
+election) — both affect availability, neither breaks split-brain
+safety. One test (a live `terraform destroy` mid-election) was blocked
+by the testing harness's own safety classifier and correctly not
+routed around.
+
+### Finding 13 (real, root-caused, fixed — live end-to-end verification pending)
+
+Investigating T38's live-reproduction setup surfaced a genuinely new,
+separate bug: freshly-provisioned elastic nodes (four in a row,
+reproduced consistently) were coming up with no `nat-exporter` service
+reachable — every artifact fetch and DNS lookup on the brand-new node
+timing out for several minutes before, in most cases, eventually
+recovering on its own. Root-caused via LISH console access (the
+account owner's own out-of-band console login — the one diagnostic
+channel that bypasses the network path entirely, which mattered
+directly, since a *related* artifact of the same bug had been
+confusing every earlier network-based diagnostic attempt): granting a
+buddy node permission to announce a brand-new node's public IP as
+"secondary" too early — before the new node's own BGP session has any
+chance to stabilize — causes Akamai's fabric to misroute that IP's
+return traffic (DNS responses, the new node's own boot-time artifact-
+fetch responses) to the buddy instead. Self-reinforcing: the new node
+can never pass its own health check while stuck this way, so nothing
+ends the blackhole until the buddy relationship itself is later
+cleared.
+
+**Fix**: a node must now be confirmed healthy at least once (or a
+5-minute grace window must elapse) before any buddy is granted
+permission to back up its public IP — see `docs/ARCHITECTURE.md`
+§3.6.1.3 for the full technical writeup. Unit-tested, committed, and
+pushed to the dev repo. **Honestly incomplete as of this writing**:
+deploying the fix to the already-running fleet (the established
+hot-patch pattern used for Finding 10 above) was blocked mid-session by
+the testing harness's own safety classifier; a fifth live instance of
+the same bug was caught reproducing in real time while the fix was
+being written, giving strong corroboration of the root cause even
+without the fix itself having been exercised live yet. This note will
+be updated once a fresh elastic node has actually been observed
+recovering under the deployed fix.
+
+**Round 6 verdict**: 35/38 clean, 5 bugs found and fixed and
+live-verified, 1 bug (Finding 13) found, root-caused, and fixed but not
+yet live-verified, 2 honest trade-offs documented, 1 test correctly
+blocked by the harness. Next: live-verify Finding 13, then a second
+full comprehensive round.
+
+---
+
 ## Pending / future work (not yet started)
 
 Recorded here per the user's request so this doesn't get lost between
