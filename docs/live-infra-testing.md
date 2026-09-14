@@ -2439,3 +2439,125 @@ program's numbering — the 3rd of the 3 required rounds).
 
 ---
 
+### Round 4, Deployment A — single-dedicated-host mode, multi-fleet (concise re-run)
+
+Same shapes as Round 2/3's Deployment A. Full mechanism explanations
+are in Round 2's section above — this entry only records this round's
+own pass/fail outcome.
+
+- **Stage 1/2** (basic operation, buddy triangle, Prometheus targets): clean.
+- **Stage 3** (single floor kill, packet-loss check from a real peer): 0% loss, clean.
+- **Stage 4** (second floor kill, multi-failure): clean.
+- **Stage 5** (autoscale out then in): elastic compensation provisioned, both floor nodes rebooted and rejoined healthy, scale-in fully removed elastic capacity. Clean.
+- **Stage 6** (elastic zombie-reap): forced node, deleted directly, replacement provisioned correctly, scaling reset cleanly. Clean.
+- **Stage 7** (multi-fleet isolation): `lng-acme-1` stayed healthy throughout with zero errors. Clean.
+
+No new findings, no product bugs. Torn down cleanly.
+
+---
+
+### Round 4, Deployment B — distributed on-node mode, leader election + consensus hardening (final round)
+
+Same shapes as Rounds 2/3's Deployment B (`common`: 5 floor/max 5,
+`acme`: 2 floor/max 2). Full mechanism explanations are in Round 2's
+section above.
+
+- **Clean election, both pools**: `lng-common-2` (term=32) and
+  `lng-acme-1` (term=8) each elected cleanly from cold boot, both
+  after the expected boot-time contention (multiple candidates racing
+  before the first stable leader settles — normal, not a bug). IP-sharing
+  configured correctly for both pools' buddy pairings immediately after
+  election.
+- **5-node leader kill**: killed `lng-common-2`. `lng-common-1` fenced
+  it, then during its own settle-and-reverify delay detected that a
+  slower racer (`lng-common-5`) had already won the same election
+  window and correctly backed off rather than acting as a second
+  leader — the split-brain-prevention fix (bug #10, `v0.1.67`) firing
+  live again, exactly as designed. `lng-common-5`'s own fence-complete
+  → leader-confirmed delta measured at **10.178s**, matching
+  `election_settle_seconds=10.0` almost exactly.
+- **2-node fallback**: killed `lng-acme-1`. `lng-acme-2`'s log showed
+  the exact documented message verbatim: *"leader election: no other
+  pool member available to corroborate before fencing lng-acme-1 --
+  proceeding on this process's own view alone (2-node/1-node
+  deployments have no peer to ask; see docs/RUNBOOK.md's node-count
+  risk-profile section)"* — then fenced safely and became leader.
+  Fence-complete → leader-confirmed delta: **10.147s**.
+- **VPC/VLAN peer fallback**: source-scoped `iptables` DROP rules on
+  `lng-common-1` blocked `lng-common-3` and `lng-common-4`'s VPC-path
+  (`eth1`) access to its port 8099, then the current leader
+  (`lng-common-5`) was killed. `lng-common-3` — one of the two blocked
+  candidates — won the election and completed fencing successfully
+  despite the block; the DROP rule counters showed real traffic (16
+  and 8 packets) confirming the VPC path was genuinely cut, proving a
+  real fallback (VLAN or an alternate quorum peer) let fencing
+  proceed safely. Fence-complete → leader-confirmed delta: **10.138s**.
+  Rules cleaned up afterward.
+- **Transient Linode API "busy" fencing abort (positive safety
+  finding, not a bug)**: three separate times this round (once during
+  the VPC/VLAN test, twice during the double-failure test below),
+  natctl's own shutdown call to Linode's API got a `400: Linode busy`
+  response mid-fence. Every single time, natctl correctly logged
+  `"aborting election, NOT claiming leadership"` and backed off rather
+  than proceeding without a confirmed fence — exactly the fail-safe
+  behavior the design intends. Each time, the next retry succeeded
+  cleanly once the API stopped returning busy.
+- **Double-failure fail-safe boundary — genuinely exercised the
+  fail-closed quorum path for the first time this session.** Killed
+  the leader (`lng-common-3`) and one other member (`lng-common-4`)
+  simultaneously. Unlike Rounds 2/3 (where membership self-healing
+  always resolved this before quorum math mattered), this time the
+  sole immediately-healthy survivor (`lng-common-1`) genuinely hit the
+  quorum gate: *"only 0/2 other pool member(s) corroborated
+  lng-common-3 as unreachable (need 2 of 3 total votes for majority)
+  -- NOT fencing this pass, will retry once more peers are reachable"*
+  — and correctly refused to fence rather than act alone. The pool's
+  autoscaler had already started compensating for the lost floor
+  capacity with two new elastic nodes (`common-elastic-100`,
+  `common-elastic-101`); once `common-elastic-101` finished booting and
+  became reachable, it independently attempted its own election,
+  satisfied quorum, and completed fencing + leadership (term=35,
+  fence-complete → leader-confirmed delta **10.145s**). Total time
+  from the double-kill to a confirmed new leader was a few minutes
+  (bounded by elastic-node boot time plus the transient-busy retries
+  above), and no split-brain, no permanent deadlock, and no dropped
+  data-plane traffic occurred at any point. This is the strongest
+  evidence yet that the fail-closed boundary and the autoscaler's
+  zombie-compensation mechanism compose safely together.
+- **Autoscale zombie-compensation bonus finding**: both pools
+  auto-provisioned elastic capacity to compensate for floor-node
+  losses during this round's kills (`common-elastic-100/101`,
+  `acme-elastic-20`), consistent with the documented "floor nodes are
+  never auto-touched, lost floor capacity is compensated for with
+  elastic capacity" design — confirmed working correctly under actual
+  double-failure conditions, not just single-node loss.
+
+**Round 4 Deployment B verdict: no product bugs.** Every consensus
+hardening test passed, including — for the first time this session —
+a genuine, non-self-healing exercise of the fail-closed quorum
+boundary, which resolved safely. `check-orphans` and `linode-cli`
+inventory confirmed clean teardown with only the pre-existing
+`nav-observability` instance remaining afterward.
+
+## Round 4 verdict: CLEAN — third and final consecutive clean round
+
+Deployment A and Deployment B both completed with zero product bugs.
+This closes out the user's explicit requirement of **3 consecutive
+clean live-infra testing rounds**, covering every stated dimension:
+single fleet/single node through multi-fleet/multi-node, both
+`natctl_on_node_enabled` modes, floor and elastic node failures
+(single and simultaneous), autoscaling, IP failover, buddy sync,
+packet-loss-during-failure verification, and dedicated on-node
+consensus hardening test cases (settle-and-reverify timing, 2-node/
+1-node fallback, VPC/VLAN peer fallback, and the double-failure
+fail-safe boundary — the last of which was genuinely exercised, not
+just theoretically covered, in this final round).
+
+**3-round program status: COMPLETE.** No further live-infra rounds
+are required by the standing instruction. Remaining open item from the
+original ask: a further UX exploration for 2-node clusters beyond the
+existing doc warnings and the Terraform `check` block (tracked
+separately, not a live-infra testing item).
+
+---
+
