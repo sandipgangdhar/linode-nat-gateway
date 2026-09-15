@@ -69,8 +69,7 @@
 # public URL. It stays a small write_files content: block, same as before.
 #
 # -----------------------------------------------------
-# Integrity verification (found via an independent adversarial security
-# review, 2026-09-14): every fetch above goes through /usr/local/bin/
+# Integrity verification: every fetch above goes through /usr/local/bin/
 # lng-fetch-verified.sh (a write_files entry below) instead of a bare
 # curl -- it fetches manifest_url (terraform/modules/artifacts' SHA-256
 # manifest, covering every object this module uploads) once per boot,

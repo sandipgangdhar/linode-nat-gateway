@@ -13,9 +13,8 @@
 # - hashicorp/random ~> 3.6 -- already a transitive dependency via
 #   module.vpc's random_id.fw_suffix; declared here too because this
 #   root module now generates its own random_password.
-#   natctl_api_mutation_token directly (found via an independent
-#   adversarial security review, 2026-09-14 -- see environments/example/
-#   main.tf's matching resource comment).
+#   natctl_api_mutation_token directly -- see environments/example/
+#   main.tf's matching resource comment.
 #
 # -----------------------------------------------------
 # Author:

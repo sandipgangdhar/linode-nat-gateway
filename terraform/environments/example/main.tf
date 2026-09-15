@@ -334,10 +334,9 @@ locals {
     if p.floor_nodes == 0
   ] : []
 
-  # Live-confirmed 2026-09-13 (customer-repo live-test program): a pool's
-  # floor_nodes count under natctl_on_node_enabled is a real safety
-  # decision, not just a capacity one -- see docs/RUNBOOK.md's "Node-count
-  # risk profile" and docs/ARCHITECTURE.md §4.5. 1 node has no real
+  # A pool's floor_nodes count under natctl_on_node_enabled is a real
+  # safety decision, not just a capacity one -- see
+  # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II, 2.3/2.4. 1 node has no real
   # failover at all; 2 nodes is the genuinely risky shape, since a real
   # network partition between exactly two nodes is indistinguishable,
   # from either side, from the other one actually being dead -- there's
@@ -501,7 +500,7 @@ check "pool_has_floor_node_when_natctl_on_node_enabled" {
 check "pool_floor_nodes_below_3_under_natctl_on_node_enabled" {
   assert {
     condition     = length(local.pools_with_floor_nodes_below_3_under_natctl_on_node) == 0
-    error_message = "These pools run natctl_on_node_enabled with fewer than 3 floor nodes: ${join(", ", local.pools_with_floor_nodes_below_3_under_natctl_on_node)}. 1 node has no real failover at all (it's always its own leader). 2 nodes is the genuinely risky shape: a real network partition between exactly two nodes is indistinguishable, from either side, from the other one actually being dead, so the quorum-confirmation gate has no third node to ask and can't help here -- the pool falls back to a single candidate's own unaided judgment. This is not a bug this check can fix by itself, and this is a warning, not a blocked apply -- if you understand and accept this trade-off (e.g. a non-production environment), proceed deliberately. See docs/RUNBOOK.md's 'Node-count risk profile' and docs/ARCHITECTURE.md section 4.5 for the full detail before running this in production."
+    error_message = "These pools run natctl_on_node_enabled with fewer than 3 floor nodes: ${join(", ", local.pools_with_floor_nodes_below_3_under_natctl_on_node)}. 1 node has no real failover at all (it's always its own leader). 2 nodes is the genuinely risky shape: a real network partition between exactly two nodes is indistinguishable, from either side, from the other one actually being dead, so the quorum-confirmation gate has no third node to ask and can't help here -- the pool falls back to a single candidate's own unaided judgment. This is not a bug this check can fix by itself, and this is a warning, not a blocked apply -- if you understand and accept this trade-off (e.g. a non-production environment), proceed deliberately. Set witness_enabled = true for this pool (see terraform.tfvars.example) to close this for real with a cheap third voter, or see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II section 2.3 for the full detail before running this in production."
   }
 }
 
@@ -582,9 +581,9 @@ locals {
   exporter_py_url   = module.artifacts.exporter_py_url
   buddy_sync_py_url = module.artifacts.buddy_sync_py_url
   natctl_file_urls  = module.artifacts.natctl_file_urls
-  # SHA-256 integrity manifest -- see module.artifacts' own main.tf
-  # local.manifest comment for the incident this closes (same independent
-  # adversarial security review, 2026-09-14).
+  # SHA-256 integrity manifest -- without it, a compromised or tampered
+  # artifact fetched at boot would be trusted and executed with no way
+  # to detect the substitution.
   manifest_url              = module.artifacts.manifest_url
   natctl_api_mutation_token = random_password.natctl_api_mutation_token.result
 
@@ -735,11 +734,11 @@ module "nat_fleet" {
   natctl_service_url          = module.artifacts.natctl_service_url
   natctl_requirements_txt_url = module.artifacts.natctl_requirements_txt_url
 
-  # SHA-256 integrity manifest covering the artifacts above, and the
-  # bearer token api.py's mutating routes require -- both found via an
-  # independent adversarial security review, 2026-09-14. See
-  # module.artifacts' main.tf local.manifest comment and
-  # random_password.natctl_api_mutation_token's comment above.
+  # SHA-256 integrity manifest covering the artifacts above (without it,
+  # a compromised or tampered artifact would be trusted with no way to
+  # detect the substitution), and the bearer token api.py's mutating
+  # routes require (without it, any request reaching this port could
+  # mutate the fleet).
   manifest_url              = module.artifacts.manifest_url
   natctl_api_mutation_token = local.natctl_api_mutation_token
 
@@ -874,9 +873,9 @@ locals {
       exporter_py_url   = local.exporter_py_url
       buddy_sync_py_url = local.buddy_sync_py_url
       natctl_file_urls  = local.natctl_file_urls
-      # SHA-256 integrity manifest -- see module.artifacts' own main.tf
-      # local.manifest comment for the incident this closes (an
-      # independent adversarial security review, 2026-09-14).
+      # SHA-256 integrity manifest -- without it, a compromised or
+      # tampered artifact fetched at boot would be trusted and executed
+      # with no way to detect the substitution.
       manifest_url = local.manifest_url
 
       agent_distribution = local.agent_distribution
@@ -1146,11 +1145,11 @@ module "observability" {
   natctl_service_url          = module.artifacts.natctl_service_url
   natctl_requirements_txt_url = module.artifacts.natctl_requirements_txt_url
 
-  # SHA-256 integrity manifest covering the artifacts above, and the
-  # bearer token api.py's mutating routes require -- both found via an
-  # independent adversarial security review, 2026-09-14. See
-  # module.artifacts' main.tf local.manifest comment and
-  # random_password.natctl_api_mutation_token's comment above.
+  # SHA-256 integrity manifest covering the artifacts above (without it,
+  # a compromised or tampered artifact would be trusted with no way to
+  # detect the substitution), and the bearer token api.py's mutating
+  # routes require (without it, any request reaching this port could
+  # mutate the fleet).
   manifest_url              = module.artifacts.manifest_url
   natctl_api_mutation_token = local.natctl_api_mutation_token
 

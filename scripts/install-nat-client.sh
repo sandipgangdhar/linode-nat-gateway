@@ -138,7 +138,7 @@
 #      the default route now points at the VLAN, not VPC. DO NOT point
 #      the default route itself at the fleet's VPC addresses to "fix"
 #      this -- NAT nodes' VPC interface is deliberately scoped to
-#      buddy-pair conntrackd sync only (see docs/ARCHITECTURE.md §3.0);
+#      buddy-pair conntrackd sync only (see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part I, 1.2);
 #      it never masquerades client traffic out to the internet, so
 #      internet egress would break outright.
 #
@@ -150,7 +150,7 @@
 #      NAT-node side), self-healing on every roster update. A subnet the
 #      customer adds to the VPC later reaches every connected client
 #      automatically, with no re-run of this script needed on any of
-#      them -- see docs/ARCHITECTURE.md §8.7 and
+#      them -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part III, 3.3 and
 #      client-agent/lng-client-agent.env.example's own LNG_VPC_IFACE
 #      comment for the full mechanism.
 #      Example: --vpc-iface eth0
@@ -252,7 +252,7 @@ Optional:
                                    own default route would otherwise
                                    remove, self-healing from natctl's
                                    roster (default: unset, no effect --
-                                   see docs/ARCHITECTURE.md §8.7)
+                                   see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part III, 3.3)
   --force                          Install/start client-agent even if
                                    this instance already has a working
                                    default route of its own (default:
@@ -269,7 +269,7 @@ Examples:
 Every flag also has an equivalent LNG_* environment variable (for use as
 Linode user-data, where scripts run with no arguments) -- see this file's
 own header comment for the full mapping and the "why" behind each one, or
-docs/RUNBOOK.md's "Onboard a client instance" / docs/ARCHITECTURE.md §8.7.
+docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part IX, 9.4 / Part III, 3.3.
 EOF
 }
 
@@ -362,7 +362,7 @@ echo "Set net.ipv4.fib_multipath_hash_policy=1 (5-tuple ECMP hashing), persisted
 #     "why". The actual route management (restoring reachability to
 #     other VPC subnets, self-healing as the VPC's subnet list changes)
 #     is client-agent's own job now (LNG_VPC_IFACE in its env file,
-#     step 3 below) -- see docs/ARCHITECTURE.md §8.7 -- this is just an
+#     step 3 below) -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part III, 3.3 -- this is just an
 #     early, actionable failure instead of a silent no-op if the
 #     interface named doesn't actually have an address on it.
 if [[ -n "${LNG_VPC_IFACE}" ]] && ! ip -4 -o addr show dev "${LNG_VPC_IFACE}" 2>/dev/null | grep -q inet; then
@@ -511,7 +511,7 @@ echo ""
 echo "===== Summary of changes ====="
 echo "ECMP hash policy: net.ipv4.fib_multipath_hash_policy=1 (file: /etc/sysctl.d/99-lng-ecmp.conf)"
 if [[ -n "${LNG_VPC_IFACE}" ]]; then
-  echo "VPC sibling routes: client-agent will self-manage these via ${LNG_VPC_IFACE}, from natctl's own roster (see 'ip route' after it's up, and docs/ARCHITECTURE.md §8.7)"
+  echo "VPC sibling routes: client-agent will self-manage these via ${LNG_VPC_IFACE}, from natctl's own roster (see 'ip route' after it's up, and docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part III, 3.3)"
 fi
 echo "Default route:"
 echo "  before: ${LNG_ORIGINAL_DEFAULT_ROUTE:-<none>}"

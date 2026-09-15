@@ -61,9 +61,9 @@ api:
   listen_host: 0.0.0.0
   listen_port: 8099
   # Required by all 4 mutating routes (drain, pool-scaling/client-config/
-  # vpc-sibling-subnets overrides) -- found via an independent
-  # adversarial security review, 2026-09-14, see docs/ARCHITECTURE.md
-  # §4.5. Leave unset here (the recommended default): set
+  # vpc-sibling-subnets overrides) -- without it, any request that reaches
+  # this port can mutate the fleet. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+  # Part II, 2.4. Leave unset here (the recommended default): set
   # NATCTL_API_MUTATION_TOKEN in /etc/natctl/env instead, same treatment
   # linode.token below gets -- this file is often distributed more
   # widely than a single credential should be.

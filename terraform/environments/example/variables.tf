@@ -254,8 +254,8 @@ variable "pools" {
     egress_ips_per_node = optional(number, 1)
     conntrack_max       = optional(number, 1048576)
     tags                = optional(list(string), [])
-    # 2-node quorum-witness role (docs/ARCHITECTURE.md's "witness node"
-    # section) -- mirrors terraform/modules/nat-fleet's own
+    # 2-node quorum-witness role (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+    # Part II, 2.3) -- mirrors terraform/modules/nat-fleet's own
     # witness_enabled/witness_instance_type/witness_private_ip_offset
     # variables. Set witness_enabled for any pool whose floor_nodes stays
     # below 3; only meaningful with natctl_on_node_enabled. No default

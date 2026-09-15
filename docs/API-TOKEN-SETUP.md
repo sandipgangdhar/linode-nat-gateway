@@ -7,7 +7,8 @@ maps to (grounded in the actual resources this codebase creates and
 manages, not guessed), and how to create the token via both the Cloud
 Manager web console and the linode-cli tool. Read this before your first
 `terraform apply` in a production account; README.md's quickstart and
-docs/RUNBOOK.md assume a token scoped exactly as described here.
+docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html's deployment chapter (Part IX)
+assume a token scoped exactly as described here.
 
 Author: Sandip Gangdhar (https://github.com/sandipgangdhar)
 (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
@@ -27,9 +28,9 @@ A token with `*` (unscoped, full account access) will work, but it is not least-
 |---|---|---|
 | `linodes` | `read_write` | Every Compute Instance LNG creates and manages — NAT nodes (`terraform/modules/nat-fleet`), client instances (`terraform/modules/client-fleet`), the observability host (`terraform/modules/observability`) — plus `natctl`'s own elastic-node provisioning/deletion and the `natctl_cli resize`/`drain` operator commands. |
 | `firewall` | `read_write` | The three Cloud Firewalls this project creates and manages (`terraform/modules/vpc`'s `nat_node`, `control_plane`, and `client` firewalls). |
-| `ips` | `read_write` | Reserved IP creation/release (`linode_networking_ip`, opt-in `reserved_ip_enabled`), extra egress IPs (`linode_instance_ip`), and BGP-based IP Sharing calls (`natctl`'s buddy IP failover, `docs/ARCHITECTURE.md` §3.6). |
+| `ips` | `read_write` | Reserved IP creation/release (`linode_networking_ip`, opt-in `reserved_ip_enabled`), extra egress IPs (`linode_instance_ip`), and BGP-based IP Sharing calls (`natctl`'s buddy IP failover, `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html` Part IV, 4.4). |
 | `object_storage` | `read_write` | Uploading exporter/buddy-sync/natctl source and per-node config to Object Storage at boot-fetch time (`terraform/modules/artifacts`, `controller/natctl/object_storage.py`) — see that module's own header comment for why files are fetched at boot instead of embedded in cloud-init. |
-| `vpc` | `read_only` | LNG **reuses an existing VPC and its subnets** — see `docs/RUNBOOK.md`'s "Bring your own VPC" section — it never creates, modifies, or deletes a VPC or subnet, only reads one via a Terraform `data` source. `read_write` is not needed and should not be granted. |
+| `vpc` | `read_only` | LNG **reuses an existing VPC and its subnets** — see `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html` Part IX, 9.1 — it never creates, modifies, or deletes a VPC or subnet, only reads one via a Terraform `data` source. `read_write` is not needed and should not be granted. |
 | `events` | `read_only` | **Required for `terraform destroy`/`apply` to actually complete.** The Linode Terraform provider polls `/account/events` internally to confirm an async operation (instance create/delete, etc.) has finished, independent of whichever specific resource scope (`linodes`, `firewall`, ...) authorized the operation itself. Without this scope, `terraform destroy` issues the delete calls but then fails with `"failed to initialize event poller: ... [401] Your OAuth token is not authorized to use this endpoint"` before confirming completion — the delete may or may not have actually gone through, leaving Terraform state inconsistent with real infrastructure. Easy to miss when scoping a token by hand; include it. |
 
 Every other scope category (`account`, `domains`, `nodebalancers`, `lke`, `databases`, `stackscripts`, `longview`, `images`, and so on) should be **left unset entirely** — LNG never calls any API under those categories. Do not grant `account` access "just in case"; it exposes billing and user-management endpoints this project has no use for.

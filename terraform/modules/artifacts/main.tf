@@ -230,11 +230,10 @@ resource "linode_object_storage_object" "install_nat_client_script" {
 }
 
 # ---------------------------------------------------------------------------
-# Integrity manifest -- mirrors the dev repo's terraform/modules/artifacts/
-# main.tf identically (found via an independent adversarial security
-# review, 2026-09-14): every object above is fetched at boot via a plain,
-# unauthenticated curl with no integrity check beyond HTTPS transport
-# trust, and the same Object Storage write credential used for the
+# Integrity manifest -- needed because every object above is fetched at
+# boot via a plain, unauthenticated curl with no integrity check beyond
+# HTTPS transport trust otherwise, and the same Object Storage write
+# credential used for the
 # leader-election lease record is distributed to every node in
 # natctl_on_node_enabled mode -- a single compromised node could plant a
 # malicious replacement for any binary/unit file here, and every OTHER

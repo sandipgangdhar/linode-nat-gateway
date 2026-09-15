@@ -148,12 +148,11 @@ variable "instance_type" {
   default     = "g6-dedicated-4"
 }
 
-# 2-node quorum-witness role (docs/ARCHITECTURE.md's "witness node"
-# section): a network partition between exactly 2 real nodes is
+# 2-node quorum-witness role (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+# Part II, 2.3): a network partition between exactly 2 real nodes is
 # indistinguishable, from either side, from one of them actually being
 # dead -- there's no third party to break the tie, no matter how good
-# the fencing logic is (see docs/RUNBOOK.md's "Node-count risk profile").
-# A witness closes this the only way it can actually be closed: adding a
+# the fencing logic is. A witness closes this the only way it can actually be closed: adding a
 # genuine third independent voter, just one that never forwards traffic
 # and costs a fraction of a real floor node (a g6-nanode-1 is enough --
 # it only ever runs natctl's own control-plane logic). Set this true for

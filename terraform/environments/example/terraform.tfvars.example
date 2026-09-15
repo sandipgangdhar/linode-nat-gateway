@@ -143,10 +143,9 @@ admin_cidrs = ["REPLACE_ME/32"] # e.g. ["203.0.113.4/32"]
 #     voter that closes this gap without a full 3rd NAT-capable node --
 #     it never forwards traffic, only votes.
 #   - 3+ nodes: the configuration this mode is actually designed for --
-#     see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.3/§2.4 and
-#     docs/RUNBOOK.md's "Node-count risk profile" for the full detail.
-#     Already has a real 3rd (or more) voter -- witness_enabled gains it
-#     nothing.
+#     see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II, 2.3/2.4 for the
+#     full detail. Already has a real 3rd (or more) voter --
+#     witness_enabled gains it nothing.
 # This has no bearing on floor_nodes when natctl_on_node_enabled stays
 # false (the default) -- that mode has no leader election at all.
 pools = {
@@ -162,6 +161,16 @@ pools = {
     vlan_ip_offset          = 20 # VLAN side -- POOL-LOCAL to vlan_cidr_reserved above, safe to reuse 20 in every pool
     elastic_ip_offset_start = 100 # also POOL-LOCAL to vlan_cidr_reserved -- plenty of room in a /24 (256 addresses)
     # reserved_ip_pool      = ["203.0.113.10", "203.0.113.11"] # optional -- addresses you ALREADY OWN, see variables.tf
+    # --------------------------------------------------------------------
+    # 2-node quorum-witness role -- only meaningful once natctl_on_node_enabled
+    # = true below, and only worth setting once THIS pool's own floor_nodes
+    # is 2 (not the current 1 above). If you raise floor_nodes to 2 and turn
+    # on natctl_on_node_enabled, uncomment these three lines -- see
+    # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II, 2.3 for what this does.
+    # witness_enabled           = true
+    # witness_instance_type     = "g6-nanode-1" # never forwards traffic -- the cheapest generally-available type is enough
+    # witness_private_ip_offset = 22            # VPC side -- must not collide with THIS pool's own private_ip_offset range or any other pool's
+    # --------------------------------------------------------------------
   }
   acme = {
     fleet_label             = "lng-acme"
