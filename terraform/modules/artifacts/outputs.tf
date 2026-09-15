@@ -96,9 +96,14 @@ output "install_nat_client_script_url" {
   value       = "${local.base_url}/${linode_object_storage_object.install_nat_client_script.key}"
 }
 
-# Found via an independent adversarial security review, 2026-09-14 -- see
-# main.tf's matching comment above local.manifest for the full incident.
+# A single small JSON object, keyed by every OTHER object's own object
+# key, mapping to that file's SHA-256 (computed locally at apply time,
+# never fetched over the network). Consumers fetch this ONCE at the top
+# of their boot script and verify every subsequent curl'd file against
+# it before ever executing or installing it -- without this check, a
+# compromised or tampered artifact fetched from Object Storage at boot
+# would be trusted and executed with no way to detect the substitution.
 output "manifest_url" {
-  description = "Public URL for the SHA-256 integrity manifest covering every binary/unit-file object this module uploads (except nat_overview_json, which is data, not executed code). See main.tf's local.manifest comment for the incident this closes."
+  description = "Public URL for the SHA-256 integrity manifest covering every binary/unit-file object this module uploads (except nat_overview_json, which is data, not executed code)."
   value       = "${local.base_url}/${linode_object_storage_object.manifest.key}"
 }

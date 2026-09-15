@@ -57,7 +57,7 @@ output "prometheus_url" {
 }
 
 output "natctl_api_mutation_token" {
-  description = "Auto-generated bearer token every mutating natctl_cli command (drain/resize/set-pool-scaling/set-client-config/set-vpc-sibling-subnets) needs when run from OUTSIDE the fleet (a node running the daemon already has it in its own /etc/natctl/env and doesn't need this) -- export it as NATCTL_API_MUTATION_TOKEN before running natctl_cli remotely: `export NATCTL_API_MUTATION_TOKEN=$(terraform output -raw natctl_api_mutation_token)`. Found via an independent adversarial security review, 2026-09-14 -- see api.py's own header comment for the incident this closes."
+  description = "Auto-generated bearer token every mutating natctl_cli command (drain/resize/set-pool-scaling/set-client-config/set-vpc-sibling-subnets) needs when run from OUTSIDE the fleet (a node running the daemon already has it in its own /etc/natctl/env and doesn't need this) -- export it as NATCTL_API_MUTATION_TOKEN before running natctl_cli remotely: `export NATCTL_API_MUTATION_TOKEN=$(terraform output -raw natctl_api_mutation_token)`. Required because the roster API's mutating routes need an application-level auth check of their own -- neither Cloud Firewall (doesn't filter VLAN traffic) nor the default single-dedicated-host control plane (renders no nftables of its own) closes that gap by itself."
   value       = random_password.natctl_api_mutation_token.result
   sensitive   = true
 }

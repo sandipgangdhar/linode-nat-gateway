@@ -421,10 +421,9 @@ write_files:
       WantedBy=multi-user.target
 %{ endif ~}
 
-  # Found via an independent adversarial security review, 2026-09-14:
-  # every artifact fetched below used to be a plain, unauthenticated
-  # `curl` with no integrity check beyond HTTPS transport trust. The
-  # SAME Object Storage write credential used for the leader-election
+  # A plain, unauthenticated `curl` with no integrity check beyond HTTPS
+  # transport trust is not enough here: the SAME Object Storage write
+  # credential used for the leader-election
   # lease record is distributed to every node in natctl_on_node_enabled
   # mode, so a single compromised node could plant a malicious
   # replacement for any of these objects, and every OTHER node in the

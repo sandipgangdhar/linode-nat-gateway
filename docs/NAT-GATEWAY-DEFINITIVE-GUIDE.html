@@ -258,6 +258,13 @@ pre.code .m{color:var(--code-mut)}
   .content{padding:88px 22px 100px}
   .cover{min-height:60vh}
 }
+
+.glossary dl{margin:18px 0;padding:0}
+.glossary dt{font-family:var(--serif-display);font-weight:700;font-size:16.5px;color:var(--ink);margin:18px 0 4px;padding-top:14px;border-top:1px solid var(--line)}
+.glossary dt:first-of-type{border-top:none;padding-top:0}
+.glossary dt code{font-family:var(--mono);font-size:13px;background:var(--surface);padding:1px 5px;border-radius:4px}
+.glossary dd{margin:0 0 0 0;color:var(--ink);font-size:15.5px;line-height:1.6}
+.glossary dd .see{font-family:var(--mono);font-size:11.5px;color:var(--ink-faint);display:block;margin-top:4px;letter-spacing:.02em}
 </style>
 </head>
 <body>
@@ -325,6 +332,7 @@ pre.code .m{color:var(--code-mut)}
         </div>
         <p class="subtitle">Everything required to deploy, operate, and scale a highly available, self-hosted NAT gateway — built entirely on Akamai Cloud's own compute, VPC, VLAN, firewall, and BGP primitives.</p>
         <div class="cover-meta">
+          <span class="pill">Foundations</span>
           <span class="pill">Architecture</span>
           <span class="pill">Control Plane</span>
           <span class="pill">High Availability</span>
@@ -333,6 +341,219 @@ pre.code .m{color:var(--code-mut)}
           <span class="pill">Day-2 Operations</span>
         </div>
       </div>
+
+      <!-- ============ PART 0 ============ -->
+      <div class="part-open" id="part-0">
+        <div class="part-num">Part 0</div>
+        <h2 class="part-title">Foundations</h2>
+        <p class="part-dek">What Network Address Translation is and why a private fleet needs a gateway to do it, the cloud-networking vocabulary the rest of this book is built on — VPC, VLAN, Cloud Firewall, BGP, ECMP, conntrack — and how to read this book depending on what you need from it.</p>
+        <div class="part-rule"></div>
+      </div>
+
+      <section class="chapter" id="c0-1">
+        <h2><span class="chno">0.1</span> What a NAT Gateway Actually Is, and Why You Need One</h2>
+        <p class="lede">A machine with a private-only address cannot talk to the internet on its own — no router anywhere in the world knows how to send a reply back to <code>192.168.100.42</code>, because millions of networks use that exact address internally. Network Address Translation (NAT) is the mechanism that fixes this: a device sitting between the private machine and the internet swaps the private source address for a real, internet-routable one on the way out, remembers the swap, and reverses it when the reply comes back. A NAT gateway is that device, built as a service a whole private network shares.</p>
+
+        <h3>What NAT does, one packet at a time</h3>
+        <p>Say a private instance at <code>192.168.100.42</code> opens an HTTPS connection to a public web server at <code>142.250.72.14</code>. It picks an unused local port — say <code>51234</code> — and sends the first packet toward its default route, which points at the NAT gateway. The gateway holds a real public address, <code>172.236.173.125</code>. Here is what the packet looks like before and after it passes through:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Leaving the private instance</th><th>Leaving the NAT gateway</th></tr></thead>
+          <tbody>
+            <tr><td>Source IP</td><td><code>192.168.100.42</code> (private)</td><td><code>172.236.173.125</code> (the gateway's public IP)</td></tr>
+            <tr><td>Source port</td><td><code>51234</code></td><td><code>51234</code> — or a different free port if another private client is already using this one toward the same destination</td></tr>
+            <tr><td>Destination IP</td><td><code>142.250.72.14</code></td><td><code>142.250.72.14</code> — unchanged</td></tr>
+            <tr><td>Destination port</td><td><code>443</code></td><td><code>443</code> — unchanged</td></tr>
+          </tbody>
+        </table></div>
+        <p>From the web server's point of view, the connection came from <code>172.236.173.125:51234</code> — it never sees the private address at all, and its reply is addressed to the gateway's public IP. The gateway is the only party that knows this reply belongs to <code>192.168.100.42:51234</code>, because it wrote that fact down when the first packet went out. It rewrites the destination back to the private address and forwards the reply inward, and the private instance receives a perfectly ordinary response to the connection it opened. That per-connection memory — the table of "this outbound connection was translated to this public address and port" — is the entire heart of NAT, and Part 0.2 (i) below describes the actual Linux kernel structure that holds it.</p>
+        <p>Three properties follow directly from this design and matter for everything else in the book. First, NAT is <strong>outbound-initiated</strong>: a private instance can open connections to the internet, but nothing on the internet can open a connection to the private instance, because there is no table entry to reverse until the private side sends first. Second, a translation is <strong>per-connection state that lives on one specific gateway</strong> — if that gateway disappears, every open connection whose table entry it held is lost, even if a second gateway is standing right next to it. Third, every public IP has a <strong>finite number of source ports</strong> (a 16-bit field, so at most 65,535, fewer in practice), which caps how many simultaneous connections one public address can carry toward any single destination. Parts IV and V exist largely to address the second and third properties.</p>
+
+        <h3>Why cloud workloads are kept on private addresses in the first place</h3>
+        <p>If every instance could simply be given its own public IP, none of this would be necessary. Deliberately withholding one is a design choice most production environments make, for reasons that reinforce each other:</p>
+        <ul>
+          <li><strong>Security posture.</strong> An instance with no public address is unreachable from the internet by construction — not because a firewall rule blocks inbound traffic, but because there is no route to it at all. A misconfigured firewall, a service accidentally bound to <code>0.0.0.0</code>, or a vulnerable daemon nobody remembered was running are all non-events on a machine the internet cannot address.</li>
+          <li><strong>Blast radius.</strong> A fleet of a hundred instances with a hundred public IPs is a hundred separately exposed surfaces to inventory, patch, and monitor. The same fleet behind a NAT gateway has exactly one class of internet-facing surface — the gateway — and that surface is small, purpose-built, and can be hardened once.</li>
+          <li><strong>A small, known egress footprint.</strong> When every outbound connection from the fleet leaves through a handful of static public addresses, those addresses become something a partner or vendor can allow-list on their own firewall, something a compliance auditor can point at as "all egress from this environment comes from here," and something a security team can watch as a single chokepoint. One IP per instance gives you none of these — a partner will not allow-list a hundred addresses that change every time an instance is replaced.</li>
+          <li><strong>Address scarcity.</strong> Public IPv4 addresses are a finite, billed resource. Private ranges are free and effectively unlimited.</li>
+        </ul>
+
+        <h3>The NAT gateway as a product category</h3>
+        <p>Once a private subnet needs internet egress without public IPs of its own, something has to perform the translation described above for the whole subnet — with enough capacity to handle every instance's connections at once, enough redundancy that a single failure does not cut the entire fleet off, and enough visibility that port exhaustion or a saturated link is noticed before it becomes an outage. That "something" is what every major cloud provider now offers as a managed product, and what this book describes building and operating yourself. The two products the rest of this book uses as reference points are AWS NAT Gateway and GCP Cloud NAT, both described here factually so later comparisons have context.</p>
+        <p><strong>AWS NAT Gateway</strong> is a fully managed, per-availability-zone service: you create one gateway in a public subnet, attach one or more Elastic IPs to it, and point a private subnet's route table at it. AWS documents a 5 Gbps baseline that scales automatically up to 100 Gbps, a ceiling of 55,000 simultaneous connections per attached IP toward any single unique destination (raised by attaching more IPs, up to a quota-adjustable maximum of 8, for 440,000 to one destination), and up to 10 million packets per second. Its internals are opaque and redundant within the zone; cross-zone resilience means deploying one gateway per zone yourself. Monitoring is a set of roughly eight CloudWatch metrics — bytes and packets in and out, dropped packets, port-allocation errors, idle timeouts, and connection counts — and port exhaustion surfaces as silent connection failures unless you are specifically alarming on the <code>ErrorPortAllocation</code> metric. Pricing is a per-gateway-hour charge plus a per-gigabyte charge on every byte processed.</p>
+        <p><strong>GCP Cloud NAT</strong> takes a different architectural approach: it is a distributed, software-defined service with no proxy instances or gateway appliances in the traffic path at all, configured regionally rather than per zone. Ports are handed to each VM through Dynamic Port Allocation — a minimum and maximum per VM, grown in power-of-two increments with a cooldown between changes — against an effective ceiling of roughly 64,512 usable ports per NAT IP. Bandwidth scales with the number of VMs behind it, with no fixed published cap. It integrates with Cloud Monitoring and offers optional NAT logging that records individual connection opens, closes, and drops — port exhaustion, when logging is enabled, appears as a specific log event. Pricing, like AWS, combines a per-gateway-hour charge with a per-gigabyte data-processing charge.</p>
+
+        <h3>What LNG is</h3>
+        <p>LNG — Linode NAT Gateway — is a self-operated NAT gateway for Akamai Cloud, built entirely from primitives you already have in your account: Compute Instances, a VPC, a VLAN, Cloud Firewall, and BGP-based IP Sharing. It is a fleet of ordinary Linux instances (the <strong>NAT nodes</strong>), each independently translating traffic for a private client fleet, coordinated by a small control-plane service (<strong>natctl</strong>) that health-checks them, tells clients which ones to use, pairs them up for failover, and adds or removes capacity as load changes. Every piece of it — the instances, the firewall rules, the routing, the control plane, the dashboards — is code you own, deploy with Terraform, and can read line by line.</p>
+        <p>The value proposition of operating it yourself, rather than consuming a managed equivalent, comes down to three concrete things:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Dimension</th><th>AWS NAT Gateway / GCP Cloud NAT</th><th>LNG</th></tr></thead>
+          <tbody>
+            <tr><td>Visibility</td><td>~8 CloudWatch metrics (AWS); Cloud Monitoring plus optional per-connection NAT logging (GCP). Node health is not exposed as a discrete signal by either.</td><td>A full Prometheus label space — per pool, per node, per public IP, per protocol: connection-table occupancy, port headroom, throughput, packets per second, drop reason, BGP session state, and per-check node health, plus a pre-built Grafana dashboard and alert rules shipped with the project (Part VII). Port exhaustion raises an alert <em>before</em> it happens, at a configurable headroom threshold.</td></tr>
+            <tr><td>Cost structure</td><td>Per-gateway-hour plus per-gigabyte processed — a bill that scales with traffic volume and can surprise at scale.</td><td>The compute cost of the NAT instances themselves (typically two to six dedicated-CPU plans) plus a small control-plane host. No per-gigabyte NAT charge at all; the monthly bill is fixed once the pool is sized for a throughput tier.</td></tr>
+            <tr><td>Control</td><td>Internals are opaque; no custom firewall rules on the gateway itself; no tenant-aware placement.</td><td>The complete nftables ruleset on every node is yours to read and extend; a tenant that needs isolated capacity gets its own dedicated pool with its own scaling bounds; every component is inspectable end to end.</td></tr>
+            <tr><td>Capacity model</td><td>Automatic and opaque — scaling happens, but you cannot see the decision or test it ahead of time.</td><td>Every node is active all the time (no idle standby), a single tenant can burst across the whole pool, and every scale-out or scale-in decision is explainable from the metrics that triggered it (Part V, Part VII).</td></tr>
+            <tr><td>Blast radius of one failure</td><td>Not published.</td><td>Roughly <code>1/N</code> of the pool's connections — the share that happened to be on the failed node — with opt-in mechanisms that let a meaningful fraction of even those survive (Part IV).</td></tr>
+          </tbody>
+        </table></div>
+        <p>What LNG does <strong>not</strong> offer, stated just as plainly, is zero operations. AWS and GCP patch nothing you can see, run no failover drills you need to schedule, and never page you for a kernel panic on a NAT appliance. LNG is real Linux instances you own: the trade is control, cost predictability, and observability depth in exchange for operational ownership. Part 0.3 below is about deciding whether that trade is the right one for you; Part X is written to make the ownership as low-friction as it realistically can be.</p>
+      </section>
+
+      <section class="chapter" id="c0-2">
+        <h2><span class="chno">0.2</span> A Cloud Networking Primer</h2>
+        <p class="lede">The rest of this book uses nine networking concepts constantly, and assumes you know what each one is and why it exists. This chapter builds them up in order, each on top of the last, from a private address range to the kernel table that makes NAT work at the packet level. If you already know them all, the quick-reference table at the end is still worth a scan — it pins down exactly what each term means <em>in this system</em>.</p>
+
+        <h3>(a) Private networks and subnets</h3>
+        <p>An IPv4 address is 32 bits, conventionally written as four numbers. A <strong>subnet</strong> is a contiguous range of those addresses, written in CIDR notation as a starting address and a prefix length: <code>10.60.16.0/20</code> means "the 20 leading bits are fixed, the remaining 12 vary," which is <code>2<sup>12</sup> = 4,096</code> addresses from <code>10.60.16.0</code> through <code>10.60.31.255</code>. The prefix length is not decoration — a machine uses it to decide whether a destination is on its own local network (deliverable directly) or somewhere else (must be sent to a router). Part III, 3.4 describes a failure that comes entirely from getting a prefix length wrong.</p>
+        <p>Three ranges are reserved worldwide for private use, never routed on the public internet, and free for anyone to use inside their own network:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Range</th><th>Size</th><th>Where you'll see it in this book</th></tr></thead>
+          <tbody>
+            <tr><td><code>10.0.0.0/8</code></td><td>~16.7 million addresses</td><td>VPC subnets — for example <code>10.60.32.0/20</code> as the subnet a pool's nodes and control plane share</td></tr>
+            <tr><td><code>172.16.0.0/12</code></td><td>~1 million addresses</td><td>Less common in this book's examples; note that <code>172.236.x.x</code>, which does appear, is <em>outside</em> this range and is a real public address block</td></tr>
+            <tr><td><code>192.168.0.0/16</code></td><td>65,536 addresses</td><td>VLAN segments — for example <code>192.168.100.0/24</code> as a pool's VLAN, where client instances and nodes' VLAN-side addresses live</td></tr>
+          </tbody>
+        </table></div>
+        <p>"Private" here means exactly one thing: no router on the public internet will carry a packet addressed to one of these. It says nothing about who can reach the address from <em>inside</em> the same private network — that is a question for firewalls and network isolation, covered below.</p>
+
+        <h3>(b) The VPC</h3>
+        <p>A <strong>Virtual Private Cloud</strong> is an isolated private network you define inside the provider's infrastructure, with its own address space carved into one or more subnets, invisible to every other customer's VPC even if they happen to use the identical address range. An instance attached to a VPC gets a private interface with an address from one of that VPC's subnets, and can talk to other instances in the same VPC over it. On Akamai Cloud, a VPC-attached instance can additionally be given a <strong>1:1 NAT</strong> — the provider maps a public address onto that one instance's private VPC address, giving that single instance its own individual internet path. That is a clean building block for "give this one instance internet access," and it is precisely what a shared NAT gateway is <em>not</em>: a 1:1 NAT address belongs to one instance, changes when that instance is replaced, and gives you one public IP per instance rather than a small shared pool.</p>
+        <p>In this book's examples, the VPC has a subnet <code>10.60.32.0/20</code> on which NAT nodes have their private addresses (<code>10.60.32.20</code>, <code>10.60.32.21</code>, and so on) and the control plane sits at <code>10.60.32.5</code>. This project never creates the VPC itself — you bring your own, and it only reads it back (Part IX, 9.1).</p>
+
+        <h3>(c) The VLAN, and what "Layer 2" means</h3>
+        <p>Networking is conventionally described in layers. <strong>Layer 3</strong> is the IP layer — addresses like <code>10.60.32.20</code>, and routers that look at a packet's destination address and forward it one hop closer. <strong>Layer 2</strong> is the layer beneath it: the local segment on which devices address each other directly by hardware (MAC) address, with no router in between. On a Layer 2 segment, a device that wants to reach an IP address on the same segment simply asks "who has <code>192.168.100.20</code>?" (an ARP broadcast), gets back a MAC address, and sends the frame straight to it. Every device on the segment hears every broadcast, which is why a Layer 2 segment is also called a <em>broadcast domain</em>. A router is the thing that connects one broadcast domain to another — traffic that stays within a segment never touches one.</p>
+        <p>A <strong>VLAN</strong> on Akamai Cloud is exactly such a segment: a private Layer 2 network, local to a data center, that you attach instances to by label. Every instance on the same VLAN is one broadcast domain — any of them can send a frame directly to any other, and, critically, any of them can act as a router <em>for</em> any other, forwarding frames it receives out a different interface. A VLAN carries no address-assignment mechanism of its own (there is no DHCP server on it), so every VLAN address in this system is a static assignment applied directly to the interface (Part III, 3.4). And because it is a raw Layer 2 segment, the provider's firewall layer does not sit in its path at all — a fact with real security consequences, discussed under (e) below.</p>
+
+        <h3>(d) Why this product needs both a VPC and a VLAN</h3>
+        <p>It would be simpler to use one or the other. The reason both appear is a specific behavior of the VPC fabric that Part I, 1.2 explains in full detail with a packet-level walkthrough; the short version, so that chapter is not your first encounter with the words, is this: a cloud VPC is a software-defined overlay, and its fabric only delivers traffic that matches what it knows about each interface. A packet whose destination is the public internet, but which a private instance has handed to a <em>different</em> instance's VPC interface asking it to forward on its behalf, matches nothing the fabric expects — and is silently never delivered. The one thing a NAT gateway fundamentally needs from its clients — "send your internet-bound traffic to me and I'll forward it" — is the one thing the VPC fabric will not carry between two instances.</p>
+        <p>A VLAN has no such restriction. Any device on the segment can forward for any other, exactly the behavior a NAT gateway requires. So the private client fleet and each NAT node's client-facing interface live on a VLAN. The VPC is still used, for two things it is genuinely better at: a firewalled, provider-routed private channel between NAT nodes for synchronizing connection state (Part IV, 4.3), and a path by which clients and the monitoring stack reach the control plane. Every NAT node therefore has three interfaces — public, VPC, and VLAN — each doing exactly one job. Part I, 1.3 is the full account of that layout; the diagram below is the whole picture in one frame, as a map to keep in mind through the rest of this chapter.</p>
+
+        <div class="diagram-frame">
+          <pre class="mermaid">
+flowchart LR
+  subgraph VLAN["VLAN 192.168.100.0/24 — Layer 2, no provider firewall"]
+    C1["Client 192.168.100.42"]
+    C2["Client 192.168.100.43"]
+  end
+  subgraph NODE["NAT node"]
+    direction TB
+    e2["eth2 · VLAN 192.168.100.20"]
+    e1["eth1 · VPC 10.60.32.20"]
+    e0["eth0 · Public 172.236.173.125"]
+  end
+  subgraph VPC["VPC 10.60.32.0/20 — Layer 3, Cloud Firewall applies"]
+    CP["Control plane 10.60.32.5"]
+    B["Buddy node · eth1 10.60.32.21"]
+  end
+  C1 -->|"default route, ECMP"| e2
+  C2 -->|"default route, ECMP"| e2
+  e0 -->|"masquerade"| NET(("Internet"))
+  e1 <-->|"conntrack sync"| B
+  CP -.->|"roster"| C1
+  CP -.->|"health check :9200"| e1
+          </pre>
+          <div class="diagram-cap">Fig. 0.1 — the three networks a NAT node touches, and what crosses each one</div>
+        </div>
+
+        <h3>(e) Cloud Firewall</h3>
+        <p>A <strong>Cloud Firewall</strong> is packet filtering performed by the provider's own infrastructure, in front of an instance's network interface — before any packet ever reaches the instance's operating system. It is <strong>stateful</strong>: when an instance opens an outbound connection that the rules allow, the replies to that specific connection are automatically allowed back in, without a matching inbound rule; only genuinely new inbound connections are checked against the inbound rule list. A firewall has a default policy for each direction (this project uses <em>deny everything inbound, allow everything outbound</em> on every node) plus an explicit list of exceptions, each scoped to a protocol, a port, and a source address range. The complete rule set this project creates, with the reason for every rule, is Part VIII, 8.1.</p>
+        <p>The one thing to carry forward from this chapter: on Akamai Cloud, Cloud Firewall filters an instance's <em>public and VPC</em> interfaces only. It does not see VLAN traffic at all — a VLAN is a Layer 2 segment the provider's filtering layer is simply not in the path of. So on every NAT node, the node's own local packet filter (<code>nftables</code>, running inside the operating system) is the <em>entire</em> security boundary on the VLAN interface, and is written accordingly. This is not a gap to fix; it is how the two mechanisms divide the work.</p>
+
+        <h3>(f) Public IPs, egress IPs, and why a small shared pool matters</h3>
+        <p>A <strong>public IP</strong> is an address routable on the internet — the address a remote server sees a connection arriving from, and the only kind of address a NAT gateway can translate private traffic <em>to</em>. When the address in question is specifically the one a fleet's outbound traffic appears to come from, it is called an <strong>egress IP</strong>. Every NAT node in this system holds a real public IP on its <code>eth0</code> interface (never a VPC 1:1 NAT address — the distinction matters for BGP, below), and the set of those addresses across a pool is the pool's egress footprint.</p>
+        <p>Two properties of that footprint matter to the people downstream of it. <strong>Size</strong>: a partner firewall, a SaaS vendor's IP allow-list, or a compliance control that says "all egress must come from approved addresses" wants a short, fixed list. A pool of three nodes is three addresses; a hundred instances each with their own public IP is a hundred. <strong>Stability</strong>: by default, an instance's public IP is ephemeral — replace the instance and it comes back with a new one, and an allow-list somewhere silently breaks. A <strong>reserved IP</strong> is a standalone address you own independently of any instance, so a node can be replaced and come back with the same address (Part IV, 4.6). Every public IP also has a finite supply of source ports — practically on the order of 55,000 to 64,000 usable toward any single destination — which is why "how many connections can this pool carry to one destination" is a function of how many public IPs it has, not how many nodes (Part V, 5.3).</p>
+
+        <h3>(g) BGP, and what "BGP-based IP Sharing" means here</h3>
+        <p>The <strong>Border Gateway Protocol</strong> is how the internet itself decides where to send a packet. Every network on the internet — an ISP, a cloud provider, a large enterprise — is an autonomous system that <em>announces</em> to its neighbors, over BGP sessions, the address ranges it can deliver traffic to; neighbors pass those announcements on, and every router ends up with a table of "to reach this range, send toward that neighbor." If an announcement is withdrawn, the routes that depended on it disappear and traffic follows the next-best announcement instead. The useful mental model is <em>the currently standing, verified announcement wins</em>: routers do not remember where an address used to live, they forward toward whoever is announcing it right now.</p>
+        <p><strong>IP Sharing</strong> on Akamai Cloud brings that mechanism down to the level of individual instances. Normally an instance's public IP is delivered to that instance and nowhere else. IP Sharing lets a second instance be registered as a legitimate alternative destination for the same address, after which the provider's own routers stop delivering it by fixed assignment and instead deliver it to whichever registered instance is <em>actively announcing</em> it over a BGP session with the provider's route reflectors. Each NAT node runs a small BGP daemon, <strong>FRR</strong> (FRRouting), that announces the node's own public IP as its <em>primary</em> and — once the node has been paired with a buddy — announces the buddy's public IP as a <em>secondary</em>, lower-preference route, from the moment the pairing exists rather than only after a failure. While both nodes are up, the primary announcement wins and traffic flows normally. If a node dies, its own announcement stops, its buddy's already-standing secondary announcement is now the best one available, and traffic addressed to the dead node's public IP arrives at the buddy instead — with no DNS change, no client reconfiguration, and no human involved. Two constraints shape how this is used: only one instance may be registered as the secondary for any given address, and only a real public IP on the instance's own interface — never a VPC 1:1 NAT address — is eligible for sharing at all. Part IV, 4.4 is the full treatment, including the safety delays that guard the moment an address is first switched into BGP-only delivery.</p>
+
+        <div class="diagram-frame">
+          <pre class="mermaid">
+flowchart TB
+  RR["Akamai route reflectors — deliver each shared IP to whichever registered node is announcing it"]
+  subgraph A["NAT node A · public 172.236.173.125"]
+    a1["announces 172.236.173.125 as primary"]
+    a2["announces 172.236.171.17 as secondary"]
+  end
+  subgraph B["NAT node B · public 172.236.171.17"]
+    b1["announces 172.236.171.17 as primary"]
+    b2["announces 172.236.173.125 as secondary"]
+  end
+  a1 -->|"BGP session"| RR
+  a2 -->|"BGP session"| RR
+  b1 -->|"BGP session"| RR
+  b2 -->|"BGP session"| RR
+  NET(("Internet")) --> RR
+          </pre>
+          <div class="diagram-cap">Fig. 0.2 — a buddy pair under IP Sharing: each node announces its own address as primary and its buddy's as secondary, both directions at once</div>
+        </div>
+
+        <h3>(h) ECMP — one route, several equally good next hops</h3>
+        <p>A machine's <strong>default route</strong> is where it sends every packet whose destination it has no more specific route for — in practice, everything internet-bound. Normally a default route names exactly one next hop. <strong>Equal-Cost Multi-Path</strong> routing is an ordinary Linux kernel feature that lets a single route name several next hops of equal preference, spreading traffic across all of them — several checkout lanes instead of one, with the kernel choosing a lane per packet. In this system, every private client's default route is an ECMP route whose next hops are the VLAN addresses of every currently healthy NAT node, something like this in shape:</p>
+        <pre class="code"><span class="m"># illustrative — a client's default route across a three-node pool</span>
+default
+    nexthop via 192.168.100.20 dev &lt;vlan-iface&gt; weight 1
+    nexthop via 192.168.100.21 dev &lt;vlan-iface&gt; weight 1
+    nexthop via 192.168.100.22 dev &lt;vlan-iface&gt; weight 1</pre>
+        <p>The lane choice cannot be random per packet, because NAT state lives on one specific node — every packet of one TCP connection has to reach the <em>same</em> node, or the reply will be matched against a table that has no entry for it. So the kernel picks the next hop by <strong>hashing</strong> the packet's flow identity: source and destination address, and — when the kernel's multipath hash policy is set to include Layer 4 fields, which the client agent sets at every startup — source and destination port as well. That five-field key, the <strong>five-tuple</strong>, is identical for every packet of one connection, so the whole connection stays on one lane, while thousands of separate connections to the very same destination still spread across every lane. Linux's <strong>resilient nexthop group</strong> mode adds one more property this system depends on: when a next hop is removed, only the flows that were hashed to <em>that</em> next hop are reassigned, and every flow on every other node is left exactly where it was. Without it, any membership change would reshuffle every connection in the fleet; with it, losing one node out of N disturbs roughly <code>1/N</code> of traffic and nothing else. Part III, 3.2 covers how the client agent maintains this route.</p>
+
+        <h3>(i) conntrack — the table that makes NAT work, and why syncing it matters</h3>
+        <p>The per-connection memory described in 0.1 is not an abstraction: it is a real kernel data structure called the <strong>connection-tracking table</strong>, or <strong>conntrack</strong>, maintained by the Linux netfilter subsystem on every NAT node. Every connection that passes through the node gets one entry, recording the connection as the private side sent it and as it looks after translation. The connection from the worked example in 0.1 looks like this in the table (this is the format the standard <code>conntrack -L</code> tool prints — the first half is the original direction, the second half is what a reply must look like to be matched back to it):</p>
+        <pre class="code">tcp  6 431999 ESTABLISHED src=192.168.100.42 dst=142.250.72.14 sport=51234 dport=443 \
+                          src=142.250.72.14 dst=172.236.173.125 sport=443 dport=51234</pre>
+        <p>Every reply packet arriving on the node's public interface is looked up against the reply half of every entry; a match tells the kernel exactly which private address and port to rewrite the destination back to. An arriving packet that matches nothing is not a reply to anything and is dropped — which is how NAT's outbound-only property is actually enforced. The table has a fixed maximum size (<code>nf_conntrack_max</code>, one million entries by default in this system); when it is full, new connections cannot be tracked and fail outright, which is why table occupancy is the headline capacity signal the autoscaler watches (Part V, 5.2) and why Part V, 5.3 tells you how to size it.</p>
+        <p>This table is also exactly what is lost when a node dies. The client-side ECMP route reroutes <em>new</em> connections to surviving nodes within seconds, but a connection that was mid-flight had its one and only table entry on the dead node — the survivor receiving its next packet has no idea what to do with it, and the connection resets. <strong>Connection-state sync</strong> closes this: a standard daemon, <code>conntrackd</code>, continuously mirrors one node's table to its buddy over the VPC interface, so that if the node dies, the buddy already holds a copy of every entry. Combined with IP Sharing (g) delivering the dead node's public IP to that same buddy, a still-open connection's next packet arrives at a node that has both the address it was sent to and the table entry to translate it — and the connection simply continues, as if nothing had happened. Neither half works alone: mirrored entries for an address that no longer arrives are useless, and a taken-over address with no entries resets every connection anyway. Part IV, 4.3 and 4.4 are the two halves in full.</p>
+
+        <h3>Quick reference</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Term</th><th>One-line definition, as used in this book</th><th>Full treatment</th></tr></thead>
+          <tbody>
+            <tr><td>Subnet</td><td>A contiguous range of IP addresses written as address plus prefix length (<code>10.60.32.0/20</code>); the prefix decides what a machine considers "local"</td><td>0.2 (a), Part III 3.4</td></tr>
+            <tr><td>VPC</td><td>An isolated Layer 3 private network you define inside the provider, made of subnets; on Akamai Cloud, will not transit-route one instance's internet traffic through another</td><td>0.2 (b), Part I 1.2</td></tr>
+            <tr><td>VLAN</td><td>A private Layer 2 broadcast segment; any attached instance can forward for any other; no DHCP; not covered by Cloud Firewall</td><td>0.2 (c), Part III 3.4</td></tr>
+            <tr><td>Cloud Firewall</td><td>Provider-side stateful packet filtering in front of an instance's public and VPC interfaces, default-deny inbound in this system</td><td>0.2 (e), Part VIII 8.1</td></tr>
+            <tr><td>Public / egress IP</td><td>An internet-routable address; specifically the one a fleet's outbound traffic appears to come from; finite source ports per address</td><td>0.2 (f), Part IV 4.6, Part V 5.3</td></tr>
+            <tr><td>BGP / IP Sharing</td><td>The internet's route-announcement protocol; IP Sharing lets two nodes both announce one public IP so the provider delivers it to whichever is currently announcing</td><td>0.2 (g), Part IV 4.4</td></tr>
+            <tr><td>ECMP</td><td>A kernel route with several equal next hops, chosen per connection by five-tuple hash; resilient mode moves only the affected node's flows on a change</td><td>0.2 (h), Part III 3.2</td></tr>
+            <tr><td>conntrack</td><td>The kernel table holding one entry per translated connection; the mechanism of NAT itself; mirrored between buddies so a failover keeps open connections alive</td><td>0.2 (i), Part IV 4.3</td></tr>
+            <tr><td>NAT node</td><td>An ordinary Linux instance with public, VPC, and VLAN interfaces, masquerading VLAN traffic out its public IP</td><td>Part I 1.3, Part III 3.1</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="chapter" id="c0-3">
+        <h2><span class="chno">0.3</span> Why Self-Hosted, and When It's the Right Choice</h2>
+        <p class="lede">A managed NAT gateway is the correct default for most teams most of the time, and this book does not pretend otherwise. LNG exists for the cases where the managed product's opacity, cost structure, or lack of control is itself the problem — and it asks something real of you in return.</p>
+        <p>LNG is the right choice when at least one of the following is true. You need <strong>per-connection visibility</strong> — not an aggregate byte counter, but the ability to see connection-table occupancy per node, port headroom per public IP, drop reasons, and node health per individual check, and to alert on any of them before they become an outage. You need a <strong>small, static, shared egress footprint</strong> that survives instance replacement, because a partner's allow-list or a compliance control depends on it, and you want to own the addresses rather than rent them. You need <strong>full operational control</strong>: your own firewall rules on the gateway itself, isolated capacity for a tenant that cannot share, an autoscaling decision you can read the reasoning for, or infrastructure a security team can audit line by line rather than take on faith. Or your traffic volume is high enough that a <strong>per-gigabyte processing charge</strong> has become a line item worth engineering away — the compute cost of a handful of dedicated-CPU instances is fixed and predictable regardless of how many bytes pass through them.</p>
+        <p>LNG is <strong>not</strong> the right choice for a team that wants NAT to be somebody else's problem and is content with the trade-offs the managed products make. That is a legitimate position, and it is worth being honest about what self-hosting asks: you own real Linux instances, so you patch them, size them, and are on call for them. You run the occasional failover drill to confirm the mechanisms in Part IV still behave as described. You make capacity-planning judgment calls the managed products make silently on your behalf. And you accept that the active-active design this system uses — every node forwarding real traffic all the time, no idle standby — trades the simplest possible zero-session-loss guarantee of a fixed master/standby pair for horizontal scaling and full utilization; the opt-in mechanisms in Part IV narrow that gap substantially, but Part IV, 4.8 states plainly that they narrow rather than eliminate it. A workload that truly cannot tolerate a single connection reset under any circumstance should weigh that carefully.</p>
+        <p>Part X is written to make the ownership side of this as low-friction as it realistically can be — a pre-production checklist, an operator CLI, procedures for every routine task, and a troubleshooting playbook that starts from zero context on each alert. It reduces the operational load; it does not make it zero, and nothing in this book will claim that it does.</p>
+      </section>
+
+      <section class="chapter" id="c0-4">
+        <h2><span class="chno">0.4</span> How This Book Is Organized</h2>
+        <p class="lede">The Parts that follow are ordered the way the system is layered: what it is and why it is shaped that way, then the brain, then the pieces that touch packets, then everything built on top of those. Each Part assumes the ones before it. This chapter is the map, and two suggested routes through it.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Part</th><th>Title</th><th>What it covers</th></tr></thead>
+          <tbody>
+            <tr><td>Part I</td><td>Architecture &amp; Design</td><td>What a NAT gateway pool is on Akamai Cloud, the one VPC-fabric behavior that shapes every other design decision, why every node has three interfaces, and what "active-active" and "pool" mean precisely.</td></tr>
+            <tr><td>Part II</td><td>The Control Plane</td><td>natctl, the fleet's brain: the reconcile pass, the roster every client depends on, the two places the control plane can run, and how leader election with fencing keeps two instances from acting on the fleet at once.</td></tr>
+            <tr><td>Part III</td><td>The Data Plane</td><td>The NAT node itself, the client-side routing agent that maintains each client's ECMP route, the four interface shapes a client can have, and static VLAN addressing.</td></tr>
+            <tr><td>Part IV</td><td>High Availability</td><td>Four layered mechanisms — client ECMP, connection-state sync, BGP IP failover, anti-affinity placement — how buddy pairs and the odd-count triangle work, reserved IPs, unhealthy-node handling, and the trade-off the design accepts.</td></tr>
+            <tr><td>Part V</td><td>Scaling</td><td>Floor versus elastic capacity, the autoscaling algorithm signal by signal, right-sizing from real numbers, vertical resizing, and multi-tenant pools.</td></tr>
+            <tr><td>Part VI</td><td>Object Storage</td><td>The one place durable state lives: fetched-at-boot artifacts and why they are needed, the leader-election lease, and the reserved-IP and live-configuration manifests.</td></tr>
+            <tr><td>Part VII</td><td>Observability</td><td>The metrics pipeline, every metric explained, how to read each dashboard panel, every alert rule, and what the health check behind all of it actually verifies.</td></tr>
+            <tr><td>Part VIII</td><td>Security</td><td>The firewall boundary on every interface, every rule as created and why, and the exact credential scope each component needs.</td></tr>
+            <tr><td>Part IX</td><td>Deployment</td><td>Prerequisites, the deployment sequence, and onboarding a client instance once the fleet exists.</td></tr>
+            <tr><td>Part X</td><td>Day-2 Operations</td><td>The pre-production checklist, the operator CLI, common procedures, the troubleshooting playbook, the complete configuration reference, and control-plane recovery.</td></tr>
+            <tr><td>Appendix</td><td>Glossary</td><td>Every term of art used anywhere in the book, alphabetized, with a pointer to where it is explained in depth.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>If you are evaluating whether to adopt LNG</h3>
+        <p>Read Part 0 in full, then Part I — those two together are the complete case for why the system is shaped the way it is, and 1.2 in particular is the fact everything else depends on. Then skim Part IV for the high-availability model, reading 4.1 (the four layers) and 4.8 (the trade-off accepted) closely, and skim Part V for the scaling model, reading 5.2's signal table and 5.3's sizing guidance closely enough to estimate what a pool for your own traffic would cost. That is enough to make a well-founded decision. Part VII's metric and alert tables are worth a glance if observability depth is part of what you are evaluating.</p>
+
+        <h3>If you are about to operate a live deployment</h3>
+        <p>Read the whole book, in order, before the first deploy — Parts II through VI in particular describe behavior you will need to recognize when you see it in a log or on a dashboard, and none of it is intuitive from the outside. Then keep Part X bookmarked: 10.1 before you call anything production-ready, 10.2 for the operator CLI, 10.4 the first time an alert fires, 10.5 whenever you need to know what a configuration field actually does, and 10.8 for the day the control plane itself needs recovering. Part IV, 4.3 and 4.4, and Part II, 2.4 are the chapters most worth re-reading after your first month, once you have seen the mechanisms they describe actually run.</p>
+      </section>
 
       <!-- ============ PART I ============ -->
       <div class="part-open" id="part-1">
@@ -919,10 +1140,10 @@ flowchart LR
 
         <h3>The mechanism</h3>
         <p>From the moment it boots, every paired node is simultaneously doing two things: announcing its own public IP as the primary route, and — once buddy-paired — announcing its buddy's/buddies' public IP(s) as a secondary backup route. This is fully bidirectional and active from boot, not something that only activates once a failure is detected.</p>
-        <p>Two independent conditions must both clear before the cloud provider's IP-sharing API is actually called for a brand-new pairing: a short activation delay since the pairing itself was computed, and the announcing node's own BGP session having stayed continuously established for at least a minimum age. The first guards against granting the share before the node-side agent has had time to configure its own secondary announcement; the second guards against a subtler case — a node whose BGP session has only just come up (a reboot, a daemon restart, a route-reflector flap) can pass the first check instantly if the pairing itself is old, announcing a backup role before Akamai's route reflectors have had time to trust that session. Live testing found real packet loss in exactly that narrow window before this second check existed; gating on measured session age, not just elapsed time, is what actually closes it.</p>
+        <p>Two independent conditions must both clear before the cloud provider's IP-sharing API is actually called for a brand-new pairing: a short activation delay since the pairing itself was computed, and the announcing node's own BGP session having stayed continuously established for at least a minimum age. The first guards against granting the share before the node-side agent has had time to configure its own secondary announcement; the second guards against a subtler case — a node whose BGP session has only just come up (a reboot, a daemon restart, a route-reflector flap) can pass the first check instantly if the pairing itself is old, announcing a backup role before Akamai's route reflectors have had time to trust that session. A route reflector that hasn't yet trusted a freshly-established session can silently drop early announcements from it, so a backup role announced before that trust window closes risks not actually reaching the wider fabric — gating on measured session age, not just elapsed time since pairing, is what closes that gap.</p>
 
         <h3>What happens when a node dies</h3>
-        <p>Its buddy's already-standing secondary announcement is what lets traffic addressed to the dead node's public IP keep reaching a live host — typically within a single BGP convergence cycle, with proven zero packet loss in both directions during a live failover exercise. Any TCP connection that was actively open through the dead node at the moment it died still resets; that is connection-state loss, a separate concern that only connection-state sync (previous chapter) addresses.</p>
+        <p>Its buddy's already-standing secondary announcement is what lets traffic addressed to the dead node's public IP keep reaching a live host — typically within a single BGP convergence cycle, since the backup route is already active rather than something that has to be established after the fact. Any TCP connection that was actively open through the dead node at the moment it died still resets; that is connection-state loss, a separate concern that only connection-state sync (previous chapter) addresses.</p>
 
         <h3>How to restart it</h3>
         <p><code>systemctl restart frr</code> on the affected node is enough — its own self-announcement resumes automatically at boot with no manual step, and its buddy assignment is entirely independent of the daemon's own lifecycle, since that assignment is recomputed by the control plane, not stored locally. Check current session state with <code>vtysh -c "show bgp summary"</code> on the node itself.</p>
@@ -1448,7 +1669,7 @@ natctl-cli --config /etc/natctl/config.yaml set-vpc-sibling-subnets --clear</pre
         <p><strong>Why:</strong> a newly-created sibling subnet in the same VPC (Part I, 1.2) needs an explicit route on every node and every client before it's actually reachable — normally a Terraform concern (it auto-discovers every subnet in the VPC on each apply), but this command gets a genuinely new subnet flowing immediately, without waiting on a full apply. <strong>When:</strong> a subnet was just added to the VPC outside of this project's own Terraform (by hand, or by another team's automation sharing the same VPC) and needs to be reachable right now.</p>
         <p>No <code>--pool</code> flag — this setting is a property of the whole environment, not any one pool, since every pool shares the same VPC. Every controller re-reads it the next reconcile pass, and it feeds both directions of reachability described in Part I, 1.2: a node's own route to the new subnet, and (via the roster) every connected client's self-healing route to it too. <code>--clear</code> empties the override; it does not restore Terraform's own discovered value — run <code>terraform apply</code> for that, since Terraform always re-derives this list live from the VPC's actual subnets rather than reading back anything <code>natctl-cli</code> wrote. A client removing its own sibling-subnet routes specifically in response to <code>--clear</code> takes one extra poll beyond that — it waits for the roster to report the empty list twice in a row before actually removing anything, so a single transient empty reading (for example, right after a controller restart) can never be mistaken for a deliberate clear.</p>
         <p>Same last-write-wins relationship with Terraform as <code>set-pool-scaling</code> above: the next apply, for any reason, recomputes and overwrites this object from live VPC discovery.</p>
-        <p><strong>Refuses by default</strong> if the new list — or the empty list <code>--clear</code> produces — would no longer cover this environment's own control-plane addresses: dropping the one CIDR a client's <code>NATCTL_ROSTER_URL</code> actually lives in cuts every client's route to natctl itself, with no automatic recovery (confirmed live). The check runs twice — once in the CLI before it even makes the HTTP call, and again independently on the natctl side, so a stale or older daemon doesn't leave you unprotected. Pass <code>--force</code> to override it deliberately; it's sent through to the server too, so the write always succeeds once you pass it.</p>
+        <p><strong>Refuses by default</strong> if the new list — or the empty list <code>--clear</code> produces — would no longer cover this environment's own control-plane addresses: dropping the one CIDR a client's <code>NATCTL_ROSTER_URL</code> actually lives in would cut every client's route to natctl itself, with no automatic recovery. The check runs twice — once in the CLI before it even makes the HTTP call, and again independently on the natctl side, so a stale or older daemon doesn't leave you unprotected. Pass <code>--force</code> to override it deliberately; it's sent through to the server too, so the write always succeeds once you pass it.</p>
       </section>
 
       <section class="chapter" id="c10-3">
@@ -1538,7 +1759,7 @@ natctl-cli --config /etc/natctl/config.yaml set-vpc-sibling-subnets --clear</pre
         <h3>A pool-below-floor alert fires</h3>
         <ol>
           <li>Run <code>natctl-cli --config /etc/natctl/config.yaml nodes --pool shared</code> — this shows every node and whether it's actually healthy, not just present. The floor check is against <em>healthy</em> count specifically, so a node that exists but is failing its health check doesn't count.</li>
-          <li><strong>If an elastic node is missing or unhealthy</strong>: it should self-heal automatically once it's been unhealthy past the configured threshold (default 90 seconds) — watch for a log line like <code>"elastic node ... has failed health checks for &gt;=Ns — draining for replacement"</code> in <code>journalctl -u natctl</code>. If that line never appears, check the API token's scope and any provisioning errors in the same log (a bad instance type, a region quota, etc.). An elastic node that disappears from the cloud provider's own API entirely (a crash, a host failure, a manual shutdown) rather than staying visible-but-unhealthy is cleaned up the same way, on the same threshold — look for <code>"elastic node ... vanished from discovery ... — deleting its orphaned instance"</code> instead.</li>
+          <li><strong>If an elastic node is missing or unhealthy</strong>: it should self-heal automatically once it's been unhealthy past the configured threshold (default 900 seconds / 15 minutes) — watch for a log line like <code>"elastic node ... has failed health checks for &gt;=Ns — draining for replacement"</code> in <code>journalctl -u natctl</code>. If that line never appears, check the API token's scope and any provisioning errors in the same log (a bad instance type, a region quota, etc.). An elastic node that disappears from the cloud provider's own API entirely (a crash, a host failure, a manual shutdown) rather than staying visible-but-unhealthy is cleaned up the same way, on the same threshold — look for <code>"elastic node ... vanished from discovery ... — deleting its orphaned instance"</code> instead.</li>
           <li><strong>If a floor node is unhealthy</strong>: this is never auto-replaced by design — the pool instead runs with extra elastic capacity compensating for it, which is expected, not an error. Fix the actual floor node yourself: SSH in and investigate (check <code>systemctl status nat-exporter</code> and <code>journalctl -u nat-exporter</code> first, since that's what the health check itself depends on), or replace the instance through a targeted re-apply of just that node.</li>
           <li><strong>If a floor node is simply missing entirely</strong> (not present at all, not just unhealthy): that's infrastructure drift, not something natctl can or should fix — run <code>terraform plan</code> and reconcile it the normal way.</li>
         </ol>
@@ -1785,6 +2006,252 @@ systemctl restart natctl</pre></li>
         <p>What you cannot get back if you skipped your own backups: prior dashboard history, anything hand-made in the dashboard tool beyond what the provisioned files recreate, and any active alert silences from before. Your own <code>natctl.yaml</code> is never at risk from this procedure as long as you kept your own copy — this project never treats it as something needing its own backup schedule, by design; that responsibility stays with you, the same as any other infrastructure-as-code input.</p>
       </section>
 
+      <!-- ============ APPENDIX: GLOSSARY ============ -->
+      <div class="part-open" id="part-glossary">
+        <div class="part-num">Appendix</div>
+        <h2 class="part-title">Glossary</h2>
+        <p class="part-dek">Every term of art used anywhere in this book, alphabetized, with a one-paragraph definition as the term is used <em>in this system</em> and a pointer to the chapter that treats it in depth.</p>
+        <div class="part-rule"></div>
+      </div>
+
+      <section class="chapter glossary" id="cA-1">
+        <h2><span class="chno">A.1</span> Terms of Art</h2>
+        <p class="lede">Definitions are written to be read standalone — a term encountered mid-chapter can be looked up here without reading anything else first. Where a definition depends on another term in this list, that term is named in the text so it can be followed.</p>
+
+        <dl>
+          <dt>Activation delay</dt>
+          <dd>The wait natctl observes between computing a brand-new buddy IP-failover pairing and actually calling the provider's IP-sharing API for it (60 seconds by default), tracked independently per node-and-buddy-address relationship. It guarantees the node that will announce a backup route has had time to configure that announcement before the shared address is switched into BGP-only delivery — the mechanism that protects against an address going dark at the moment sharing is first enabled. <span class="see">Part IV, 4.4</span></dd>
+
+          <dt>Active-active</dt>
+          <dd>The fleet model in which every node in a pool forwards real traffic all the time. There is no master, no standby, and no shared floating address that all pool traffic funnels through; capacity is fully utilized and a single tenant can burst across the whole pool. Contrast with an active/passive pair, where one member idles until the other fails. <span class="see">Part I, 1.4; Part IV, 4.8</span></dd>
+
+          <dt><code>admin_cidrs</code></dt>
+          <dd>The operator-supplied list of source address ranges (an office, VPN, or bastion egress range) permitted to reach SSH and the monitoring dashboards. Every administrative firewall rule is scoped to this list; it is never left open to the whole internet by default. <span class="see">Part VIII, 8.1</span></dd>
+
+          <dt>Anti-affinity placement</dt>
+          <dd>Spreading a pool's nodes across separate underlying physical hosts, via placement groups, so that both members of a buddy pair cannot be taken out by one physical-host failure. Opt-in, and safe to enable on a running pool without replacing any node. <span class="see">Part IV, 4.5</span></dd>
+
+          <dt>Artifact (fetched at boot)</dt>
+          <dd>Any file a node downloads from Object Storage at boot rather than carrying embedded in its boot-time configuration — the metrics exporter, the connection-sync daemon, the control-plane package, and static service definitions. Needed because the provider caps boot-time configuration at 16,384 bytes, which the project's own software exceeds many times over. Each artifact's integrity is checked against a SHA-256 fingerprint before use. <span class="see">Part VI, 6.2</span></dd>
+
+          <dt>Autoscale watermark</dt>
+          <dd>A configured threshold on one autoscaling signal. A <em>high watermark</em> is the scale-out trigger (connection-tracking utilization at or above 70%, throughput at or above 85%, busiest-core softirq at or above 80%); a <em>low watermark</em> is a scale-in trigger (connection-tracking utilization at or below 30%). Port headroom is the inverted case — its trigger fires when free ports fall <em>below</em> 15%. A watermark starts a breach streak; only a sustained breach produces an action. <span class="see">Part V, 5.2</span></dd>
+
+          <dt>BGP (Border Gateway Protocol)</dt>
+          <dd>The routing protocol by which networks on the internet announce to one another which address ranges they can deliver traffic to, and by which routers decide where to forward a packet: toward whoever is currently announcing its destination. In this system each node runs a BGP daemon (FRR) that announces the node's own public IP, and its buddy's, to the provider's route reflectors. <span class="see">Part 0, 0.2 (g); Part IV, 4.4</span></dd>
+
+          <dt>Breach streak</dt>
+          <dd>The count of consecutive reconcile passes on which a given autoscaling signal has been past its watermark. A scaling action is only sized and taken once the streak reaches the configured sustained-breach requirement (two passes by default); a single noisy reading only starts the counter. Exposed as a metric per signal. <span class="see">Part V, 5.2; Part VII, 7.2</span></dd>
+
+          <dt>Buddy / buddy pairing</dt>
+          <dd>Another node that a given node continuously mirrors its live connection-tracking state with, and stands ready to take over the public IP of. Pairings are recomputed from the currently healthy node set on every reconcile pass by sorting the nodes and pairing them two at a time; an odd count forms a triangle. A node without a buddy is still fully healthy and fully in rotation — pairing is a session-continuity mitigation, not a health signal. <span class="see">Part II, 2.1; Part IV, 4.2</span></dd>
+
+          <dt>Buddy IP failover</dt>
+          <dd>The opt-in mechanism by which a node's buddy takes over its public IP when it dies, using FRR and the provider's BGP-based IP Sharing. Every paired node simultaneously announces its own address as primary and its buddy's as secondary, from the moment the pairing exists, so a failure needs no new action to redirect traffic — the standing secondary announcement simply becomes the best available route. <span class="see">Part IV, 4.4</span></dd>
+
+          <dt>buddy-sync</dt>
+          <dd>The daemon (<code>lng-buddy-sync.service</code>) running on every node that watches the roster for changes to this node's buddy assignment and reconciles two things in response: the set of <code>conntrackd</code> peer processes it runs, and FRR's secondary-route announcements. It carries no durable state of its own and re-derives everything from the roster on restart. <span class="see">Part IV, 4.3</span></dd>
+
+          <dt>CIDR</dt>
+          <dd>Classless Inter-Domain Routing notation — an address range written as a starting address and a prefix length, such as <code>10.60.32.0/20</code> (4,096 addresses) or <code>192.168.100.0/24</code> (256 addresses). The prefix length is what a machine uses to decide whether a destination is local or must be routed. <span class="see">Part 0, 0.2 (a)</span></dd>
+
+          <dt>Client / client instance</dt>
+          <dd>A private-subnet instance that sends its outbound internet traffic through the NAT pool. It lives on the pool's VLAN with a static VLAN address, runs the client routing agent, and holds no public IP of its own (in the two interface shapes where the agent manages its default route). <span class="see">Part III, 3.3</span></dd>
+
+          <dt>Client routing agent (client-agent)</dt>
+          <dd>The small, dependency-free service (<code>lng-client-agent.service</code>) on every client instance. It long-polls the roster and maintains the client's default route as a resilient ECMP nexthop group across every node the control plane currently reports healthy. It manages exactly one thing — the default route — and on any failure to reach the roster keeps its last-known-good state rather than tearing routing down. <span class="see">Part III, 3.2</span></dd>
+
+          <dt>Cloud Firewall</dt>
+          <dd>Stateful packet filtering performed by the provider in front of an instance's public and VPC interfaces, before traffic reaches the operating system. It does not filter VLAN traffic at all; on the VLAN interface, a node's own <code>nftables</code> ruleset is the entire security boundary. <span class="see">Part 0, 0.2 (e); Part VIII, 8.1</span></dd>
+
+          <dt>Connection-state sync</dt>
+          <dd>Continuous mirroring of a node's kernel connection-tracking table to its buddy, performed by one <code>conntrackd</code> process per peer relationship over UDP on the VPC interface, so that a buddy taking over a dead node's public IP also holds the table entries needed to keep that node's still-open connections alive. Useless without buddy IP failover, and vice versa. <span class="see">Part IV, 4.3</span></dd>
+
+          <dt>conntrack (connection tracking)</dt>
+          <dd>The Linux kernel table that records one entry per connection passing through a NAT node — the connection as the private side sent it, and what a reply must look like to be matched back to it. It is the actual mechanism of NAT: replies are looked up against it to find the private address to rewrite back to, and a packet matching no entry is dropped. Its fixed maximum size (<code>nf_conntrack_max</code>) is the primary capacity ceiling the autoscaler watches. <span class="see">Part 0, 0.2 (i); Part V, 5.2 and 5.3</span></dd>
+
+          <dt><code>conntrackd</code></dt>
+          <dd>The standard Linux connection-tracking synchronization daemon. This system runs one instance per buddy relationship as a systemd template unit, <code>conntrackd@&lt;peer-node-id&gt;.service</code>, each on its own deterministically derived UDP port (a base of 3780 plus a hash of the two peers' node IDs, within the range 3780–4779). <span class="see">Part IV, 4.3</span></dd>
+
+          <dt>Control plane</dt>
+          <dd>The components that make decisions and never touch a customer packet directly: natctl (the fleet controller and roster API) and the metrics/dashboard/alerting stack. If the entire control plane is down, already-provisioned nodes keep forwarding traffic; only <em>new</em> decisions pause. <span class="see">Part II (component map)</span></dd>
+
+          <dt>Cooldown</dt>
+          <dd>The period after any scaling action (300 seconds by default) during which no further scaling evaluation happens at all, so newly added capacity has time to boot, pass health checks, and start absorbing load before the next decision is made. <span class="see">Part V, 5.2</span></dd>
+
+          <dt>Data plane</dt>
+          <dd>Everything that either forwards actual traffic or steers a client toward whatever is forwarding it: the NAT nodes themselves (nftables/masquerade), the metrics exporter and health endpoint on each node, connection-state sync, FRR, and the client routing agent. Grouped this way because failures here directly affect customer traffic. <span class="see">Part II (component map); Part III</span></dd>
+
+          <dt>Dedicated pool</dt>
+          <dd>A pool provisioned for a single tenant that needs isolated or reserved capacity — its own VLAN, its own floor and elastic bounds, its own leader election, fully separate traffic — built from exactly the same mechanism as the shared pool under a different name. <span class="see">Part I, 1.4; Part V, 5.5</span></dd>
+
+          <dt>Default route</dt>
+          <dd>The route a machine uses for any destination it has no more specific route for — in practice, everything internet-bound. On a client instance, this is the one route the client routing agent manages, as an ECMP route across healthy nodes. On a NAT node, the default route always points out the public interface, never the VPC one. <span class="see">Part III, 3.2 and 3.3</span></dd>
+
+          <dt>Drain</dt>
+          <dd>Retiring a node gracefully: it is excluded from the roster immediately so no new connections land on it, and removed only once its live connection count empties out or a timeout (<code>drain_timeout_seconds</code>, 180 by default) elapses. Elastic nodes are drained by the autoscaler, by the unhealthy-node replacement path, or by an operator with <code>natctl-cli drain</code>; floor nodes are never drained automatically. <span class="see">Part V, 5.4; Part X, 10.2</span></dd>
+
+          <dt>ECMP (Equal-Cost Multi-Path)</dt>
+          <dd>A Linux kernel routing feature that lets one route name several next hops of equal preference, choosing among them per connection by hashing the packet's flow identity so every packet of one connection takes the same path. Every client's default route is an ECMP route across the pool's healthy nodes. <span class="see">Part 0, 0.2 (h); Part III, 3.2</span></dd>
+
+          <dt>ECMP hash policy</dt>
+          <dd>The kernel setting that determines which packet fields feed the multipath hash. The client routing agent sets it at every startup to include source and destination ports alongside the address pair (the five-tuple), so many separate connections to the same destination spread across the pool instead of all landing on one node. <span class="see">Part III, 3.2</span></dd>
+
+          <dt>Egress IP</dt>
+          <dd>The public address a fleet's outbound traffic appears to come from — on a NAT node, the address on <code>eth0</code>. A pool's set of egress IPs is what a downstream partner allow-lists. Each node has one by default; <code>egress_ips_per_node</code> adds more per node to multiply available source ports, though only the primary participates in IP failover. <span class="see">Part 0, 0.2 (f); Part V, 5.3</span></dd>
+
+          <dt>Elastic node</dt>
+          <dd>A node natctl provisioned itself in response to load, within a pool's <code>min_nodes</code>/<code>max_nodes</code> bounds, tagged <code>lng-elastic</code> to distinguish it from the floor. Elastic nodes are drained and removed by the autoscaler as load falls, and automatically replaced if persistently unhealthy. <span class="see">Part V, 5.1; Part IV, 4.7</span></dd>
+
+          <dt>Ephemeral port</dt>
+          <dd>A source port chosen from the operating system's dynamic range for an outbound connection. A NAT node has a finite supply per public IP toward any single destination (on the order of 55,000 to 64,000), which is the ceiling behind port exhaustion. <span class="see">Part V, 5.3</span></dd>
+
+          <dt>Fallback probe</dt>
+          <dd>An opt-in, per-client direct health check of each node, in addition to trusting the roster's own health verdict. When on, a node is usable only if <em>both</em> the control plane and the client's own probe agree it is healthy. Off by default because every client and node share one VLAN segment; switched on automatically for a pool whose live node count is exactly one. Overridable fleet-wide, live, with <code>set-client-config</code>. <span class="see">Part II, 2.2; Part X, 10.2</span></dd>
+
+          <dt>Fencing / STONITH</dt>
+          <dd>Powering off the previous leader through the provider's instance power-management API, and polling until that shutdown is confirmed, before a candidate ever claims leadership — "shoot the other node in the head." It is the actual safety mechanism of leader election; the lease record is only a coordination hint. An unconfirmed fence aborts the election rather than proceeding. A fenced node stays off until an operator deliberately brings it back. <span class="see">Part II, 2.4</span></dd>
+
+          <dt>Five-tuple</dt>
+          <dd>The five fields that together identify one connection: source address, destination address, source port, destination port, and protocol. Identical for every packet of one connection, which is what makes it the right hashing key for ECMP and the natural key of a conntrack entry. <span class="see">Part 0, 0.2 (h)</span></dd>
+
+          <dt>Floor node</dt>
+          <dd>A node declared and created by your infrastructure-as-code — fixed baseline capacity. natctl never deletes, drains, or replaces a floor node under any circumstance; an unhealthy one is compensated for with extra elastic capacity and left for an operator to repair. <span class="see">Part V, 5.1; Part IV, 4.7</span></dd>
+
+          <dt>Follower</dt>
+          <dd>In the every-node control-plane placement, any natctl instance that is not the current leader. A follower runs the full read-only pipeline — discovery, health checks, buddy computation, roster serving — identically to the leader, and stops short only of performing mutating cloud calls. <span class="see">Part II, 2.3</span></dd>
+
+          <dt>FRR (FRRouting)</dt>
+          <dd>The open-source BGP routing daemon (<code>frr.service</code>) on every node that announces the node's own public IP as primary and its buddy's as secondary to the provider's route reflectors. Its running configuration is rewritten by buddy-sync on every pairing change; <code>vtysh -c "show bgp summary"</code> shows live session state. <span class="see">Part IV, 4.4</span></dd>
+
+          <dt>Health check (<code>/healthz</code>)</dt>
+          <dd>The endpoint on every node's metrics exporter (port 9200) that natctl calls once per reconcile pass. It runs three real checks each time — IP forwarding enabled, NAT ruleset loaded, and an actual outbound HTTPS request out the public interface succeeding — and all three must pass. The roster's <code>healthy</code> field is this verdict. <span class="see">Part II, 2.1; Part VII, 7.5</span></dd>
+
+          <dt>Hub</dt>
+          <dd>In a triangle, the node that both forms an ordinary mutual pair with one node and additionally provides a one-directional backup for a third. A hub runs two independent <code>conntrackd</code> processes and announces two secondary routes. <span class="see">Part IV, 4.2</span></dd>
+
+          <dt>IP Sharing</dt>
+          <dd>The Akamai Cloud capability by which a second instance is registered as a legitimate destination for another instance's public IP, after which the provider delivers that address to whichever registered instance is actively announcing it over BGP. One primary and at most one secondary per shared address; only a real public IP on the instance's own interface is eligible. <span class="see">Part 0, 0.2 (g); Part IV, 4.4</span></dd>
+
+          <dt>Layer 2 / Layer 3</dt>
+          <dd>Layer 2 is the local segment on which devices address each other directly by hardware (MAC) address with no router between them — a VLAN. Layer 3 is the IP layer, where routers forward packets by destination address between segments — a VPC. <span class="see">Part 0, 0.2 (c)</span></dd>
+
+          <dt>Leader</dt>
+          <dd>In the every-node control-plane placement, the one natctl instance per pool currently permitted to make cloud-mutating calls — creating or deleting a node, updating an IP-sharing assignment, reserving an address. Every other instance is a follower. Leadership is per pool, never fleet-wide. <span class="see">Part II, 2.3 and 2.4</span></dd>
+
+          <dt>Leader election</dt>
+          <dd>The process by which, in the every-node placement, exactly one natctl instance per pool becomes leader: candidates notice an expired lease, wait a random jitter, re-check the lease, probe the previous leader directly, ask peers for corroboration, fence the previous leader, and only then claim the lease. Defense in depth around fencing, not a mathematically perfect mutual-exclusion guarantee. <span class="see">Part II, 2.4</span></dd>
+
+          <dt>Lease</dt>
+          <dd>A small JSON record in Object Storage naming a pool's current leader, its term, and its last renewal time, valid for 45 seconds per renewal by default. It is a shared bulletin board every instance can read — a best-effort hint, deliberately not the source of correctness, since writing it is not an atomic compare-and-swap. <span class="see">Part II, 2.4; Part VI, 6.3</span></dd>
+
+          <dt>Long-poll</dt>
+          <dd>A roster request with <code>?wait=true&amp;since=&lt;roster_version&gt;</code>, which the server holds open without answering until the roster actually changes or roughly 25 seconds pass. Still an ordinary HTTP request the client initiates — nothing is pushed — but it gives near-instant reaction to changes with near-zero traffic while nothing is changing. <span class="see">Part II, 2.2</span></dd>
+
+          <dt>Masquerade</dt>
+          <dd>The nftables NAT action that rewrites a packet's source address to the address of the interface it is leaving through, and tracks the connection so replies are rewritten back. It is what a NAT node does to every packet arriving on its VLAN interface and leaving its public one. With a reserved IP configured, an explicit source-NAT to that specific address is used instead, to avoid ambiguity when an interface carries more than one address. <span class="see">Part III, 3.1</span></dd>
+
+          <dt>Mutation token</dt>
+          <dd>The shared bearer token protecting the roster API's few mutating routes (drain and the three live-override commands). Generated automatically at deployment, resolved from a narrowly-permissioned local file or environment variable, never stored in the widely distributed configuration file. An instance with none configured refuses every mutating request. All roster reads stay open. <span class="see">Part II, 2.5; Part X, 10.2</span></dd>
+
+          <dt>NAT (Network Address Translation)</dt>
+          <dd>Rewriting a packet's addresses in transit — here, replacing a private source address with a public one on the way out, recording the mapping, and reversing it on the reply — so machines with private-only addresses can reach the internet without holding public addresses themselves. Outbound-initiated by construction. <span class="see">Part 0, 0.1</span></dd>
+
+          <dt>NAT node</dt>
+          <dd>An ordinary Linux compute instance with three interfaces — <code>eth0</code> public, <code>eth1</code> VPC, <code>eth2</code> VLAN — running an nftables ruleset that masquerades VLAN traffic out its public IP. Nothing on it is durable; a broken node is destroyed and replaced, never repaired from a backup. <span class="see">Part I, 1.3; Part III, 3.1</span></dd>
+
+          <dt>natctl</dt>
+          <dd>The fleet controller — a single long-running service (<code>natctl.service</code>) that repeats the reconcile pass on a timer: discover nodes by tag, health-check each, compute buddy pairings, evaluate autoscaling, publish the roster. It also serves the roster HTTP API on port 8099. Entirely stateless: every pass rebuilds the fleet's state from the live provider API and health probes. <span class="see">Part II, 2.1</span></dd>
+
+          <dt><code>natctl-cli</code></dt>
+          <dd>The separate, one-shot operator command-line tool built from the same fleet-management logic as the daemon: <code>status</code>, <code>nodes</code>, <code>drain</code>, <code>resize</code>, <code>check-orphans</code>, <code>set-client-config</code>, <code>set-pool-scaling</code>, <code>set-vpc-sibling-subnets</code>. Takes <code>--config</code> as a top-level flag before the subcommand. <span class="see">Part X, 10.2</span></dd>
+
+          <dt>Nexthop group (resilient)</dt>
+          <dd>The Linux kernel object the client routing agent uses for its ECMP route: a named group of next hops with a fixed table of hash buckets. In resilient mode, removing one next hop reassigns only the buckets that pointed at it, so only roughly <code>1/N</code> of flows move when one of N nodes leaves — every other connection stays where it was. Each node's nexthop ID is a stable hash of its VLAN address, and the group is updated in place rather than recreated. <span class="see">Part III, 3.2</span></dd>
+
+          <dt>nftables</dt>
+          <dd>The Linux kernel packet-filtering and NAT framework. On every node it provides both the masquerade rule that performs NAT and the local input rules that are the only security boundary on the VLAN interface. Each node's ruleset embeds its own addresses and is therefore generated per node. <span class="see">Part III, 3.1; Part VIII, 8.1</span></dd>
+
+          <dt>Object Storage</dt>
+          <dd>The provider's S3-compatible storage, and the one place every piece of durable, non-kernel, non-in-memory state in this system lives: fetched-at-boot artifacts, per-node firewall configurations, the leader-election lease, the reserved-IP ownership manifest, and the live fleet-wide operational settings. A bucket is required for every deployment. <span class="see">Part VI</span></dd>
+
+          <dt>Pass / reconcile pass</dt>
+          <dd>One full run of natctl's control loop, every 15 seconds by default: discover, health-check, compute buddy pairings, evaluate autoscaling, publish the roster — always in that order, always from scratch. Nothing about one pass depends on a previous pass beyond the live state it just re-discovered. <span class="see">Part II, 2.1</span></dd>
+
+          <dt>Pool</dt>
+          <dd>A named set of NAT nodes sharing one VLAN, one set of scaling bounds, and one roster — the unit of both scaling and isolation. A deployment has a default shared pool and may add dedicated pools per tenant. Each pool is one call of the same infrastructure module under a different name. <span class="see">Part I, 1.4; Part V, 5.5</span></dd>
+
+          <dt>Port exhaustion / port headroom</dt>
+          <dd>Port exhaustion is running out of free source ports on a public IP toward a given destination, at which point new connections fail. Port headroom is the fraction still free — an autoscaling signal (scale-out when it drops below 15%) and an alert condition (warning when it drops below 10%), so exhaustion is raised before it happens rather than diagnosed after. <span class="see">Part V, 5.2; Part VII, 7.4</span></dd>
+
+          <dt>Private IP</dt>
+          <dd>In the roster and CLI output, a node's VPC-side address (its <code>eth1</code>) — for example <code>10.60.32.20</code>. Distinct from the node's VLAN address (<code>vlan_ip</code>) and its public address. <span class="see">Part II, 2.2</span></dd>
+
+          <dt>Public IP</dt>
+          <dd>An internet-routable address. On a NAT node, the real public address on <code>eth0</code> — deliberately never a VPC 1:1 NAT address, because only a real public IP is eligible for BGP-based IP Sharing. <span class="see">Part 0, 0.2 (f); Part I, 1.3</span></dd>
+
+          <dt>Quorum</dt>
+          <dd>Agreement from enough of a pool's other members that a candidate's own view is trustworthy, sought before fencing: if any reachable member reports the previous leader healthy, or too few members can be reached to form a majority, the candidate backs off. Meaningful with three or more voters; two nodes alone cannot distinguish a network split from a dead peer, which is what the witness role exists to fix. <span class="see">Part II, 2.3 and 2.4</span></dd>
+
+          <dt>Reserved IP</dt>
+          <dd>A standalone public IPv4 allocation that outlives any single instance, opt-in per pool (<code>reserved_ip_enabled</code>). It fixes each node's primary public address so a replaced node comes back with the same address, keeping a downstream allow-list valid. An elastic node's reserved address is kept idle rather than released when the node is removed, and reused by the next node provisioned; a per-pool ownership manifest makes that reuse provably safe. <span class="see">Part IV, 4.6; Part VI, 6.4</span></dd>
+
+          <dt>Roster</dt>
+          <dd>The JSON snapshot of a pool natctl computes as the last step of every reconcile pass and serves from <code>GET /fleet/&lt;pool&gt;</code>: every node's identifier, three addresses, health verdict, and buddy relationships, plus the pool's live client settings and a <code>roster_version</code> that changes only when the content does. Lives entirely in memory and is rebuilt every pass. <span class="see">Part II, 2.2</span></dd>
+
+          <dt>Roster URL</dt>
+          <dd>The address a client, buddy-sync, or the monitoring stack is configured with to fetch a pool's roster — for example <code>http://10.60.32.5:8099/fleet/shared</code>. May be a comma-separated list; the client routing agent tries each in turn, which is what protects a freshly starting client from a single unreachable address. <span class="see">Part II, 2.2; Part III, 3.3</span></dd>
+
+          <dt>Route reflector</dt>
+          <dd>The provider-side BGP router a node's FRR daemon establishes its session with. It accepts a node's announcements for a shared address only once a matching IP-sharing registration exists, and delivers each shared address to whichever registered node is currently announcing it. <span class="see">Part IV, 4.4</span></dd>
+
+          <dt>Shared pool</dt>
+          <dd>The default pool every tenant uses unless given dedicated capacity. Mechanically identical to a dedicated pool. <span class="see">Part I, 1.4</span></dd>
+
+          <dt>Sibling subnet</dt>
+          <dd>Another subnet in the same VPC as the one a node or client is attached to. An instance's VPC interface only ever receives a kernel route to its own directly-connected subnet, so reaching a sibling requires an explicit route; this system discovers every subnet in the VPC and routes nodes and clients to all of them automatically, with a live override available. <span class="see">Part III, 3.3; Part X, 10.2</span></dd>
+
+          <dt>Softirq (CPU/softirq ratio)</dt>
+          <dd>The share of a CPU core's time spent on kernel network packet processing. The autoscaler watches the single busiest core anywhere in the pool — not an average — because network interrupt handling is pinned to specific cores, so a flood of small packets can saturate one core while everything else looks idle. Scale-out only; never drives scale-in. <span class="see">Part V, 5.2</span></dd>
+
+          <dt>Split-brain</dt>
+          <dd>Two natctl instances both believing themselves leader of the same pool at the same time. Made rare rather than impossible by election jitter, the direct liveness check, peer corroboration, fencing, a post-election settle delay, and a fresh leadership check before every individual mutating call. Detectable from the leader-election metrics (a per-pool leader count other than exactly one) and by reading the lease record directly. <span class="see">Part II, 2.4; Part X, 10.8</span></dd>
+
+          <dt>Subnet</dt>
+          <dd>A contiguous range of IP addresses, written in CIDR notation, within a larger network — a VPC is divided into subnets. Every NAT node and the control plane share one VPC subnet in this book's examples. <span class="see">Part 0, 0.2 (a)</span></dd>
+
+          <dt>Sustained-breach window</dt>
+          <dd>The requirement that an autoscaling signal stay past its watermark for a configured number of consecutive passes (two by default) before it is trusted enough to size an action on. One noisy reading starts a breach streak; it never triggers an action by itself. <span class="see">Part V, 5.2</span></dd>
+
+          <dt>Tag</dt>
+          <dd>A provider-side label on an instance. Every node in a pool carries <code>lng</code>, <code>lng-fleet</code>, and <code>lng-pool-&lt;pool-name&gt;</code>; nodes natctl provisioned also carry <code>lng-elastic</code>. Discovery, every pass, is one API call filtering on the pool tag — never a lookup against anything natctl stores itself. <span class="see">Part II, 2.1</span></dd>
+
+          <dt>Term</dt>
+          <dd>The monotonically increasing number identifying one leadership tenure in a pool's election. Every genuine re-election increments it; a step change in the term metric on more than one node at once is the visible signature of a real handover. <span class="see">Part II, 2.4; Part VII, 7.2</span></dd>
+
+          <dt>Three-interface node</dt>
+          <dd>The layout every NAT node uses: <code>eth0</code> public (internet egress, the address a buddy fails over), <code>eth1</code> VPC (connection-state sync only, never client traffic), <code>eth2</code> VLAN (transparent NAT for the client fleet). Each interface has exactly one job. <span class="see">Part I, 1.3</span></dd>
+
+          <dt>Throughput ratio</dt>
+          <dd>A node's measured network throughput divided by the real, published bandwidth capacity of its specific instance plan, looked up from the provider rather than assumed. An autoscaling signal with a scale-out trigger at 85%. <span class="see">Part V, 5.2</span></dd>
+
+          <dt>Triangle</dt>
+          <dd>The buddy arrangement for an odd healthy node count of three or more: the trailing three nodes in sorted order form one ordinary mutual pair plus a one-directional backup from the pair's second member (the hub) to the third node, so no node is left without a backup. For connection-state sync specifically, the third node also syncs back to the hub, since sync needs both ends. <span class="see">Part IV, 4.2</span></dd>
+
+          <dt>VLAN</dt>
+          <dd>A private Layer 2 broadcast segment on Akamai Cloud, joined by label. Any attached instance can forward for any other, which is why the client fleet and each node's client-facing interface live here. Carries no address-assignment mechanism (all addresses are static) and is not filtered by Cloud Firewall. <span class="see">Part 0, 0.2 (c); Part III, 3.4</span></dd>
+
+          <dt>VPC (Virtual Private Cloud)</dt>
+          <dd>An isolated Layer 3 private network you define inside the provider, divided into subnets. This project brings its own VPC rather than creating one. Used for node-to-node connection-state sync and for reaching the control plane; not usable for the NAT path itself, because the fabric will not transit-route one instance's internet traffic through another. <span class="see">Part 0, 0.2 (b); Part I, 1.2</span></dd>
+
+          <dt>Witness node</dt>
+          <dd>An optional small, permanent instance (<code>witness_enabled</code>, default plan <code>g6-nanode-1</code>) that runs natctl in a vote-and-health-check-only mode for the every-node control-plane placement: it corroborates leader-election decisions and independently health-checks the pool's real nodes, but never forwards traffic, holds a public IP, joins buddy pairing, or claims leadership. It gives a two-node pool a real third voter; it adds nothing to a pool that already has three or more real nodes. <span class="see">Part II, 2.3</span></dd>
+
+          <dt>Zombie node</dt>
+          <dd>A node the provider reports as running while its own health check fails continuously. The pool's minimum is always measured in <em>healthy</em> nodes, so a zombie never counts toward it; an elastic zombie is drained and replaced after a configured threshold, while a floor zombie is compensated for with extra elastic capacity and left for an operator. <span class="see">Part IV, 4.7</span></dd>
+        </dl>
+      </section>
+
       <div class="book-footer">
         <div class="footer-mascot">
           <div class="footer-otto-badge" aria-hidden="true">
@@ -1837,6 +2304,10 @@ systemctl restart natctl</pre></li>
 <script>
 (function(){
   var parts = [
+    {label:"Part 0", title:"Foundations", chapters:[
+      ["c0-1","0.1 What a NAT Gateway Is"],["c0-2","0.2 Cloud Networking Primer"],
+      ["c0-3","0.3 Why Self-Hosted"],["c0-4","0.4 How This Book Is Organized"]
+    ]},
     {label:"Part I", title:"Architecture & Design", chapters:[
       ["c1-1","1.1 What This Is"],["c1-2","1.2 The Core Constraint"],
       ["c1-3","1.3 The Three-Interface Node"],["c1-4","1.4 Active-Active & Pools"]
@@ -1882,6 +2353,9 @@ systemctl restart natctl</pre></li>
       ["c10-3","10.3 Common Procedures"],["c10-4","10.4 Troubleshooting Playbook"],
       ["c10-5","10.5 Configuration Reference"],["c10-6","10.6 Updating Any Field"],
       ["c10-7","10.7 Where to Look First"],["c10-8","10.8 Control-Plane Recovery"]
+    ]},
+    {label:"Appendix", title:"Glossary", chapters:[
+      ["cA-1","A.1 Terms of Art"]
     ]}
   ];
 

@@ -559,12 +559,12 @@ module "artifacts" {
   secret_key = var.natctl_object_storage_secret_key
 }
 
-# Found via an independent adversarial security review, 2026-09-14 -- see
-# that module's own header comment for the full incident (Cloud Firewall
-# doesn't filter VLAN traffic, and the default single-dedicated-host
-# control plane renders no nftables of its own). Auto-generated, not
-# operator-supplied like root_pass/grafana_admin_password -- see the dev
-# repo's identical resource comment for why. Mirrors the dev repo's
+# The roster API's mutating routes need an application-level auth check
+# of their own, since neither Cloud Firewall (doesn't filter VLAN
+# traffic) nor the default single-dedicated-host control plane (renders
+# no nftables of its own) closes that gap on its own. Auto-generated,
+# not operator-supplied like root_pass/grafana_admin_password -- see the
+# dev repo's identical resource comment for why. Mirrors the dev repo's
 # environments/example/main.tf byte-for-byte.
 resource "random_password" "natctl_api_mutation_token" {
   length  = 48
@@ -922,9 +922,7 @@ locals {
       # Deliberately null -- set via NATCTL_API_MUTATION_TOKEN in
       # /etc/natctl/env instead (this composed document is embedded
       # directly in cloud-init user_data, retrievable via the Metadata
-      # API, so no real secret belongs here). Found via an independent
-      # adversarial security review, 2026-09-14 -- see api.py's own
-      # header comment for the incident this closes.
+      # API, so no real secret belongs here).
       mutation_token = null
       # Lets a vlan_only/vpc_vlan client instance fetch the compiled
       # client-agent binary over the fleet's own VLAN/VPC before it has

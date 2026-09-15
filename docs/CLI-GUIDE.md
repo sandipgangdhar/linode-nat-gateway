@@ -326,8 +326,9 @@ whether that was a real CIDR list or an empty one.
 
 **Refuses by default if the new list (or the empty list `--clear`
 produces) would no longer cover this environment's own control-plane
-addresses** — confirmed live to cut every client's route to natctl
-itself, with no automatic recovery:
+addresses** — dropping the one CIDR a client's `NATCTL_ROSTER_URL`
+actually lives in would cut every client's route to natctl itself,
+with no automatic recovery:
 
 ```
 Refusing: this would no longer cover this environment's own

@@ -176,7 +176,7 @@ variable "prometheus_remote_write_password" {
 }
 
 variable "manifest_url" {
-  description = "Public URL (terraform/modules/artifacts' manifest_url output) for the SHA-256 integrity manifest -- fetched once at the top of runcmd, then every other curl'd artifact below is verified against it before ever being executed or installed. Found via an independent adversarial security review, 2026-09-14 -- see that module's main.tf local.manifest comment for the incident this closes."
+  description = "Public URL (terraform/modules/artifacts' manifest_url output) for the SHA-256 integrity manifest -- fetched once at the top of runcmd, then every other curl'd artifact below is verified against it before ever being executed or installed. Without this check, a compromised or tampered artifact fetched from Object Storage at boot would be trusted and executed with no way to detect the substitution."
   type        = string
 }
 
