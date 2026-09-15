@@ -291,9 +291,9 @@ variable "root_pass" {
 }
 
 variable "ip_failover_enabled" {
-  description = "Enable BIDIRECTIONAL BGP-based IP Sharing (FRR) between buddy pairs so a dead node's public IP fails over, not just its conntrack state — each node self-announces its own IP and backs up its buddy's simultaneously. Requires linode_bgp_dcid to be set for your region. Applies uniformly to every pool. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3/§4.4."
+  description = "Enable BIDIRECTIONAL BGP-based IP Sharing (FRR) between buddy pairs so a dead node's public IP fails over, not just its conntrack state — each node self-announces its own IP and backs up its buddy's simultaneously. Requires linode_bgp_dcid to be set for your region (a plan/apply-time check fails loudly and by name if it isn't). Applies uniformly to every pool. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3/§4.4. Defaults true: without it, a dead node's public IP simply goes dark rather than failing over to its buddy."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "conntrack_buddy_sync_enabled" {

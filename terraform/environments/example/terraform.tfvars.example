@@ -35,6 +35,13 @@
 linode_token = "REPLACE_ME"
 region        = "us-east"
 
+# Prefix for every resource this environment creates whose name is
+# otherwise fixed (module.vpc's three Cloud Firewalls). Change this to
+# run a second, clearly-distinguishable copy of this environment in the
+# same account/region with no naming collision. Defaults to "lng-example"
+# -- uncomment only if you need a different value.
+# label = "lng-example"
+
 # --------------------------------------------------------------------------
 # Bring your own VPC -- REQUIRED. This automation does not create the
 # VPC or its subnet(s) itself (see terraform/modules/vpc/main.tf's
@@ -177,6 +184,38 @@ pools = {
     witness_private_ip_offset = 52            # VPC side -- must not collide with THIS pool's own private_ip_offset range (50-51, floor_nodes=2) or any other pool's
   }
 }
+
+# --------------------------------------------------------------------------
+# BGP-based IP failover -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+# §4.4 (and Part 0, 0.2 (g) for how BGP/IP Sharing work at all).
+# Defaults TRUE: without it, a dead node's public IP simply goes dark --
+# client-side ECMP reroutes NEW connections to surviving nodes, but
+# nothing takes over the address itself. With it (the default), every
+# buddy pair bidirectionally announces both its own and its buddy's
+# public IP over BGP (FRR), so a dead node's address fails over to its
+# live buddy automatically.
+#
+# linode_bgp_dcid is therefore REQUIRED for a working `terraform apply`
+# with the defaults -- look up your region's BGP data-center id from
+# Linode's current failover documentation (linked in variables.tf's own
+# description); it is deliberately not hardcoded here since it's a
+# Linode-side mapping that can change independently of this project. A
+# plan/apply-time check fails loudly, by name, if this is left unset
+# while ip_failover_enabled is true.
+#
+# Set ip_failover_enabled = false below instead if BGP IP Sharing isn't
+# available in your region, or you deliberately want to run without
+# this HA layer.
+# --------------------------------------------------------------------------
+linode_bgp_dcid = 0 # REPLACE_ME -- see variables.tf's linode_bgp_dcid description
+# ip_failover_enabled = false
+
+# Whether Terraform-managed FLOOR nodes run buddy-sync at all (default
+# true). natctl-provisioned elastic nodes are governed separately by
+# natctl.yaml's own PoolConfig.conntrack_buddy_sync_enabled (also
+# default true) -- keep both in sync, or floor nodes keep syncing
+# indefinitely after you've turned it off for elastic nodes.
+# conntrack_buddy_sync_enabled = true
 
 # Which pool's VLAN the observability host joins directly (only meaningful
 # when natctl_on_node_enabled is false, below) -- see variables.tf's

@@ -261,9 +261,9 @@ variable "conntrack_buddy_sync_enabled" {
 }
 
 variable "ip_failover_enabled" {
-  description = "Whether nodes in this fleet run FRR (v5 — replaces lelastic, which was architecturally locked to one role per node) for BIDIRECTIONAL BGP-based IP Sharing: each node self-announces its own eth0 public IP AND backs up its buddy's, so a node's buddy can take over its IP on failure, making buddy-pair conntrack sync (natctl_roster_url above) actually deliver session survival rather than just unusable mirrored state — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3/§4.4 for why both pieces are needed together and how bidirectional coverage was validated live. Requires natctl_roster_url to be set. Requires linode_bgp_dcid below. IP Sharing availability varies by Linode data center — confirm your region supports it before enabling (https://techdocs.akamai.com/cloud-computing/docs/configure-failover-on-a-compute-instance)."
+  description = "Whether nodes in this fleet run FRR for BIDIRECTIONAL BGP-based IP Sharing: each node self-announces its own eth0 public IP AND backs up its buddy's, so a node's buddy can take over its IP on failure, making buddy-pair conntrack sync (natctl_roster_url above) actually deliver session survival rather than just unusable mirrored state — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3/§4.4 for why both pieces are needed together. Requires natctl_roster_url to be set. Requires linode_bgp_dcid below. IP Sharing availability varies by Linode data center — confirm your region supports it before enabling (https://techdocs.akamai.com/cloud-computing/docs/configure-failover-on-a-compute-instance). Defaults true: without it, a dead node's public IP simply goes dark rather than failing over to its buddy, which is real HA this fleet is otherwise built to provide."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "linode_bgp_dcid" {
