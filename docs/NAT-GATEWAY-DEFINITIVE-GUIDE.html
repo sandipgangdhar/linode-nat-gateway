@@ -1399,10 +1399,12 @@ flowchart LR
           <thead><tr><th>Metric</th><th>What it tells you</th></tr></thead>
           <tbody>
             <tr><td><code>conntrack_buddy_paired</code></td><td>Whether this node currently has a live sync buddy — deliberately separate from overall health, since an unpaired node is still fully healthy and fully in rotation</td></tr>
+            <tr><td><code>conntrack_peer_count</code></td><td>How many simultaneous conntrackd sync peers this node currently holds — usually 0 or 1, 2 for a triangle's hub node (4.2's odd-node handling). The Prometheus-idiomatic way to alert on the triangle-specific "2 peers" shape directly, rather than inferring it from the buddy list.</td></tr>
             <tr><td><code>conntrack_stat_total</code></td><td>Raw kernel connection-tracking accounting (inserts, drops, errors) — the same category of numbers AWS and GCP expose for their own NAT services</td></tr>
             <tr><td><code>cpu_softirq_seconds_total</code></td><td>Cumulative per-core time spent on network packet-processing work — rate this per core and take the max across the pool for the busiest-core saturation ratio the autoscaler itself watches (Part V, 5.2)</td></tr>
             <tr><td><code>bgp_peers_total</code> / <code>bgp_peers_established_total</code></td><td>How many BGP peers this node has configured, and how many sessions are actually up</td></tr>
             <tr><td><code>bgp_peer_state</code></td><td>Per-peer session state — established or not</td></tr>
+            <tr><td><code>bgp_min_peer_established_seconds</code></td><td>The shortest continuous Established duration across this node's own BGP peers — 0 if any peer isn't Established, or if none are configured. Below the fleet's IP-failover BGP maturity threshold (4.4), this node's own backup-IP announcement shouldn't yet be trusted.</td></tr>
             <tr><td><code>ip_failover_self_announced</code></td><td>Whether this node is correctly announcing its own address — should read true on every healthy node; false means this node's own shared IP is not currently reachable via BGP at all</td></tr>
             <tr><td><code>ip_failover_buddy_count</code></td><td>How many other nodes' addresses this one is currently backing up — two on a triangle's hub, one on an ordinary pair member, zero if IP failover isn't in use</td></tr>
           </tbody>
@@ -1532,7 +1534,7 @@ flowchart LR
       <div class="part-open" id="part-9">
         <div class="part-num">Part IX</div>
         <h2 class="part-title">Deployment</h2>
-        <p class="part-dek">What's required before the first deploy, the deployment sequence itself, and how a real customer instance gets connected once the fleet exists.</p>
+        <p class="part-dek">What's required before the first deploy, every Terraform variable you'll actually set, the deployment sequence itself, and how a real customer instance gets connected once the fleet exists.</p>
         <div class="part-rule"></div>
       </div>
 
@@ -1544,10 +1546,112 @@ flowchart LR
           <li>An object storage bucket, created ahead of time — required for every deployment, since fetched-at-boot artifacts (Part VI) depend on it unconditionally, not only in the every-node control-plane placement.</li>
           <li>An SSH key pair for administrative access, and an explicit administrator address range for the control-plane host's dashboard and SSH access.</li>
         </ul>
+        <p>9.2 is the complete, variable-by-variable reference for turning these prerequisites into an actual <code>terraform.tfvars</code> — read it before your first apply.</p>
       </section>
 
       <section class="chapter" id="c9-2">
-        <h2><span class="chno">9.2</span> Deployment Sequence</h2>
+        <h2><span class="chno">9.2</span> Terraform Configuration Reference</h2>
+        <p class="lede">Every variable in <code>terraform/environments/example/terraform.tfvars</code> — the file you actually fill in before your first <code>terraform apply</code>. This is a different layer from 10.5's <code>natctl.yaml</code> reference: most of these values flow <em>into</em> the composed <code>natctl.yaml</code> and the module calls that provision your fleet, rather than being natctl's own runtime config. Start from <code>terraform.tfvars.example</code> in that same directory — copy it to <code>terraform.tfvars</code> (gitignored) and fill in the values below.</p>
+
+        <h3>Account and network (required)</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Variable</th><th>Type</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>linode_token</code></td><td>string</td><td>API token for every resource this environment creates or reads — see Part VIII, 8.2 for the exact scopes needed.</td></tr>
+            <tr><td><code>region</code></td><td>string</td><td>Linode region for every resource this environment creates. Defaults to <code>us-east</code> in the example file — change it to your own.</td></tr>
+            <tr><td><code>vpc_id</code></td><td>int</td><td>The existing VPC this environment joins — this project never creates a VPC itself, only reads one back (9.1's prerequisites).</td></tr>
+            <tr><td><code>public_subnet_id</code></td><td>int</td><td>The VPC subnet every pool's nodes and the control plane share. Its CIDR needs enough headroom for every pool's <code>private_ip_offset</code> range combined.</td></tr>
+            <tr><td><code>private_subnet_ids</code></td><td>map of string to int</td><td>Optional (default <code>{}</code>). Only needed if some other VPC-resident workload needs to reach natctl's roster API on the control-plane host — a Cloud Firewall allow-list concern, not a routing one. Does not affect the NAT client fleet, which rides VLAN, not VPC (Part I, 1.2).</td></tr>
+            <tr><td><code>admin_cidrs</code></td><td>list of strings</td><td>Required, no default — every firewall this environment creates scopes SSH (and the control plane's dashboards) to exactly these CIDRs. Never left open to <code>0.0.0.0/0</code> by default; use your own admin/office/VPN egress range(s).</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Identity and access (required)</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Variable</th><th>Type</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>label</code></td><td>string</td><td>Optional (default <code>lng-example</code>). Prefix for every resource whose name would otherwise be fixed — this environment's three Cloud Firewalls. Change it to run a second, clearly-distinguishable copy of this environment in the same account/region.</td></tr>
+            <tr><td><code>authorized_keys</code></td><td>list of strings</td><td>SSH public keys installed on every node this environment creates — floor nodes and, for every pool, the natctl-provisioned elastic nodes that mirror this same list.</td></tr>
+            <tr><td><code>root_pass</code></td><td>string (sensitive)</td><td>Root password set at instance creation. SSH key auth (above) is still the expected day-to-day access path — this exists as a fallback and because Linode requires one at creation time.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Object Storage (required, regardless of control-plane placement)</h3>
+        <p>Needed unconditionally — <code>terraform/modules/artifacts</code> uploads the fleet's fetched-at-boot software here once per apply (Part VI, 6.2), and every node fetches it at boot. Create the bucket yourself first; this project doesn't create it via Terraform.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Variable</th><th>Type</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>natctl_object_storage_endpoint</code></td><td>string</td><td>The bucket's S3-compatible endpoint, e.g. <code>https://us-east-1.linodeobjects.com</code> — matches your <code>region</code> above, not necessarily identical to it (Object Storage endpoint slugs and compute region slugs aren't always the same string).</td></tr>
+            <tr><td><code>natctl_object_storage_bucket</code></td><td>string</td><td>The bucket name.</td></tr>
+            <tr><td><code>natctl_object_storage_access_key</code> / <code>natctl_object_storage_secret_key</code></td><td>string (sensitive)</td><td>Credentials for that bucket. The same bucket and keys also back the leader-election lease when <code>natctl_on_node_enabled</code> is true, below — one bucket, dual purpose.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Pools — the fleet itself (required)</h3>
+        <p><code>pools</code> is a map: each key is a pool name you choose (the example ships <code>common</code> and <code>acme</code>, one shared and one dedicated-tenant pool), and each value is an object with the fields below. Add a third pool by adding another entry — nothing else in this environment's Terraform needs touching for that. Two things are checked at <code>terraform plan</code> time, not left to chance: any two pools sharing a <code>vlan_label</code> must have non-overlapping <code>vlan_cidr_reserved</code> sub-blocks, and every pool's <code>private_ip_offset</code> range must not overlap any other pool's, since all pools share one <code>public_subnet_id</code>.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Type</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>fleet_label</code></td><td>string</td><td>Prefix for this pool's own instance labels, distinct from the environment-wide <code>label</code> above.</td></tr>
+            <tr><td><code>floor_nodes</code> / <code>max_nodes</code></td><td>int</td><td>Terraform-managed baseline capacity, and the ceiling natctl's own elastic autoscaling can grow to (Part V, 5.1). If <code>natctl_on_node_enabled</code> is true, <code>floor_nodes</code> is also a real safety decision — see that variable's own row below.</td></tr>
+            <tr><td><code>instance_type</code></td><td>string</td><td>Linode plan for this pool's floor nodes, e.g. <code>g6-dedicated-4</code>. Dedicated-CPU plans are recommended (Part V, 5.3) — shared-CPU plans risk noisy-neighbor throughput variance for a NAT node.</td></tr>
+            <tr><td><code>vlan_label</code> / <code>vlan_cidr</code></td><td>string</td><td>The VLAN this pool's client-facing <code>eth2</code> joins, and its full, real CIDR — every node's interface uses this exact prefix length. Two pools may share one <code>vlan_label</code> ("same-VLAN mode") to serve one physical VLAN with isolated capacity per tenant.</td></tr>
+            <tr><td><code>vlan_cidr_reserved</code></td><td>string</td><td>This pool's own small, wholly-owned sub-block nested inside <code>vlan_cidr</code> — every floor/elastic/witness/observability address for this pool is drawn from here, never from the wider VLAN a customer's own client fleet also lives on.</td></tr>
+            <tr><td><code>private_ip_offset</code></td><td>int</td><td>VPC-side host offset — must be globally unique across every pool in this environment, since they all share one <code>public_subnet_id</code>.</td></tr>
+            <tr><td><code>vlan_ip_offset</code> / <code>elastic_ip_offset_start</code></td><td>int</td><td>VLAN-side host offsets, pool-local to this pool's own <code>vlan_cidr_reserved</code> — safe to reuse the same small numbers across different pools, since each pool's reserved sub-block is its own address space. Floor addresses start at <code>vlan_ip_offset</code>, elastic nodes' at <code>elastic_ip_offset_start</code>.</td></tr>
+            <tr><td><code>reserved_ip_pool</code></td><td>list of strings</td><td>Optional. Addresses you already own for natctl to prefer over minting a fresh reservation — verified against the account's real unattached reserved IPs before ever being trusted. Only meaningful with <code>reserved_ip_enabled</code> below.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Pools — the quorum-witness role (optional, per pool)</h3>
+        <p>Only meaningful once <code>natctl_on_node_enabled</code> below is true, and only worth setting on a pool whose <code>floor_nodes</code> stays at 2 — the genuinely risky configuration for that mode (Part II, 2.4; Part IV, 4.1). Adds a small, permanent, non-NAT-serving instance that becomes a real third quorum voter without a third full NAT-capable node.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>witness_enabled</code></td><td>bool</td><td><code>false</code></td><td>Provisions the witness instance for this pool.</td></tr>
+            <tr><td><code>witness_instance_type</code></td><td>string</td><td><code>g6-nanode-1</code></td><td>The witness never forwards traffic, so the cheapest generally-available plan is enough.</td></tr>
+            <tr><td><code>witness_private_ip_offset</code></td><td>int</td><td><em>(required if <code>witness_enabled</code>)</em></td><td>VPC-side offset for the witness — must not collide with this pool's own <code>private_ip_offset</code> range or any other pool's.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Control-plane placement</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Variable</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>observability_vlan_pool</code></td><td>string</td><td><em>(required, no default)</em></td><td>Which pool's VLAN the observability host joins directly — must be a key in <code>pools</code> above, or <code>""</code> to skip joining any VLAN. Only meaningful when <code>natctl_on_node_enabled</code> is false (the single-dedicated-host layout, Part II, 2.3).</td></tr>
+            <tr><td><code>observability_private_ip_offset</code></td><td>int</td><td><code>5</code></td><td>VPC-side offset for the observability host's own static address. Only worth changing if this environment shares its <code>public_subnet_id</code> with a completely separate LNG deployment already using the default.</td></tr>
+            <tr><td><code>natctl_on_node_enabled</code></td><td>bool</td><td><code>false</code></td><td>Runs natctl on every NAT node (leader-elected, STONITH-fenced) instead of a single dedicated host (Part II, 2.3/2.4). Check every pool's <code>floor_nodes</code> against the node-count guidance above before enabling this — 2 nodes is the genuinely risky shape without a witness.</td></tr>
+            <tr><td><code>api_port</code></td><td>int</td><td><code>8099</code></td><td>TCP port natctl's roster API listens on, threaded through every firewall rule, nftables ruleset, and the composed <code>natctl.yaml</code> automatically. Changing it on an already-deployed environment does not retroactively update URLs already baked into provisioned clients.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>High availability</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Variable</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>ip_failover_enabled</code></td><td>bool</td><td><code>true</code></td><td>BGP-based IP failover between buddy pairs (Part IV, 4.4; Part 0, 0.2 (g)) — without it, a dead node's public IP simply goes dark rather than failing over. Requires <code>linode_bgp_dcid</code> below, enforced by a plan/apply-time check that fails loudly, by name, if it's missing. Set <code>false</code> if BGP IP Sharing isn't available in your region.</td></tr>
+            <tr><td><code>linode_bgp_dcid</code></td><td>number</td><td><em>(unset)</em></td><td>Linode's BGP data-center ID for your region's route-reflector neighbors — look this up from Linode's current failover documentation, since it's a Linode-side mapping that can change independently of this project. Required once <code>ip_failover_enabled</code> is true.</td></tr>
+            <tr><td><code>conntrack_buddy_sync_enabled</code></td><td>bool</td><td><code>true</code></td><td>Whether Terraform-managed floor nodes run buddy-sync at all (Part IV, 4.3). Applies uniformly to every pool — keep it matched with each pool's own natctl-side setting (10.5's per-pool HA table), or floor nodes keep syncing after you've turned it off for elastic nodes.</td></tr>
+            <tr><td><code>reserved_ip_enabled</code></td><td>bool</td><td><code>false</code></td><td>Every node's primary public IP becomes a Linode Reserved IP that survives instance replacement (Part IV, 4.6) — for downstream IP-whitelisting. Account-gated on Linode's side; confirm it's enabled for your account before turning this on.</td></tr>
+            <tr><td><code>placement_group_enabled</code></td><td>bool</td><td><code>false</code></td><td>Spreads every pool's floor nodes across Linode Placement Groups (Part IV, 4.5), closing the correlated-physical-host-failure gap buddy sync and BGP failover alone don't cover. Floor nodes only.</td></tr>
+            <tr><td><code>placement_group_policy</code></td><td>string</td><td><code>strict</code></td><td>Whether Akamai <em>refuses</em> (<code>strict</code>) or merely <em>avoids</em> (<code>flexible</code>) co-locating members of the same placement group when capacity is tight.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h3>Monitoring</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Variable</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>grafana_admin_password</code></td><td>string (sensitive)</td><td><code>changeme-lng-grafana</code></td><td>Admin password for this environment's own Grafana, if provisioned. Change this from the default before any real deployment — it's a placeholder, not a secure default.</td></tr>
+            <tr><td><code>run_monitoring_stack</code></td><td>bool</td><td><code>true</code></td><td>Whether this environment provisions its own Prometheus/Grafana/Alertmanager at all. Set <code>false</code> if you already have monitoring — point your own Prometheus at every node's <code>:9200/metrics</code> (via natctl's <code>GET /file_sd</code> for target discovery) instead.</td></tr>
+            <tr><td><code>customer_prometheus_remote_write_url</code></td><td>string</td><td><code>""</code></td><td>If set (and <code>run_monitoring_stack</code> is true), the local Prometheus this environment provisions also pushes every scraped sample here via <code>remote_write</code> — e.g. your Grafana Cloud / Mimir / Thanos Receive / VictoriaMetrics endpoint.</td></tr>
+            <tr><td><code>customer_prometheus_remote_write_username</code> / <code>customer_prometheus_remote_write_password</code></td><td>string (sensitive)</td><td><code>""</code></td><td>Basic-auth credentials for the endpoint above, if it needs them.</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="chapter" id="c9-3">
+        <h2><span class="chno">9.3</span> Deployment Sequence</h2>
         <ol>
           <li>Provision the fleet: the floor nodes for each pool, the control-plane host (or, if the every-node placement is chosen, nothing dedicated at all), and the two firewalls covering the node and control-plane traffic.</li>
           <li>Confirm the fleet is healthy: every floor node passes its own health check and appears in the roster with a healthy status.</li>
@@ -1556,8 +1660,8 @@ flowchart LR
         </ol>
       </section>
 
-      <section class="chapter" id="c9-3">
-        <h2><span class="chno">9.3</span> Onboarding a Client Instance</h2>
+      <section class="chapter" id="c9-4">
+        <h2><span class="chno">9.4</span> Onboarding a Client Instance</h2>
         <p>Once a private instance exists, has its VLAN interface attached at the account level, and has a real static VLAN address applied by your own automation (this project provides no tooling for that step, see 3.4), a single configuration step against that instance finishes the job: it verifies the address is really there, installs and starts the routing agent only if the instance genuinely needs one, and points it at the correct pool's roster URL. The instance is now a fully participating client, spreading its egress traffic across every currently healthy node in that pool.</p>
         <p>If the instance has no internet path of its own and you don't already have a copy of the configuration script on hand, fetch it directly from the control plane instead of copying it over separately — it's served the same way the compiled routing agent itself is, over the fleet's own private network: <code>curl -fsSL http://&lt;roster-host&gt;:8099/agents/install-nat-client.sh -o install-nat-client.sh</code>.</p>
         <p>This project also creates a purpose-built, SSH-only firewall specifically for client instances — attach it to whatever your own automation creates, via the <code>client_firewall_id</code> Terraform output (<code>terraform output client_firewall_id</code>).</p>
@@ -1855,8 +1959,10 @@ natctl-cli --config /etc/natctl/config.yaml set-vpc-sibling-subnets --clear</pre
             <tr><td><code>authorized_keys</code></td><td>list of strings</td><td>SSH public keys installed on every node natctl provisions for this pool.</td></tr>
             <tr><td><code>root_pass</code></td><td>string</td><td>Root password set on provisioning (SSH key auth is still the expected access path).</td></tr>
             <tr><td><code>vlan_label</code> / <code>vlan_cidr</code></td><td>string</td><td>The VLAN every node's <code>eth2</code> joins, and its CIDR. Must match this pool's <code>nat-fleet</code> module's own <code>vlan_label</code>/<code>vlan_cidr</code>.</td></tr>
-            <tr><td><code>vlan_cidr_reserved</code></td><td>string</td><td>This pool's own small, wholly-owned sub-block nested inside <code>vlan_cidr</code> — every floor/elastic/observability node's address is drawn from here, never from the wider VLAN a customer's own client fleet also lives on.</td></tr>
-            <tr><td><code>vlan_ip_offset</code> / <code>elastic_ip_offset_start</code></td><td>int</td><td>Host offsets within <code>vlan_cidr_reserved</code> — the floor's addresses start at <code>vlan_ip_offset</code>, elastic nodes' at <code>elastic_ip_offset_start</code>. Compared directly against each other, never summed.</td></tr>
+            <tr><td><code>vlan_reserved_cidr</code></td><td>string</td><td>This pool's own small, wholly-owned sub-block nested inside <code>vlan_cidr</code> — every floor/elastic/observability node's address is drawn from here, never from the wider VLAN a customer's own client fleet also lives on. Named <code>vlan_cidr_reserved</code> on the Terraform side (9.2) — same field, populated across the two layers, different word order in each.</td></tr>
+            <tr><td><code>vlan_ip_offset</code> / <code>elastic_ip_offset_start</code></td><td>int</td><td>Host offsets within <code>vlan_reserved_cidr</code> — the floor's addresses start at <code>vlan_ip_offset</code>, elastic nodes' at <code>elastic_ip_offset_start</code>. Compared directly against each other, never summed.</td></tr>
+            <tr><td><code>tags</code></td><td>list of strings</td><td>Extra tags merged onto this pool's own required floor/elastic/pool-name tags (a supplement, never a replacement — natctl's own discovery still depends on the required ones being present).</td></tr>
+            <tr><td><code>ip_failover_phantom_grace_seconds</code></td><td>int</td><td>Default <code>300</code>. How long a buddy keeps covering a node's public IP after that node vanishes from discovery entirely (not just unhealthy — genuinely gone), before giving up. Long enough to survive a routine reboot or a transient API-visibility blip; short enough that a permanently-gone resource doesn't stay misrepresented as covered forever.</td></tr>
             <tr><td><code>image</code></td><td>string</td><td>Base OS image for nodes natctl provisions (default <code>linode/ubuntu22.04</code>).</td></tr>
           </tbody>
         </table></div>
@@ -1930,7 +2036,8 @@ natctl-cli --config /etc/natctl/config.yaml set-vpc-sibling-subnets --clear</pre
           <tbody>
             <tr><td><code>exporter_py_url</code> / <code>buddy_sync_py_url</code> / <code>natctl_file_urls</code></td><td>Source-mode artifact URLs (unused in this compiled-binary repository).</td></tr>
             <tr><td><code>agent_distribution</code></td><td><code>"source"</code> or <code>"binary"</code> — always <code>"binary"</code> in this repository.</td></tr>
-            <tr><td><code>exporter_bin_url</code> / <code>buddy_sync_bin_url</code> / <code>natctl_bin_url</code></td><td>Compiled-binary artifact URLs elastic nodes fetch at boot.</td></tr>
+            <tr><td><code>exporter_bin_url</code> / <code>buddy_sync_bin_url</code> / <code>natctl_bin_url</code> / <code>natctl_cli_bin_url</code></td><td>Compiled-binary artifact URLs elastic nodes fetch at boot — the last one for the operator-facing <code>natctl-cli</code> tool specifically.</td></tr>
+            <tr><td><code>manifest_url</code></td><td>The SHA-256 integrity manifest covering every artifact above — every fetched file is verified against it before ever being executed or installed. An empty value falls back to a bare, unverified <code>curl</code>; a real deployment always has Terraform populate this.</td></tr>
             <tr><td><code>nat_exporter_service_url</code> / <code>lng_buddy_sync_service_url</code> / <code>conntrackd_peer_service_url</code> / <code>natctl_service_url</code> / <code>natctl_requirements_txt_url</code></td><td>Static systemd unit files (and, in source mode, <code>requirements.txt</code>) uploaded once per environment.</td></tr>
             <tr><td><code>object_storage_bucket</code> / <code>object_storage_s3_region</code></td><td>The bucket/region natctl itself uploads a newly-provisioned elastic node's own per-node <code>nftables.conf</code> to, and reads/writes the three live-override objects (10.2's <code>set-pool-scaling</code>/<code>set-vpc-sibling-subnets</code>/<code>set-client-config</code>) from. Required for any of those three commands to work at all for this pool.</td></tr>
           </tbody>
@@ -2345,8 +2452,8 @@ systemctl restart natctl</pre></li>
       ["c8-1","8.1 The Firewall Model"],["c8-2","8.2 Credential Scope"]
     ]},
     {label:"Part IX", title:"Deployment", chapters:[
-      ["c9-1","9.1 Prerequisites"],["c9-2","9.2 Deployment Sequence"],
-      ["c9-3","9.3 Onboarding a Client"]
+      ["c9-1","9.1 Prerequisites"],["c9-2","9.2 Terraform Configuration Reference"],
+      ["c9-3","9.3 Deployment Sequence"],["c9-4","9.4 Onboarding a Client"]
     ]},
     {label:"Part X", title:"Day-2 Operations", chapters:[
       ["c10-1","10.1 Pre-Production Checklist"],["c10-2","10.2 The Operator CLI"],
