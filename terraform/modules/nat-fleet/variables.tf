@@ -1,0 +1,454 @@
+# variables.tf (terraform/modules/nat-fleet)
+#
+# Every input this module accepts, grouped conceptually below. Each
+# individual variable already carries a detailed inline `description` --
+# this header is the map to read them in context rather than duplicating
+# each one.
+#
+# -----------------------------------------------------
+# Groups of parameters:
+#
+# 1) Identity/placement  - fleet_label, pool_name, region, vpc_id,
+#    public_subnet_id/cidr, vlan_label/cidr/ip_offset, private_subnet_cidrs,
+#    firewall_id, tags.
+# 2) Sizing              - node_count (Terraform floor), instance_type,
+#    image, egress_ips_per_node, conntrack_max, private_ip_offset.
+# 3) Access              - authorized_keys, root_pass.
+# 4) Buddy-sync / IP failover - natctl_roster_url, ip_failover_enabled,
+#    linode_bgp_dcid (see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3/§4.4).
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Required (no default): fleet_label, region, vpc_id, public_subnet_id,
+#   public_subnet_cidr, vlan_label, vlan_cidr, private_subnet_cidrs,
+#   firewall_id, authorized_keys, root_pass.
+# - Everything else has a safe default so a minimal call still boots a
+#   working, feature-flagged-off fleet.
+# - ip_failover_enabled requires natctl_roster_url and linode_bgp_dcid to
+#   also be set.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+variable "fleet_label" {
+  description = "Unique label prefix for this fleet, e.g. lng-shared or lng-dedicated-acme"
+  type        = string
+}
+
+variable "pool_name" {
+  description = "Pool identifier tenants are mapped to (\"shared\" or a dedicated tenant name). Tagged onto every node for natctl's fleet discovery — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.5 (Multi-Tenant Pools)."
+  type        = string
+  default     = "shared"
+}
+
+variable "region" {
+  type = string
+}
+
+variable "vpc_id" {
+  type = number
+}
+
+variable "public_subnet_id" {
+  description = "The VPC subnet every node's eth1 (VPC) interface lives in. Serves buddy-pair conntrackd sync traffic — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3. This is NOT where the private client fleet lives anymore (see vlan_label) — VPC does not support routing a client's default gateway through a peer instance to reach non-VPC destinations, which is why v4 moved that job to VLAN. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §1.2 for the validated finding behind this."
+  type        = number
+}
+
+variable "public_subnet_cidr" {
+  description = "CIDR of public_subnet_id, used to compute deterministic static VPC IPs for this fleet's nodes."
+  type        = string
+}
+
+variable "vlan_label" {
+  description = "Name of the VLAN every node's eth2 interface joins, and that private client instances also join, for transparent NAT egress. VLANs aren't a standalone Terraform resource on Linode — they come into existence implicitly the first time any instance attaches an interface with this label, and disappear when the last one detaches. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §1.2/§3.4."
+  type        = string
+}
+
+variable "vlan_cidr" {
+  description = "The FULL, real VLAN CIDR every node's interface is actually configured with (its prefix length is what ipam_address and the rendered cloud-init .network file both use) -- e.g. a customer's whole /16. This is not where addresses are SELECTED from (see vlan_reserved_cidr below) -- it's purely the source of the prefix length, so routing still works to whatever's outside this fleet's own reserved sub-block (a customer's own clients elsewhere in the same VLAN)."
+  type        = string
+}
+
+variable "vlan_reserved_cidr" {
+  description = "A small sub-block nested inside vlan_cidr, wholly owned by this fleet -- floor (and, via the identical field on PoolConfig, elastic) nodes' addresses are selected from HERE via cidrhost + vlan_ip_offset, not from vlan_cidr directly. Nothing else (a customer's own clients, another pool sharing the same physical VLAN) should ever be assigned an address inside this block -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §9.3 for the operator-facing convention this depends on (a customer picks their own client address from outside this block). Replaces the old vlan_elastic_headroom_margin/client_static_vlan_reserved-derived ceiling."
+  type        = string
+}
+
+variable "vlan_ip_offset" {
+  description = "Starting host offset within vlan_reserved_cidr for this fleet's static VLAN IPs."
+  type        = number
+  default     = 20
+
+  # terraform/environments/example/main.tf's pool_vlan_ip_offset_is_positive
+  # check already rejects 0 and 1 (offset 0 is a negative cidrhost()
+  # offset, which Terraform counts backward from the end of the range;
+  # offset 1 lands on vlan_reserved_cidr's own unusable network
+  # address), but that check is keyed off the pools map in one specific
+  # caller -- this module itself had no guard of its own, so any other
+  # caller (a hand-written environments/<name>/ directory, or calling
+  # this module directly) got no protection at all. A validation block
+  # here protects every caller, not just the one that happens to have
+  # remembered to copy the check.
+  validation {
+    condition     = var.vlan_ip_offset >= 2
+    error_message = "vlan_ip_offset must be >= 2 -- 0 makes the observability host's own cidrhost(vlan_reserved_cidr, vlan_ip_offset - 1) computation (terraform/environments/example/main.tf) use a negative offset (counted backward from the end of the range); 1 lands on vlan_reserved_cidr's own unusable network address."
+  }
+}
+
+variable "private_subnet_cidrs" {
+  description = "CIDR(s) of the private client fleet on the VLAN that this pool is allowed to forward traffic for (the source-address allow-list in the NAT node's forward chain). Despite the name, these are VLAN-side CIDRs, not VPC subnets — see vlan_label/vlan_cidr above."
+  type        = list(string)
+}
+
+variable "vpc_sibling_subnet_cidrs" {
+  description = "Every subnet's CIDR in this environment's VPC (not just this pool's own -- the whole VPC), routed into each floor node's eth1 so it can actually reach (and reply to) a sibling subnet, not just the one it's directly attached to -- a VPC-attached instance only ever gets a kernel route to its own directly-connected subnet otherwise. Unlike private_subnet_cidrs above, this is genuinely VPC-side -- pass module.vpc.all_subnet_cidrs (auto-discovered, see that module's own comment) here, not a hand-maintained list. Purely a routing convenience: Cloud Firewall/nftables (gated by the environment's own private_subnet_ids) remain the actual security boundary regardless of what's routable. Default [] preserves pre-existing behavior (no sibling routes) for any caller that hasn't wired this yet."
+  type        = list(string)
+  default     = []
+}
+
+variable "firewall_id" {
+  type = number
+}
+
+variable "node_count" {
+  description = "Floor (Terraform-managed baseline) node count for this fleet. Defaults to 1 -- start minimal and raise it (or lean on natctl's elastic autoscaling above the floor) once real load justifies more, rather than assuming multi-node capacity is needed up front. At 1 node, conntrack buddy-sync/buddy IP failover (if enabled for this pool) simply stay dormant until a second node exists, activating automatically once one joins. natctl may add more elastic nodes above this floor if autoscaling is enabled — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.1 and controller/natctl/fleet.py. Scaling this down is a normal `terraform apply`; natctl never removes floor nodes, only ones it provisioned itself."
+  type        = number
+  default     = 1
+}
+
+variable "private_ip_offset" {
+  description = "Starting host offset (within public_subnet's CIDR) for this fleet's static VPC IPs. Give each fleet/pool sharing a subnet a non-overlapping offset+node_count range."
+  type        = number
+  default     = 20
+
+  # node_vpc_ips (main.tf) computes cidrhost(var.public_subnet_cidr,
+  # var.private_ip_offset + i) with no floor/usability guard -- an
+  # offset of 0 silently pins that pool's first floor node's eth1 to the
+  # public subnet's own unusable network address, the identical failure
+  # mode vlan_ip_offset already has a guard for (see that variable's own
+  # validation block). Unlike vlan_ip_offset, no caller -- not even
+  # terraform/environments/example/main.tf's own check blocks -- guarded
+  # this at all; those only catch cross-pool private_ip_offset-range
+  # overlap, not offset=0 itself.
+  validation {
+    condition     = var.private_ip_offset >= 1
+    error_message = "private_ip_offset must be >= 1 -- 0 pins this fleet's first floor node's VPC (eth1) address to the public subnet's own unusable network address."
+  }
+}
+
+variable "instance_type" {
+  description = "Base instance type for every floor node in this pool. Overridable per node via node_instance_type_overrides below (e.g. after natctl_cli's operator-driven `resize` command vertically-scales a specific floor node) -- this remains the default for any node not explicitly overridden."
+  type        = string
+  default     = "g6-dedicated-4"
+}
+
+# 2-node quorum-witness role (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+# Part II, 2.3): a network partition between exactly 2 real nodes is
+# indistinguishable, from either side, from one of them actually being
+# dead -- there's no third party to break the tie, no matter how good
+# the fencing logic is. A witness closes this the only way it can actually be closed: adding a
+# genuine third independent voter, just one that never forwards traffic
+# and costs a fraction of a real floor node (a g6-nanode-1 is enough --
+# it only ever runs natctl's own control-plane logic). Set this true for
+# any pool whose floor_nodes (plus any elastic capacity it can't count
+# on being durably present) stays below 3 -- see controller/natctl/
+# leader_election.py's LeaderElection.witness_only and fleet.py's
+# discover_witnesses() for the mechanism this provisions into. Off by
+# default: every pool with 3+ floor nodes already has a real 3rd (or
+# more) voter and gains nothing from one.
+variable "witness_enabled" {
+  description = "Provision a permanent, natctl-only quorum-witness instance for this pool (see this file's own comment above). Only meaningful with natctl_on_node_enabled -- a witness has nothing to vote in otherwise."
+  type        = bool
+  default     = false
+}
+
+variable "witness_instance_type" {
+  description = "Instance type for the witness above, if enabled. A witness never forwards traffic or runs FRR/nftables -- the cheapest generally-available type is enough."
+  type        = string
+  default     = "g6-nanode-1"
+}
+
+variable "witness_private_ip_offset" {
+  description = "Host offset (within public_subnet's CIDR) for the witness's own VPC IP, if enabled -- same \"give it a non-overlapping offset\" contract as private_ip_offset above, just for one address instead of a range. No default: an operator must pick a value that doesn't collide with this or any other pool's private_ip_offset range in the same subnet, the same explicit-choice convention private_ip_offset itself already requires (see terraform/environments/example/main.tf's pool_vpc_offsets_no_overlap check for the cross-pool half of this -- extend it to cover this value too when wiring up a witness in that environment). Enforced via the witness_private_ip_offset_is_set_when_witness_enabled check below, not a variable validation block here -- Terraform restricts a variable's own validation condition to referencing only that same variable, never another one (var.witness_enabled here), a real constraint this repo's own local Terraform version didn't enforce but CI's did, caught live via the publish pipeline's own safety gate failing on the assembled customer-repo tree."
+  type        = number
+  default     = null
+}
+
+check "witness_private_ip_offset_is_set_when_witness_enabled" {
+  assert {
+    condition     = !var.witness_enabled || var.witness_private_ip_offset != null
+    error_message = "witness_private_ip_offset must be set whenever witness_enabled is true."
+  }
+}
+
+variable "node_instance_type_overrides" {
+  description = "Optional per-node instance_type override, keyed by node_id (e.g. \"lng-shared-2\" => \"g6-dedicated-8\"). Any node_id not present here uses instance_type above. This is how Terraform represents a floor whose nodes have been individually vertically-scaled via natctl_cli's `resize` command without drift on the next `terraform apply` -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.4 (Vertical Scaling). Left empty (default) for a uniform floor, the original behavior."
+  type        = map(string)
+  default     = {}
+}
+
+variable "image" {
+  type    = string
+  default = "linode/ubuntu22.04"
+}
+
+variable "authorized_keys" {
+  type = list(string)
+}
+
+variable "root_pass" {
+  type      = string
+  sensitive = true
+}
+
+variable "egress_ips_per_node" {
+  description = "Public egress IPs per node beyond the primary eth0 address. Each node owns its extra IPs permanently (no sharing/failover for these — only the PRIMARY eth0 address participates in buddy IP failover, see ip_failover_enabled) — more IPs per node means more 55K-connection buckets per node."
+  type        = number
+  default     = 1
+}
+
+variable "reserved_ip_enabled" {
+  description = "Whether each node's primary eth0 public IP is a Linode Reserved IP (linode_networking_ip with reserved = true) instead of the ephemeral one Linode auto-assigns on instance creation. A reserved IP is allocated up front and stays the SAME address for as long as that node_id slot exists in this fleet, even across an instance replacement (e.g. a Terraform-forced recreate from changing instance_type/image) — the ephemeral default does not survive that. Solves the operational problem of downstream services that IP-whitelist this fleet's egress addresses: with this off, a node replacement silently changes the IP a whitelist entry depends on. Off by default because Linode's Reserved IP feature is account-gated (\"IP reservation is not currently available to all users\" — Linode's own provider docs) -- confirm it's enabled on your account (Cloud Manager, or ask Linode support) before turning this on; enabling it against an ineligible account fails the linode_networking_ip resource outright. Does NOT cover egress_ips_per_node's extra IPs (still ephemeral) or elastic (natctl-provisioned) nodes -- those are handled by natctl.yaml's own reserved_ip_enabled field (controller/natctl/config.py), kept as a SEPARATE toggle since elastic nodes are created by natctl's own Linode API calls, not this module. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.6."
+  type        = bool
+  default     = false
+}
+
+variable "reserved_ip_pool" {
+  description = "Reserved IPv4 addresses the operator ALREADY OWNS (reused from a prior deployment on this same account, or reserved out-of-band ahead of time), to hand to floor nodes instead of always minting a brand-new linode_networking_ip.reserved for every node. Assigned by POSITION: reserved_ip_pool[0] goes to local.node_ids[0] (this pool's first floor node by creation order), reserved_ip_pool[1] to the second, and so on -- any node_id beyond length(reserved_ip_pool) still gets a freshly-created reservation, exactly as before this variable existed. Only meaningful when reserved_ip_enabled is true; harmless (ignored) otherwise. Default [] (fully backward compatible -- identical behavior to before this variable existed). Must not exceed node_count in length -- see this module's reserved_ip_pool_fits_node_count check block, which fails plan loudly rather than silently leaving excess addresses unused. Every supplied address must actually be a Reserved IP you already own on this account and region; Terraform will fail the apply if it isn't (Linode rejects assigning a non-reserved or already-attached address this way)."
+  type        = list(string)
+  default     = []
+}
+
+variable "placement_group_enabled" {
+  description = "Whether this pool's floor nodes are spread across Linode Placement Groups (placement_group_type = \"anti_affinity:local\") so Akamai avoids co-locating them on the same physical host -- closes the gap that a correlated failure of both buddy-pair members has nothing to fail over to, since buddy conntrack sync and BGP IP failover alone only protect against one node dying, not both members of a pair going down together. Off by default -- same opt-in pattern as reserved_ip_enabled. Akamai caps a placement group at 5 Linodes, so a pool with more than 5 floor nodes gets ceil(node_count / 5) groups in contiguous index blocks (node 0-4 in group 0, 5-9 in group 1, ...) rather than failing to apply -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.5 for what multi-group chunking does and doesn't protect against (a buddy pair straddling a block boundary, e.g. nodes 4 and 5, has no anti-affinity protection between them -- a structural limitation of contiguous-block assignment, not a bug). Elastic (natctl-provisioned) nodes are NOT covered -- deliberately out of scope."
+  type        = bool
+  default     = false
+}
+
+variable "placement_group_policy" {
+  description = "Linode's placement_group_policy for every placement group this module creates when placement_group_enabled is true: \"strict\" (the default -- Linode refuses to violate anti-affinity, an instance create/move fails outright rather than co-locating) or \"flexible\" (best-effort -- Linode allows a co-located placement if it has no other choice, rather than failing the operation). \"strict\" is the safer default for a NAT fleet where the whole point is guaranteeing separation; only relax to \"flexible\" if you've hit real capacity-constrained placement failures and would rather degrade gracefully than block a scale-out."
+  type        = string
+  default     = "strict"
+}
+
+variable "conntrack_max" {
+  type    = number
+  default = 1048576
+}
+
+variable "tags" {
+  type    = list(string)
+  default = []
+}
+
+variable "natctl_roster_url" {
+  description = "Base URL of natctl's roster API reachable from this fleet's nodes, e.g. \"http://10.0.0.5:8099\" (no trailing slash, no /fleet/<pool> suffix — that's appended per-node). Wires up buddy-sync/ for conntrackd buddy-pair sync and (if ip_failover_enabled) buddy IP failover — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3. Leave empty (the default) to disable both entirely for this fleet's Terraform-managed floor nodes. Must match the natctl_roster_base_url set for this pool in natctl.yaml so natctl-provisioned elastic nodes use the same value (see controller/natctl/cloud_init.py)."
+  type        = string
+  default     = ""
+}
+
+variable "conntrack_buddy_sync_enabled" {
+  description = "Whether this fleet's Terraform-managed floor nodes install/run buddy-sync at all -- mirrors natctl.yaml's PoolConfig.conntrack_buddy_sync_enabled (default true), which already gates this the same way for natctl-provisioned elastic nodes (controller/natctl/fleet.py's _provision()). Set this to match that setting for the same pool, or floor nodes keep running buddy-sync indefinitely even after disabling it for elastic nodes (e.g. to reduce running agents, per a security-hardening pass). Leaving this true (the default) while natctl_roster_url is empty has no effect either way -- buddy-sync was already off."
+  type        = bool
+  default     = true
+}
+
+variable "ip_failover_enabled" {
+  description = "Whether nodes in this fleet run FRR for BIDIRECTIONAL BGP-based IP Sharing: each node self-announces its own eth0 public IP AND backs up its buddy's, so a node's buddy can take over its IP on failure, making buddy-pair conntrack sync (natctl_roster_url above) actually deliver session survival rather than just unusable mirrored state — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3/§4.4 for why both pieces are needed together. Requires natctl_roster_url to be set. Requires linode_bgp_dcid below. IP Sharing availability varies by Linode data center — confirm your region supports it before enabling (https://techdocs.akamai.com/cloud-computing/docs/configure-failover-on-a-compute-instance). Defaults true: without it, a dead node's public IP simply goes dark rather than failing over to its buddy, which is real HA this fleet is otherwise built to provide."
+  type        = bool
+  default     = true
+}
+
+variable "linode_bgp_dcid" {
+  description = "Linode's numeric data-center ID for BGP-based IP Sharing's route-server neighbors (2600:3c0f:<dcid>:34::1-4), specific to the region you're deploying into. Look this up from Linode's current failover documentation for your region — deliberately not hardcoded here, since this mapping is Linode-maintained and region IDs are added over time. Required if ip_failover_enabled is true."
+  type        = number
+  default     = null
+}
+
+# ---------------------------------------------------------------------------
+# natctl-on-node (opt-in): removes the requirement for a dedicated
+# control-plane host by running natctl itself on every node in THIS fleet,
+# safely, via leader election with STONITH-style fencing — see
+# controller/natctl/leader_election.py and
+# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.4 (Leader Election and
+# Fencing). Leave natctl_on_node_enabled at its default
+# (false) to keep the original single-dedicated-host layout unchanged
+# (terraform/modules/observability) — nothing below matters in that case.
+# ---------------------------------------------------------------------------
+
+variable "natctl_on_node_enabled" {
+  description = "Whether every node in this fleet also runs natctl itself (leader-elected, with STONITH fencing — see controller/natctl/leader_election.py), instead of relying on a separate terraform/modules/observability host for it. This fleet's nodes become natctl's identity (NATCTL_SELF_NODE_ID/NATCTL_SELF_LINODE_ID) as well as its execution target. Requires natctl_config_yaml and (for the fencing lock) object_storage_* below to all be set. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.4 for the honestly-stated trade-offs (fencing briefly interrupts a node's own NAT traffic) before enabling this in production."
+  type        = bool
+  default     = false
+}
+
+variable "natctl_config_yaml" {
+  description = "The fully-composed natctl.yaml content for this entire environment (every pool's settings, including this one) — the SAME value terraform/modules/observability's natctl_config_yaml carries in the original layout, since every node running natctl needs to know about every pool, not just this one (see controller/natctl/fleet.py — one process manages every configured pool). Composed once at the environment level (terraform/environments/example/main.tf), not per-fleet. Required if natctl_on_node_enabled."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+# The rendered nftables.conf.tftpl's own natctl-roster-API input rule
+# hardcoded this to the literal 8099, unlike cloud_init.py's Python-side
+# elastic-node renderer (already parameterized via api_port, threaded
+# from ApiConfig.listen_port). An operator changing api.listen_port away
+# from its 8099 default with natctl_on_node_enabled=true would have
+# floor nodes' own nftables input chain (VLAN's only gate -- Cloud
+# Firewall doesn't filter VLAN traffic) still only open 8099, silently
+# blackholing roster/health/metrics traffic to floor nodes over
+# eth1/eth2 while elastic nodes work fine.
+variable "api_port" {
+  description = "TCP port natctl's roster API listens on (must match ApiConfig.listen_port in natctl.yaml, and terraform/modules/vpc's own api_port) -- opened in this fleet's own nftables ruleset when natctl_on_node_enabled. Default matches ApiConfig's own default."
+  type        = number
+  default     = 8099
+}
+
+variable "linode_token" {
+  description = "Linode API Personal Access Token (linodes/vpc/networking read_write scopes — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.5), written to /etc/natctl/env on every node in this fleet. Required if natctl_on_node_enabled. NOTE this is a real security-scope change from the original layout: this credential now needs to exist on every NAT node rather than one tightly-firewalled control-plane host — see §2.5 for this trade-off stated plainly."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "object_storage_access_key" {
+  description = "Object Storage access key for the leader-election lease bucket (endpoint/bucket/key themselves live in natctl_config_yaml's leader_election block, composed once at the environment level — see terraform/environments/example/main.tf), written to /etc/natctl/env (NATCTL_OBJECT_STORAGE_ACCESS_KEY) rather than baked into natctl_config_yaml — see config.py's LeaderElectionConfig.resolved_access_key() for why this stays out of the widely-distributed config file. Required if natctl_on_node_enabled and leader_election.enabled."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "object_storage_secret_key" {
+  description = "Object Storage secret key for the leader-election lease bucket — see object_storage_access_key above for the same env-var-not-config-file reasoning. Required if natctl_on_node_enabled."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+# ---------------------------------------------------------------------------
+# Fetched-at-boot artifact URLs (terraform/modules/artifacts) -- see
+# that module's main.tf header for the full "why" (Linode's 16384-byte
+# decoded cloud-init limit). Required, unconditionally -- unlike
+# object_storage_access_key/secret_key above, exporter_py_url/
+# buddy_sync_py_url are needed on EVERY node regardless of
+# natctl_on_node_enabled, since exporter.py alone already contributes to
+# blowing the budget. natctl_file_urls is only actually consumed when
+# natctl_on_node_enabled is true, but it's cheap to always pass through.
+# ---------------------------------------------------------------------------
+
+variable "exporter_py_url" {
+  description = "Public URL (terraform/modules/artifacts' exporter_py_url output) this fleet's nodes curl exporter.py from at boot, instead of it being embedded inline in cloud-init -- see nat-node.yaml.tftpl's runcmd."
+  type        = string
+}
+
+variable "manifest_url" {
+  description = "Public URL (terraform/modules/artifacts' manifest_url output) for the SHA-256 integrity manifest -- fetched once at the top of runcmd, then every other curl'd artifact below is verified against it before ever being executed or installed. Without this check, a compromised or tampered artifact fetched from Object Storage at boot would be trusted and executed with no way to detect the substitution."
+  type        = string
+}
+
+variable "natctl_api_mutation_token" {
+  description = "Shared secret required by api.py's 4 mutating roster-API routes (drain, pool-scaling/client-config/vpc-sibling-subnets overrides) -- written to /etc/natctl/env as NATCTL_API_MUTATION_TOKEN, only meaningful when natctl_on_node_enabled (this fleet's own natctl instance). \"\" (default) means every mutating request is refused with 401 until an operator sets one -- see api.py's own header comment and config.py's ApiConfig.mutation_token docstring for the confused-deputy/unauthenticated-VLAN-mutation incident this closes."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "buddy_sync_py_url" {
+  description = "Public URL (terraform/modules/artifacts' buddy_sync_py_url output) this fleet's nodes curl buddy_sync.py from at boot, when natctl_roster_url is set -- see nat-node.yaml.tftpl's runcmd."
+  type        = string
+}
+
+variable "natctl_file_urls" {
+  description = "Map of natctl/*.py filename -> public URL (terraform/modules/artifacts' natctl_file_urls output), fetched one curl per file at boot when natctl_on_node_enabled -- see nat-node.yaml.tftpl's runcmd."
+  type        = map(string)
+  default     = {}
+}
+
+variable "nat_exporter_service_url" {
+  description = "Public URL (terraform/modules/artifacts' nat_exporter_service_url output) this fleet's nodes curl nat-exporter.service from at boot, instead of it being embedded inline -- see nat-node.yaml.tftpl's runcmd."
+  type        = string
+}
+
+variable "lng_buddy_sync_service_url" {
+  description = "Public URL (terraform/modules/artifacts' lng_buddy_sync_service_url output) this fleet's nodes curl lng-buddy-sync.service from at boot, when natctl_roster_url is set -- see nat-node.yaml.tftpl's runcmd."
+  type        = string
+}
+
+variable "conntrackd_peer_service_url" {
+  description = "Public URL (terraform/modules/artifacts' conntrackd_peer_service_url output) this fleet's nodes curl the conntrackd@.service TEMPLATE unit from at boot, when natctl_roster_url is set -- see nat-node.yaml.tftpl's runcmd."
+  type        = string
+}
+
+variable "natctl_service_url" {
+  description = "Public URL (terraform/modules/artifacts' natctl_service_url output) this fleet's nodes curl natctl.service from at boot, when natctl_on_node_enabled -- see nat-node.yaml.tftpl's runcmd."
+  type        = string
+}
+
+variable "natctl_requirements_txt_url" {
+  description = "Public URL (terraform/modules/artifacts' natctl_requirements_txt_url output) this fleet's nodes curl controller/requirements.txt from at boot, when natctl_on_node_enabled -- see nat-node.yaml.tftpl's runcmd."
+  type        = string
+}
+
+# "source" (default, every existing deployment) or "binary" -- picks
+# between fetching exporter/buddy-sync/natctl as .py source run via python3
+# (the exporter_py_url/buddy_sync_py_url/natctl_file_urls variables above)
+# or as pre-compiled native executables (the three *_bin_url variables
+# below). See controller/natctl/cloud_init.py's matching comment -- this
+# exists to support a customer-facing distribution of this project that
+# ships compiled binaries instead of Python source. Defaulting to
+# "source" means this is a no-op for every deployment that doesn't set it.
+variable "agent_distribution" {
+  description = "\"source\" (default) or \"binary\" -- see this file's comment above and nat-node.yaml.tftpl's matching agent_distribution template variable."
+  type        = string
+  default     = "source"
+}
+
+variable "exporter_bin_url" {
+  description = "Public URL of a pre-compiled nat-exporter binary, used instead of exporter_py_url when agent_distribution is \"binary\". Cheap to leave empty otherwise."
+  type        = string
+  default     = ""
+}
+
+variable "buddy_sync_bin_url" {
+  description = "Public URL of a pre-compiled buddy-sync binary, used instead of buddy_sync_py_url when agent_distribution is \"binary\". Cheap to leave empty otherwise."
+  type        = string
+  default     = ""
+}
+
+variable "natctl_bin_url" {
+  description = "Public URL of a pre-compiled natctl binary, used instead of natctl_file_urls/natctl_requirements_txt_url when agent_distribution is \"binary\" and natctl_on_node_enabled. Cheap to leave empty otherwise."
+  type        = string
+  default     = ""
+}
+
+variable "natctl_cli_bin_url" {
+  description = "Public URL of a pre-compiled natctl-cli binary -- installed to /usr/local/bin/natctl-cli on every node in this fleet when agent_distribution is \"binary\" and natctl_on_node_enabled (that's where natctl itself runs in this mode, so that's where the operator CLI belongs too -- see terraform/modules/observability's matching variable for the single-dedicated-host case). Cheap to leave empty otherwise."
+  type        = string
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# Per-node dynamic config uploads. nftables.conf differs per node
+# (vpc_ip, vlan_ip, cidrs, reserved_public_ip), so
+# unlike the static files above they can't be uploaded once by the shared
+# artifacts module -- this module uploads each node's own rendered content
+# as its own Object Storage object (see main.tf) and reuses the SAME
+# bucket/credentials the artifacts module and leader-election lease store
+# already use, rather than provisioning a second bucket.
+# ---------------------------------------------------------------------------
+
+variable "object_storage_bucket" {
+  description = "Object Storage bucket this fleet's per-node nftables.conf objects are uploaded into -- same bucket terraform/modules/artifacts and natctl_object_storage_bucket already use. Required (every node needs nftables.conf fetched at boot)."
+  type        = string
+}
+
+variable "object_storage_s3_region" {
+  description = "The Object Storage S3-compatible endpoint's region/cluster id (e.g. \"in-maa-1\") -- see terraform/modules/artifacts/variables.tf's s3_region for why this is NOT necessarily var.region."
+  type        = string
+}

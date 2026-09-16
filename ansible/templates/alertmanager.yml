@@ -1,0 +1,45 @@
+# alertmanager.yml (ansible/templates)
+#
+# Alertmanager's own config, copied as-is by terraform/modules/observability
+# to /opt/lng-observability/alertmanager.yml on the control-plane host.
+# Receives firing alerts from Prometheus (alerts/nat-alerts.yml) and routes
+# them to a receiver.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Ships with a no-op webhook receiver so `docker compose up` works out
+#   of the box with no secrets required.
+# - Before production use, replace the empty webhook_configs with a real
+#   receiver: Slack, PagerDuty, email, or a webhook into your own
+#   on-call/ticketing system.
+#
+# -----------------------------------------------------
+# Best Practices:
+#
+# - group_by ["alertname", "pair"] keeps related alerts from the same
+#   buddy pair grouped in one notification instead of paging once per
+#   node.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+route:
+  receiver: default
+  group_by: ["alertname", "pair"]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+
+receivers:
+  - name: default
+    # Wire up a real receiver (Slack, PagerDuty, email, webhook to natctl's
+    # own alert-driven scaling hook, etc.) before relying on this in
+    # production — this ships with no-op routing so `docker compose up`
+    # works out of the box without requiring secrets.
+    webhook_configs: []

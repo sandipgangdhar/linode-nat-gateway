@@ -1,0 +1,343 @@
+# terraform.tfvars.example (terraform/environments/example)
+#
+# Sample values for every required/commonly-changed variable in this
+# example environment. Copy this file to terraform.tfvars (which is
+# gitignored) and fill in real values before running terraform apply.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# Create a VPC + subnet yourself first (see "Bring your own VPC" below).
+# cp terraform.tfvars.example terraform.tfvars
+# # edit terraform.tfvars: real linode_token, ssh key, region, vpc_id,
+# # public_subnet_id, password
+# terraform init && terraform apply
+#
+# -----------------------------------------------------
+# Best Practices:
+#
+# - Never commit the real terraform.tfvars (only this .example file is
+#   meant to be checked in) -- it contains secrets once filled in.
+# - Use a strong, unique root_pass and grafana_admin_password; both are
+#   marked sensitive in variables.tf so Terraform will not print them in
+#   plan/apply output.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+# Copy to terraform.tfvars and fill in.
+
+linode_token = "REPLACE_ME"
+region        = "us-east"
+
+# Prefix for every resource this environment creates whose name is
+# otherwise fixed (module.vpc's three Cloud Firewalls). Change this to
+# run a second, clearly-distinguishable copy of this environment in the
+# same account/region with no naming collision. Defaults to "lng-example"
+# -- uncomment only if you need a different value.
+# label = "lng-example"
+
+# --------------------------------------------------------------------------
+# Bring your own VPC -- REQUIRED. This automation does not create the
+# VPC or its subnet(s) itself (see terraform/modules/vpc/main.tf's
+# header comment). Create these first yourself, e.g. via linode-cli:
+#
+#   linode-cli vpcs create --label lng-example --region us-east
+#   linode-cli vpcs subnets-create <vpc_id> --label public-nat --ipv4 10.0.0.0/24
+#
+# public_subnet_id's CIDR needs enough headroom for every pool's
+# private_ip_offset range COMBINED -- 10.0.0.0/24 comfortably fits this
+# example's two pools (common starts at .20, acme at .50).
+# --------------------------------------------------------------------------
+vpc_id           = 0 # REPLACE_ME with your VPC's numeric id
+public_subnet_id = 0 # REPLACE_ME with your public subnet's numeric id
+
+# Optional: only if some OTHER VPC-resident workload (e.g. an LKE
+# Enterprise cluster's own private subnet) needs to reach natctl's roster
+# API (port 8099) on the observability/control-plane host. This is a
+# Cloud-Firewall concern, not a routing one -- terraform/modules/vpc/
+# main.tf's control_plane firewall is default-deny (inbound_policy =
+# "DROP"), so a subnet not listed here still gets its inbound connections
+# to 8099 dropped. Listing a subnet's id below adds its real CIDR to that
+# one firewall rule's allowlist (see data.linode_vpc_subnet.private + the
+# natctl-api inbound block in that file) -- nothing else. It does NOT
+# affect the NAT client fleet (that runs over VLAN, not VPC, since VPC
+# cannot transit-route to a non-VPC destination -- see
+# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §1.2) and does NOT add the subnet to the nat_node
+# firewall. Leave as {} (the default) if nothing outside the
+# NAT/observability nodes themselves needs to call that API.
+#
+# Linode does NOT automatically route a VPC-attached instance to
+# any OTHER subnet in the same VPC -- only its own directly-connected one
+# gets a kernel route; everything else falls through to the default
+# route (out the PUBLIC interface, not the VPC) and is silently dropped,
+# even once Cloud Firewall allows it here. This project fixes that
+# separately and automatically (every subnet in the VPC is auto-
+# discovered via linode_vpc_subnets and routed into every node's eth1 --
+# see terraform/modules/vpc's all_subnet_cidrs output) -- you do not need
+# to do anything extra for routing itself, only decide which subnets
+# should be allowed through the firewall, which is what private_subnet_ids
+# below still controls.
+# private_subnet_ids = {
+#   "private-app-1" = 0 # REPLACE_ME
+#   "private-app-2" = 0 # REPLACE_ME
+# }
+
+authorized_keys = [
+  "ssh-ed25519 AAAA... you@example.com",
+]
+
+root_pass = "REPLACE_ME_WITH_A_STRONG_PASSWORD"
+
+grafana_admin_password = "REPLACE_ME"
+
+# --------------------------------------------------------------------------
+# REQUIRED -- no default, deliberately. Every
+# firewall this environment creates (nat_node, control_plane, client) scopes
+# SSH to exactly these CIDRs, and control_plane also scopes Grafana/
+# Prometheus/Alertmanager (3000/9090/9093) to them. This used to default to
+# 0.0.0.0/0 (open to the entire internet) with only a code comment telling
+# an operator to fix it -- now you must set it explicitly. Use your own
+# admin/office/VPN egress CIDR(s), e.g. a single IP as a /32.
+# --------------------------------------------------------------------------
+admin_cidrs = ["REPLACE_ME/32"] # e.g. ["203.0.113.4/32"]
+
+# --------------------------------------------------------------------------
+# Pools -- every NAT-fleet pool this environment provisions. See
+# variables.tf's pools description for the full field-by-field
+# breakdown. This example shows two pools sharing ONE physical VLAN
+# ("same-VLAN mode" -- both pools' vlan_label values match): "common", the
+# default pool every tenant uses unless assigned elsewhere, and "acme", a
+# tenant needing isolated capacity. Add a third pool (on this same VLAN
+# or a genuinely separate one) by adding another entry to this map --
+# main.tf never needs touching for that. Remove "acme" entirely if you
+# only need one pool.
+#
+# Whichever pools you define, two things are validated at `terraform
+# plan` time, not left to chance:
+#   - Any two pools sharing a vlan_label must have non-overlapping
+#     vlan_cidr_reserved sub-blocks (main.tf's
+#     pool_reserved_cidrs_no_overlap_same_vlan check).
+#   - Every pool's private_ip_offset range (VPC side) must not overlap
+#     any other pool's, regardless of VLAN (main.tf's
+#     pool_vpc_offsets_no_overlap check) -- all pools share this
+#     environment's one public_subnet_id.
+# --------------------------------------------------------------------------
+#
+# If you plan to set natctl_on_node_enabled = true below (running the
+# control plane on every node instead of a dedicated host), a pool's
+# floor_nodes count is a real safety decision, not just a capacity one:
+#   - 1 node: always its own leader by default -- no real failover, and
+#     this mode buys you nothing over the single dedicated host.
+#   - 2 nodes: the genuinely risky configuration. A real network
+#     partition between exactly two nodes is indistinguishable, from
+#     either side, from the other one actually being dead -- there's no
+#     third node to ask, so the quorum-confirmation gate can't add
+#     anything here. Set witness_enabled = true for this pool (see the
+#     acme example below) to add a real, cheap (g6-nanode-1) third
+#     voter that closes this gap without a full 3rd NAT-capable node --
+#     it never forwards traffic, only votes.
+#   - 3+ nodes: the configuration this mode is actually designed for --
+#     see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II, 2.3/2.4 for the
+#     full detail. Already has a real 3rd (or more) voter --
+#     witness_enabled gains it nothing.
+# This has no bearing on floor_nodes when natctl_on_node_enabled stays
+# false (the default) -- that mode has no leader election at all.
+pools = {
+  common = {
+    fleet_label             = "lng-common"
+    floor_nodes             = 1 # start minimal, raise once real load justifies it -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.1
+    max_nodes               = 12
+    instance_type           = "g6-dedicated-4"
+    vlan_label              = "lng-vlan-shared"
+    vlan_cidr               = "192.168.100.0/22" # the FULL, real VLAN -- every node's interface uses THIS prefix length
+    vlan_cidr_reserved      = "192.168.100.0/24" # nested inside vlan_cidr above -- this pool's own small, wholly-owned sub-block
+    private_ip_offset       = 20 # VPC side -- must be globally unique across all pools (they share one public_subnet_id)
+    vlan_ip_offset          = 20 # VLAN side -- POOL-LOCAL to vlan_cidr_reserved above, safe to reuse 20 in every pool
+    elastic_ip_offset_start = 100 # also POOL-LOCAL to vlan_cidr_reserved -- plenty of room in a /24 (256 addresses)
+    # reserved_ip_pool      = ["203.0.113.10", "203.0.113.11"] # optional -- addresses you ALREADY OWN, see variables.tf
+    # --------------------------------------------------------------------
+    # 2-node quorum-witness role -- only meaningful once natctl_on_node_enabled
+    # = true below, and only worth setting once THIS pool's own floor_nodes
+    # is 2 (not the current 1 above). If you raise floor_nodes to 2 and turn
+    # on natctl_on_node_enabled, uncomment these three lines -- see
+    # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II, 2.3 for what this does.
+    # witness_enabled           = true
+    # witness_instance_type     = "g6-nanode-1" # never forwards traffic -- the cheapest generally-available type is enough
+    # witness_private_ip_offset = 22            # VPC side -- must not collide with THIS pool's own private_ip_offset range or any other pool's
+    # --------------------------------------------------------------------
+  }
+  acme = {
+    fleet_label             = "lng-acme"
+    floor_nodes             = 2
+    max_nodes               = 6
+    instance_type           = "g6-dedicated-8"
+    vlan_label              = "lng-vlan-shared" # SAME as common's -- same-VLAN mode. Use a different label for a genuinely separate VLAN instead.
+    vlan_cidr               = "192.168.100.0/22" # SAME wide VLAN as common -- only the reserved sub-block below needs to differ
+    vlan_cidr_reserved      = "192.168.101.0/27" # nested inside vlan_cidr's /22 (100-103) above, and must not overlap common's 192.168.100.0/24 -- only 32 addresses, so the two offsets below must stay small
+    private_ip_offset       = 50 # VPC side -- must not overlap common's 20 (floor_nodes=1) above
+    vlan_ip_offset          = 20 # VLAN side -- POOL-LOCAL to vlan_cidr_reserved above (a /27), same small number as common's, safe since it's a separate address space
+    elastic_ip_offset_start = 25 # must fit within this pool's own /27 alongside vlan_ip_offset+floor_nodes (20-21) and up to max_nodes-floor_nodes=4 elastic slots (25-28) -- a /27 only has 32 addresses total
+    # 2-node quorum-witness role (only meaningful once natctl_on_node_enabled
+    # = true below -- see this file's own comment on floor_nodes above).
+    # Only relevant here because acme's floor_nodes is 2; common's is 1
+    # and would need one too if natctl_on_node_enabled were ever turned
+    # on for it.
+    witness_enabled           = true
+    witness_instance_type     = "g6-nanode-1" # never forwards traffic -- the cheapest generally-available type is enough
+    witness_private_ip_offset = 52            # VPC side -- must not collide with THIS pool's own private_ip_offset range (50-51, floor_nodes=2) or any other pool's
+  }
+}
+
+# --------------------------------------------------------------------------
+# BGP-based IP failover -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+# §4.4 (and Part 0, 0.2 (g) for how BGP/IP Sharing work at all).
+# Defaults TRUE: without it, a dead node's public IP simply goes dark --
+# client-side ECMP reroutes NEW connections to surviving nodes, but
+# nothing takes over the address itself. With it (the default), every
+# buddy pair bidirectionally announces both its own and its buddy's
+# public IP over BGP (FRR), so a dead node's address fails over to its
+# live buddy automatically.
+#
+# linode_bgp_dcid is therefore REQUIRED for a working `terraform apply`
+# with the defaults -- look up your region's BGP data-center id from
+# Linode's current failover documentation (linked in variables.tf's own
+# description); it is deliberately not hardcoded here since it's a
+# Linode-side mapping that can change independently of this project. A
+# plan/apply-time check fails loudly, by name, if this is left unset
+# while ip_failover_enabled is true.
+#
+# Set ip_failover_enabled = false below instead if BGP IP Sharing isn't
+# available in your region, or you deliberately want to run without
+# this HA layer.
+# --------------------------------------------------------------------------
+linode_bgp_dcid = 0 # REPLACE_ME -- see variables.tf's linode_bgp_dcid description
+# ip_failover_enabled = false
+
+# Whether Terraform-managed FLOOR nodes run buddy-sync at all (default
+# true). natctl-provisioned elastic nodes are governed separately by
+# natctl.yaml's own PoolConfig.conntrack_buddy_sync_enabled (also
+# default true) -- keep both in sync, or floor nodes keep syncing
+# indefinitely after you've turned it off for elastic nodes.
+# conntrack_buddy_sync_enabled = true
+
+# Which pool's VLAN the observability host joins directly (only meaningful
+# when natctl_on_node_enabled is false, below) -- see variables.tf's
+# observability_vlan_pool. Must be a key in pools above, or "" to skip
+# joining any VLAN entirely.
+observability_vlan_pool = "common"
+
+# Starting VPC-side host offset for the observability host's own static
+# address -- see variables.tf's observability_private_ip_offset. Defaults
+# to 5 (uncomment only if you need a different value). If public_subnet_id
+# above is a VPC subnet ALSO used by a completely separate LNG deployment
+# (different terraform.tfvars/state), and that deployment's own
+# observability host also uses the default 5, your `terraform apply`
+# fails outright with Linode's [400] "The provided IP is already in use
+# in the subnet" -- this project's own plan-time checks can only ever see
+# pools/resources within THIS terraform.tfvars, never a second
+# deployment's state. Pick a value clear of that other deployment's own
+# offsets if you're sharing a subnet this way.
+# observability_private_ip_offset = 5
+
+# TCP port natctl's roster API listens on -- see variables.tf's api_port
+# description. Defaults to 8099 (uncomment only if you need a different
+# value, e.g. it collides with something else already using 8099 on your
+# network). One value for the whole environment: changing it here threads
+# through automatically to every place that needs to agree on it --
+# module.vpc's Cloud Firewall rule, every pool's nftables ruleset (floor
+# AND natctl-provisioned elastic nodes), the observability host's own
+# firewall rule, the composed natctl.yaml's api.listen_port, and the
+# Prometheus file_sd scrape targets. If you change this on an already-
+# deployed environment, remember every existing client's
+# NATCTL_ROSTER_URL / install-nat-client.sh --roster-url and any
+# natctl_cli --natctl-url you've configured still point at the OLD port
+# and need updating too -- this variable does not retroactively rewrite
+# URLs baked into already-provisioned clients.
+# api_port = 8099
+
+# --------------------------------------------------------------------------
+# Reserved IPs -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.6. Opt-in (default false). When
+# true, every node's primary public IP (floor AND natctl-provisioned
+# elastic nodes, every pool) is a Linode Reserved IP that survives an
+# instance replacement -- turn this on if any downstream service
+# IP-whitelists this fleet's egress addresses. Linode's Reserved IP
+# feature is account-gated ("IP reservation is not currently available to
+# all users") -- confirm it's enabled for your account before setting
+# this true, or linode_networking_ip will fail outright on apply.
+# --------------------------------------------------------------------------
+# reserved_ip_enabled = true
+
+# --------------------------------------------------------------------------
+# Anti-affinity placement groups -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+# §4.5. Opt-in (default false).
+# When true, every pool's floor nodes are spread across Linode Placement
+# Groups (anti_affinity:local) so Akamai avoids co-locating them on the
+# same physical host -- closes the "correlated physical-host failure
+# takes out both buddy pair members" gap that buddy conntrack sync + BGP
+# IP failover alone don't cover. Floor nodes
+# only -- natctl-provisioned elastic nodes are not covered. A pool over 5
+# floor nodes gets multiple groups (Akamai's 5-Linode-per-group cap) in
+# contiguous creation-order blocks, which only fully protects pairs that
+# land inside the same block -- a structural limitation of contiguous-block
+# assignment, not a bug (it minimizes rather than eliminates the exposure).
+# --------------------------------------------------------------------------
+# placement_group_enabled = true
+# placement_group_policy  = "strict" # or "flexible" -- see variables.tf
+
+# --------------------------------------------------------------------------
+# Object Storage -- REQUIRED (not opt-in), regardless of natctl_on_node_enabled
+# below. terraform/modules/artifacts uploads exporter.py/buddy_sync.py/the
+# natctl package here ONCE per apply, and every NAT node fetches them at
+# boot instead of embedding their content directly in cloud-init --
+# Linode's Instance Metadata API hard-caps user_data at 16384 bytes
+# (decoded), and this project's own source files alone already exceed
+# that with no other features enabled. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
+# §6.2 ("Fetched-at-Boot Artifacts") and
+# terraform/modules/artifacts/main.tf's header comment for the full
+# numbers. The SAME bucket/keys also back the leader-election lease when
+# natctl_on_node_enabled is true (see below) -- one bucket, dual purpose.
+# Create the bucket yourself first (Cloud Manager, or `linode-cli
+# object-storage bucket-create`) -- this project does not create it via
+# Terraform.
+# --------------------------------------------------------------------------
+natctl_object_storage_endpoint   = "https://us-east-1.linodeobjects.com"
+natctl_object_storage_bucket     = "lng-artifacts"
+natctl_object_storage_access_key = "REPLACE_ME"
+natctl_object_storage_secret_key = "REPLACE_ME"
+
+# natctl-on-node (opt-in) -- removes the requirement for a dedicated
+# control-plane host by running natctl itself, leader-elected with STONITH
+# fencing (power off the previous leader, poll for confirmed offline,
+# only then claim leadership -- see controller/natctl/leader_election.py
+# and docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.3/§2.4), on every NAT node
+# in every pool instead. Leave commented out / false to keep
+# the original single-dedicated-host layout (module.observability runs
+# natctl). Read the guide's leader-election section before enabling
+# this in production -- fencing briefly interrupts a node's own NAT
+# traffic, and this is defense-in-depth, not mathematically perfect
+# mutual exclusion. Only this toggle is opt-in -- the Object Storage block
+# above it is required either way (see its own comment).
+#
+# Before flipping this on, check every pool's floor_nodes count above
+# against the node-count warning right before the pools block -- 2 nodes
+# is a genuinely risky shape for this mode, 3+ is what it's designed for.
+#
+# natctl_on_node_enabled = true
+
+# Already have Prometheus/Grafana (or a remote-write-compatible
+# backend)? Set this to false to skip provisioning this project's own copy
+# entirely. You
+# can also keep run_monitoring_stack = true (the default) and just add
+# customer_prometheus_remote_write_url to have the local Prometheus this
+# environment provisions forward samples into your existing backend too.
+#
+# run_monitoring_stack                      = false
+# customer_prometheus_remote_write_url      = "https://prometheus-blocks-prod-us-central1.grafana.net/api/prom/push"
+# customer_prometheus_remote_write_username = "REPLACE_ME"
+# customer_prometheus_remote_write_password = "REPLACE_ME"

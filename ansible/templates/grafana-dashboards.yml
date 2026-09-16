@@ -1,0 +1,36 @@
+# grafana-dashboards.yml (ansible/templates)
+#
+# Grafana provisioning file that auto-loads every dashboard JSON dropped
+# into its source path -- specifically dashboards/nat-overview.json,
+# copied there by terraform/modules/observability. Copied as-is and
+# mounted into the Grafana container at
+# /etc/grafana/provisioning/dashboards/dashboards.yml.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Dashboards appear in Grafana under the "LNG NAT Gateway" folder
+#   automatically at boot -- no manual import needed.
+# - To add a new dashboard, drop its JSON into dashboards/ and it will be
+#   picked up on the next re-provision (updateIntervalSeconds also polls
+#   for changes on a running instance).
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+apiVersion: 1
+
+providers:
+  - name: lng
+    orgId: 1
+    folder: "LNG NAT Gateway"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards-src

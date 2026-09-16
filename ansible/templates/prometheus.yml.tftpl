@@ -1,0 +1,186 @@
+# prometheus.yml.tftpl (ansible/templates)
+#
+# Prometheus's own config, rendered once by terraform/modules/observability
+# and written to /opt/lng-observability/prometheus.yml on the control-plane
+# host, mounted read-only into the Prometheus container.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Scrapes every NAT node's exporter (:9200/metrics) via Prometheus
+#   service discovery covering the whole fleet, refreshed automatically
+#   as natctl autoscales -- no static target list, no Prometheus restart
+#   needed. Two mechanisms, chosen by whether THIS host runs natctl
+#   itself (run_natctl):
+#     - run_natctl=true (single-dedicated-host, the default): a local
+#       file_sd target file THIS host's own natctl regenerates after
+#       every reconcile pass (natctl/main.py's write_file_sd()).
+#     - run_natctl=false (natctl_on_node_enabled -- natctl runs on every
+#       NAT node instead, nobody on THIS host ever writes that file):
+#       http_sd_configs polling ONE natctl instance PER ENABLED POOL's
+#       own GET /file_sd HTTP endpoint instead (controller/natctl/api.py's
+#       build_file_sd_groups()) -- the same target-group JSON shape
+#       either way, so this is a clean swap, not a different data format.
+#       This polls one target PER ENABLED POOL, never a single shared
+#       target, deliberately: a node's own knowledge of which pools exist
+#       is baked into its `user_data`/cloud-init config at its own
+#       creation time and never refreshed, so a node created before a
+#       second pool was ever enabled has no idea that pool exists and its
+#       own /file_sd only ever answers for its own pool. A single
+#       hardcoded target would silently leave every OTHER pool with zero
+#       Prometheus/Grafana/alerting visibility for its entire lifetime --
+#       multiple http_sd_configs entries under one job (each independently
+#       polled and merged) is what avoids that, not a single URL.
+#   See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §7.1 "The Metrics Pipeline"
+#   for the general fleet-aware-scraping model this implements.
+# - Also scrapes natctl's OWN :<api_port>/metrics (fleet-wide node
+#   counts, see controller/natctl/api.py's render_natctl_metrics()) -- a
+#   single static target (host.docker.internal:<api_port>, see
+#   docker-compose.yml.tftpl's extra_hosts), gated on scrape_natctl_metrics
+#   being true (only when THIS host actually runs natctl -- see
+#   terraform/modules/observability/variables.tf's run_natctl). KNOWN
+#   LIMITATION, still open: when natctl instead runs on every NAT node,
+#   there is still no scrape target for THOSE natctl instances' own
+#   /metrics specifically (as opposed to nat_exporter's per-node metrics,
+#   now fixed above) -- natctl's fleet-wide node-count gauges specifically
+#   are what's still missing in that mode, not autoscale/exporter data.
+# - Alert rules live in alerts/nat-alerts.yml, mounted separately and
+#   referenced via rule_files below; Alertmanager receives firing alerts
+#   on :9093.
+#
+# -----------------------------------------------------
+# Best Practices:
+#
+# - Do not switch scrape_configs back to a static_configs list -- it will
+#   silently go stale the moment natctl adds or removes an elastic node.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts/nat-alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        # Docker Compose's own internal DNS resolves this to the
+        # alertmanager service's container IP on the lng-observability
+        # bridge network -- "localhost" here would resolve to this
+        # Prometheus container itself, not the separate Alertmanager
+        # container, and every alert would silently never be delivered
+        # (connection refused, since nothing listens on 9093 inside
+        # Prometheus's own container).
+        - targets: ["alertmanager:9093"]
+
+%{ if remote_write_url != "" ~}
+# Optional push to an existing monitoring backend (Grafana Cloud, Mimir,
+# Thanos Receive, VictoriaMetrics, or any other Prometheus-remote-write-
+# compatible receiver) -- see terraform/modules/observability's
+# prometheus_remote_write_url variable. This Prometheus keeps scraping and
+# serving its own :9090/Grafana locally either way; this just ALSO
+# forwards every sample upstream, so an existing central monitoring
+# stack can pick up this fleet's metrics without replacing anything
+# already deployed here.
+remote_write:
+  - url: ${remote_write_url}
+%{ if remote_write_username != "" ~}
+    basic_auth:
+      username: ${remote_write_username}
+      password: ${remote_write_password}
+%{ endif ~}
+%{ endif ~}
+
+scrape_configs:
+  # Active-active fleet: the node population changes as natctl
+  # autoscales, so static_configs would go stale — Prometheus picks up
+  # additions/removals on its own, no natctl restart or Prometheus
+  # reload needed. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §7.1 "The
+  # Metrics Pipeline".
+%{ if length(natctl_http_sd_targets) > 0 ~}
+  # natctl_on_node_enabled -- THIS host doesn't run natctl, so nobody
+  # writes a local file_sd file. Poll natctl's own GET /file_sd HTTP
+  # endpoint instead. One entry PER ENABLED POOL: a single shared target
+  # does not answer for every pool, since a node's own config only
+  # covers the pools that existed when IT was created. Prometheus merges
+  # targets from every entry below under this one job.
+  - job_name: nat_exporter
+    http_sd_configs:
+%{ for target in natctl_http_sd_targets ~}
+      - url: http://${target}/file_sd
+        refresh_interval: 30s
+%{ endfor ~}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+%{ else ~}
+  # run_natctl=true (single-dedicated-host, the default): natctl writes
+  # a Prometheus file_sd target file after every reconcile pass
+  # (natctl/main.py's write_file_sd) covering every currently-discovered
+  # node across every pool.
+  - job_name: nat_exporter
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/file_sd/lng-nodes.json
+        refresh_interval: 30s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+%{ endif ~}
+
+%{ if scrape_natctl_metrics ~}
+  # natctl's own fleet-wide /metrics -- see this file's header comment
+  # above for why this is a single static target rather than file_sd
+  # (natctl itself, unlike NAT nodes, doesn't autoscale or move).
+  - job_name: natctl_metrics
+    static_configs:
+      - targets: ["host.docker.internal:${api_port}"]
+%{ endif ~}
+%{ if length(natctl_http_sd_targets) > 0 ~}
+  # natctl_on_node_enabled mode has NO natctl process on this host at
+  # all -- the static natctl_metrics job above (gated on run_natctl, so
+  # never rendered in this mode) is the only thing that scrapes
+  # is_leader/term and the autoscale-explainability gauges in single-
+  # dedicated-host mode. Without this block those gauges would be
+  # completely unreachable from Prometheus/Grafana here: an operator
+  # would have no way to see who's currently leading a pool, its term,
+  # or election history without SSHing to each node and grepping
+  # journalctl. One natctl instance runs on EVERY node in this mode
+  # instead of a fixed host, so this uses the same http_sd approach as
+  # the nat_exporter job above, against GET /natctl_sd (api.py's
+  # build_natctl_metrics_sd_groups()) instead of /file_sd -- one target
+  # PER CURRENTLY-DISCOVERED node's own :8099, refreshed as natctl
+  # autoscales, not a fixed Terraform-time list.
+  # build_natctl_metrics_sd_groups() (api.py) labels each discovered
+  # target group by the ONE pool it enumerated the target from -- but a
+  # single natctl_on_node_enabled instance's own /metrics serves EVERY
+  # pool it manages in one response (render_natctl_metrics() loops all
+  # controllers), not just the one it was discovered under. Without
+  # honor_labels, Prometheus's default (target label wins) silently
+  # overwrites every OTHER pool's own correctly-embedded "pool" label
+  # with whichever pool this target happened to be enumerated under,
+  # demoting the metric's real value to "exported_pool" and corrupting
+  # every natctl_pool_* query filtered or grouped by pool. honor_labels:
+  # true reverses that precedence -- the scraped metric's own label
+  # wins, which is the only one that's ever actually correct here (the
+  # discovery-time "pool" label only ever existed to tell Prometheus
+  # which addresses to scrape, never to describe the data).
+  - job_name: natctl_metrics
+    honor_labels: true
+    http_sd_configs:
+%{ for target in natctl_http_sd_targets ~}
+      - url: http://${target}/natctl_sd
+        refresh_interval: 30s
+%{ endfor ~}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+%{ endif ~}

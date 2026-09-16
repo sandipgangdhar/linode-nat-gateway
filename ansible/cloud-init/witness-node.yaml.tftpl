@@ -1,0 +1,190 @@
+#cloud-config
+# witness-node.yaml.tftpl (ansible/cloud-init)
+#
+# Cloud-init user-data for a pool's 2-node quorum-witness instance (see
+# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II, 2.3) -- a small, permanent,
+# Terraform-managed instance that runs ONLY natctl, purely to vote in
+# leader-election quorum corroboration for a pool with fewer than 3 real
+# (NAT-capable) nodes. Deliberately NOT a stripped-down copy of
+# nat-node.yaml.tftpl's full three-interface layout -- a witness never
+# forwards traffic, never holds a public IP worth protecting, never joins
+# the VLAN the private client fleet rides, and never runs FRR/nftables/
+# the exporter/buddy-sync at all. It carries exactly the natctl-on-node
+# subset of nat-node.yaml.tftpl (config.yaml, env file, the fetch-verify
+# script, the natctl package itself, its systemd unit), mirrored
+# file-for-file from that template rather than factored into a shared
+# include (cloud-init templates can't share includes, same constraint
+# nat-node.yaml.tftpl's own header notes), plus ONE thing that template
+# never sets: NATCTL_WITNESS_ONLY=true (see controller/natctl/
+# leader_election.py's LeaderElection.witness_only) -- this is what
+# permanently bars this instance from ever attempting to claim
+# leadership, fence anyone, or perform any other mutating action, even
+# though it's a fully real quorum voter from every real node's point of
+# view.
+#
+# Rendered per-witness by terraform/modules/nat-fleet/main.tf, only when
+# var.witness_enabled is true -- see that variable's own description for
+# when a pool actually needs one (fewer than 3 real floor+elastic nodes).
+#
+# -----------------------------------------------------
+# What this node does NOT have, on purpose:
+#
+# - No public IP failover role (no eth0 BGP announcement, no IP-Sharing
+#   grant) -- it never held the IP being protected in the first place.
+# - No VLAN interface (eth2) -- it never serves the private client
+#   fleet's NAT traffic.
+# - No nftables ruleset, no FRR, no nat-exporter, no buddy-sync -- none
+#   of those subsystems exist for something that forwards no traffic.
+# - Only two interfaces: eth0 (public -- outbound internet for its own
+#   artifact fetches and Linode API calls) and eth1 (VPC -- the actual
+#   path it uses to health-check the real nodes it corroborates about,
+#   and to reach Object Storage for the leader-election lease read).
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+hostname: ${node_name}
+# Same key-only-SSH treatment as every other node this project creates
+# -- see nat-node.yaml.tftpl's identical comment for why this is needed
+# (the base image leaves password auth enabled unless overridden).
+ssh_pwauth: false
+package_update: true
+package_upgrade: false
+
+packages:
+  - curl
+%{ if agent_distribution != "binary" ~}
+  - python3
+  - python3-pip
+%{ endif ~}
+
+write_files:
+  # This composed config is the ONE piece of content that stays embedded
+  # (not fetched) -- it carries this pool's plaintext root_pass (needed
+  # by natctl's own elastic-node provisioning) and every other Object
+  # Storage upload in this design is public-read. Same file every real
+  # floor node in this pool gets (see nat-node.yaml.tftpl) -- the witness
+  # needs the SAME pool definition so its own discover()/health_check_all()
+  # can independently watch the real nodes it corroborates about.
+  - path: /etc/natctl/config.yaml
+    owner: root:root
+    permissions: '0600'
+    content: |
+      ${indent(6, natctl_config_yaml)}
+
+  - path: /etc/natctl/env
+    owner: root:root
+    permissions: '0600'
+    content: |
+      NATCTL_SELF_NODE_ID=${node_id}
+      LINODE_TOKEN=${linode_token}
+%{ if object_storage_access_key != "" ~}
+      NATCTL_OBJECT_STORAGE_ACCESS_KEY=${object_storage_access_key}
+      NATCTL_OBJECT_STORAGE_SECRET_KEY=${object_storage_secret_key}
+%{ endif ~}
+%{ if natctl_api_mutation_token != "" ~}
+      NATCTL_API_MUTATION_TOKEN=${natctl_api_mutation_token}
+%{ endif ~}
+      # The one line nat-node.yaml.tftpl never writes -- see
+      # LeaderElection.witness_only's own field comment for exactly what
+      # this permanently disables.
+      NATCTL_WITNESS_ONLY=true
+
+  # Identical to nat-node.yaml.tftpl's own copy of this script -- every
+  # fetched file (the natctl package itself, its systemd unit) is
+  # verified against the SAME SHA-256 manifest every other node in this
+  # environment checks against, before ever being trusted or executed.
+  - path: /usr/local/bin/lng-fetch-verified.sh
+    owner: root:root
+    permissions: '0750'
+    content: |
+      #!/bin/sh
+      # Usage: lng-fetch-verified.sh <manifest_url> <fetch_url> <dest_path>
+      set -eu
+      MANIFEST_URL="$1"
+      FETCH_URL="$2"
+      DEST_PATH="$3"
+      MANIFEST_CACHE=/run/lng-artifact-manifest.json
+
+      if [ ! -s "$MANIFEST_CACHE" ]; then
+        curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "$MANIFEST_URL" -o "$MANIFEST_CACHE"
+      fi
+
+      MANIFEST_DIR=$(dirname "$MANIFEST_URL")
+      KEY=$${FETCH_URL#$MANIFEST_DIR/}
+
+      EXPECTED=$(MANIFEST_CACHE="$MANIFEST_CACHE" KEY="$KEY" python3 -c "
+      import json, os
+      with open(os.environ['MANIFEST_CACHE']) as f:
+          manifest = json.load(f)
+      print(manifest.get(os.environ['KEY'], ''))
+      ")
+
+      if [ -z "$EXPECTED" ]; then
+        echo "lng-fetch-verified: no manifest entry for key '$KEY' (from $FETCH_URL) -- refusing to trust an unverifiable fetch" >&2
+        exit 1
+      fi
+
+      curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "$FETCH_URL" -o "$DEST_PATH"
+
+      ACTUAL=$(sha256sum "$DEST_PATH" | awk '{print $1}')
+      if [ "$ACTUAL" != "$EXPECTED" ]; then
+        echo "lng-fetch-verified: SHA-256 mismatch for $DEST_PATH (expected $EXPECTED, got $ACTUAL) -- refusing to trust this file, aborting boot" >&2
+        rm -f "$DEST_PATH"
+        exit 1
+      fi
+
+runcmd:
+  - sysctl --system
+  # This instance's VPC interface only ever gets a kernel route for its
+  # OWN directly-connected subnet -- see nat-node.yaml.tftpl's identical
+  # comment. The witness needs sibling-subnet reachability too: it
+  # health-checks real nodes' private_ip over VPC, and those nodes can
+  # live on a different subnet of the same VPC in a multi-pool
+  # environment.
+  - mkdir -p /etc/systemd/network
+  - |
+    printf '[Match]\nName=eth1\n\n[Network]\nDHCP=no\nAddress=${vpc_ip}/${vpc_prefix}\nIPv6PrivacyExtensions=false\n%{ for cidr in vpc_sibling_subnet_cidrs }\n[Route]\nDestination=${cidr}\n%{ endfor }' > /etc/systemd/network/04-lng-eth1-no-dns.network
+  - systemctl restart systemd-networkd
+  # Same IMDS self-lookup as nat-node.yaml.tftpl -- see that template's
+  # identical comment for the full "why" (this node's own Linode
+  # instance ID is only assigned AFTER creation, and this cloud-init
+  # payload is embedded in that same create call).
+  - |
+    IMDS_TOKEN=$(curl -s -X PUT -H "Metadata-Token-Expiry-Seconds: 3600" http://169.254.169.254/v1/token)
+    if [ -n "$${IMDS_TOKEN}" ]; then
+      SELF_LINODE_ID=$(curl -s -H "Metadata-Token: $${IMDS_TOKEN}" http://169.254.169.254/v1/instance | grep '^id: ' | cut -d' ' -f2)
+      if [ -n "$${SELF_LINODE_ID}" ]; then
+        echo "NATCTL_SELF_LINODE_ID=$${SELF_LINODE_ID}" >> /etc/natctl/env
+      else
+        logger -t lng-cloud-init "WARNING: could not parse this node's own Linode instance ID from IMDS -- NATCTL_SELF_LINODE_ID left unset, natctl will refuse to start"
+      fi
+    else
+      logger -t lng-cloud-init "WARNING: Linode Instance Metadata Service unreachable -- NATCTL_SELF_LINODE_ID left unset, natctl will refuse to start"
+    fi
+%{ if agent_distribution == "binary" ~}
+  - mkdir -p /opt/natctl
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${natctl_bin_url}" /opt/natctl/natctl
+  - chown root:root /opt/natctl/natctl
+  - chmod 0750 /opt/natctl/natctl
+%{ else ~}
+  - mkdir -p /opt/natctl/natctl
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${natctl_requirements_txt_url}" /opt/natctl/requirements.txt
+%{ for rel_path, url in natctl_file_urls ~}
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${url}" /opt/natctl/natctl/${rel_path}
+%{ endfor ~}
+  - chmod -R 0644 /opt/natctl/natctl
+%{ endif ~}
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${natctl_service_url}" /etc/systemd/system/natctl.service
+  - chown root:root /etc/systemd/system/natctl.service
+  - chmod 0644 /etc/systemd/system/natctl.service
+%{ if agent_distribution != "binary" ~}
+  - pip3 install -r /opt/natctl/requirements.txt
+%{ endif ~}
+  - systemctl daemon-reload
+  - systemctl enable --now natctl
