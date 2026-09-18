@@ -248,6 +248,34 @@ locals {
     )
   ]
 
+  # Every pool with an effective witness (pool_effective_witness_enabled)
+  # whose witness VPC (eth1) address -- a single point, not a range --
+  # collides with: its OWN pool's elastic range (the same-pool floor-range
+  # collision is already impossible by construction of the smart default
+  # above, but an operator-supplied explicit offset isn't guaranteed
+  # that), any OTHER pool's floor or elastic range, or
+  # observability_private_ip_offset. Unlike overlapping_vpc_offset_pool_pairs
+  # / overlapping_elastic_vpc_pool_pairs above, a witness offset is exactly
+  # one address, not a [start, start+count) range, so this is a
+  # point-in-range test rather than a pairwise interval-overlap test.
+  pools_with_colliding_witness_vpc_offset = [
+    for k, p in var.pools : k
+    if local.pool_effective_witness_enabled[k] && (
+      (local.pool_effective_witness_private_ip_offset[k] >= p.elastic_ip_offset_start &&
+      local.pool_effective_witness_private_ip_offset[k] < p.elastic_ip_offset_start + (p.max_nodes - p.floor_nodes)) ||
+      local.pool_effective_witness_private_ip_offset[k] == var.observability_private_ip_offset ||
+      length([
+        for k2, p2 in var.pools : k2
+        if k2 != k && (
+          (local.pool_effective_witness_private_ip_offset[k] >= p2.private_ip_offset &&
+          local.pool_effective_witness_private_ip_offset[k] < p2.private_ip_offset + p2.floor_nodes) ||
+          (local.pool_effective_witness_private_ip_offset[k] >= p2.elastic_ip_offset_start &&
+          local.pool_effective_witness_private_ip_offset[k] < p2.elastic_ip_offset_start + (p2.max_nodes - p2.floor_nodes))
+        )
+      ]) > 0
+    )
+  ]
+
   # Every pool whose own private_ip_offset range contains
   # var.observability_private_ip_offset -- the observability host has
   # only a single fixed VPC address (not a range), so this is a simpler
@@ -334,21 +362,66 @@ locals {
     if p.floor_nodes == 0
   ] : []
 
+  # A 2-node pool is exactly the shape a witness exists to fix, and
+  # relying on an operator to notice the check's own warning and
+  # manually set witness_enabled = true is a real gap on its own -- a
+  # 2-node pool without a witness is more often an overlooked default
+  # than an accepted trade-off. Smart-defaulted here instead: a pool
+  # that never sets witness_enabled
+  # (null, not a hardcoded false -- see that variable's own comment)
+  # gets one automatically once its floor_nodes is exactly 2. Not <3:
+  # a 1-node pool gains nothing from a witness (it's always its own
+  # leader, no partition-vs-dead ambiguity exists to resolve), and 3+
+  # already has a real 3rd voter. An operator who wants the OLD
+  # behavior (no witness on a 2-node pool) sets witness_enabled = false
+  # explicitly -- that's respected as a deliberate choice, not
+  # overridden by this default.
+  pool_effective_witness_enabled = {
+    for k, p in var.pools : k => (
+      p.witness_enabled != null ? p.witness_enabled : (var.natctl_on_node_enabled && p.floor_nodes == 2)
+    )
+  }
+
+  # witness_enabled defaults on for a 2-node pool (above), but
+  # witness_private_ip_offset has no such default of its own -- an
+  # operator who adds a 2-node pool and leaves every witness field
+  # unset, expecting the "default-on, opt-out available" promise to
+  # just work, instead hits a hard apply-time error (nat-fleet's own
+  # cidrhost(..., null) call fails outright) the first time
+  # pool_effective_witness_enabled turns on a witness this pool never
+  # explicitly asked for. Defaulted here to the first VPC offset right
+  # after this pool's own floor range (private_ip_offset + floor_nodes)
+  # -- guaranteed clear of this pool's own floor range by construction,
+  # and still checked against every other pool's ranges by
+  # pools_with_colliding_witness_vpc_offset below the same as an
+  # explicitly-set value would be.
+  pool_effective_witness_private_ip_offset = {
+    for k, p in var.pools : k => (
+      p.witness_private_ip_offset != null ? p.witness_private_ip_offset : p.private_ip_offset + p.floor_nodes
+    )
+  }
+
   # A pool's floor_nodes count under natctl_on_node_enabled is a real
   # safety decision, not just a capacity one -- see
   # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II, 2.3/2.4. 1 node has no real
-  # failover at all; 2 nodes is the genuinely risky shape, since a real
-  # network partition between exactly two nodes is indistinguishable,
-  # from either side, from the other one actually being dead -- there's
-  # no third node for the quorum-confirmation gate to ask, so it can't
-  # add anything there. This check exists purely to put that decision in
-  # front of the person running `terraform plan`/`apply`, every time,
-  # for as long as it stays this way -- not to block the apply outright
-  # (this environment's checks are all advisory; the operator retains
-  # final say, same as every other check in this file).
+  # failover at all, and no witness can fix that (see
+  # pool_effective_witness_enabled's own comment) -- this stays a pure
+  # floor_nodes count warning. 2 nodes is the genuinely risky shape ONLY
+  # when it ends up without an effective witness (either explicitly
+  # opted out, or -- impossible today since the default now covers
+  # exactly this case, but kept as a structural safety net rather than
+  # assumed) still lacking one: a real network partition between exactly
+  # two nodes is indistinguishable, from either side, from the other one
+  # actually being dead, so the quorum-confirmation gate has no third
+  # node to ask and can't help there. This check exists purely to put
+  # that decision in front of the person running `terraform plan`/
+  # `apply`, every time, for as long as it stays this way -- not to
+  # block the apply outright (this environment's checks are all
+  # advisory; the operator retains final say, same as every other check
+  # in this file).
   pools_with_floor_nodes_below_3_under_natctl_on_node = var.natctl_on_node_enabled ? [
     for k, p in var.pools : k
-    if p.floor_nodes < 3
+    if p.floor_nodes == 1 || (p.floor_nodes == 2 && !local.pool_effective_witness_enabled[k])
   ] : []
 
   # Nothing at the type level stops max_nodes < floor_nodes. Several of
@@ -408,6 +481,16 @@ check "pool_reserved_cidrs_no_overlap_same_vlan" {
   assert {
     condition     = length(local.overlapping_reserved_pool_pairs) == 0
     error_message = "These pool pairs share a vlan_label but have overlapping vlan_cidr_reserved sub-blocks: ${join(", ", local.overlapping_reserved_pool_pairs)}. Both pools' floor+elastic nodes would draw addresses from the same space on the same physical VLAN, a real collision risk. Pick non-overlapping reserved sub-blocks for every pool on the same VLAN."
+  }
+}
+
+# A pool's effective witness VPC address (smart-defaulted or explicit --
+# see pool_effective_witness_private_ip_offset) must not collide with any
+# pool's own floor/elastic range or with observability_private_ip_offset.
+check "witness_vpc_offset_does_not_collide" {
+  assert {
+    condition     = length(local.pools_with_colliding_witness_vpc_offset) == 0
+    error_message = "These pools' effective witness VPC (eth1) address collides with another pool's floor/elastic range, their own elastic range, or observability_private_ip_offset: ${join(", ", local.pools_with_colliding_witness_vpc_offset)}. Set witness_private_ip_offset explicitly to a value clear of every pool's ranges."
   }
 }
 
@@ -678,10 +761,13 @@ module "nat_fleet" {
   node_instance_type_overrides = each.value.node_instance_type_overrides
 
   # 2-node quorum-witness role -- see dev-repo terraform/environments/
-  # example/variables.tf's matching comment on the pools map's fields.
-  witness_enabled           = each.value.witness_enabled
+  # example/variables.tf's matching comment on the pools map's fields,
+  # and local.pool_effective_witness_enabled above for the smart-default
+  # (unset -> true for a 2-node pool) this reads from rather than
+  # each.value.witness_enabled directly.
+  witness_enabled           = local.pool_effective_witness_enabled[each.key]
   witness_instance_type     = each.value.witness_instance_type
-  witness_private_ip_offset = each.value.witness_private_ip_offset
+  witness_private_ip_offset = local.pool_effective_witness_private_ip_offset[each.key]
 
   vlan_label         = each.value.vlan_label
   vlan_cidr          = each.value.vlan_cidr
@@ -993,6 +1079,22 @@ locals {
       enabled                 = var.natctl_on_node_enabled
       object_storage_endpoint = var.natctl_on_node_enabled ? var.natctl_object_storage_endpoint : ""
       object_storage_bucket   = var.natctl_on_node_enabled ? var.natctl_object_storage_bucket : ""
+    }
+    # Opt-in rolling-restart/live-reload -- disabled by default
+    # (var.auto_update_enabled). Reuses the SAME manifest/artifact URLs
+    # module.artifacts already publishes for boot-time fetch -- natctl
+    # re-verifies against this same manifest at runtime instead of only
+    # ever at boot. This environment always publishes natctl as a
+    # compiled binary, so mode is fixed to "binary" here with bin_url
+    # set -- a source-distribution environment sets mode to "source"
+    # and requirements_url/file_urls instead.
+    auto_update = {
+      enabled                = var.auto_update_enabled
+      check_interval_seconds = 600
+      jitter_max_seconds     = 120
+      mode                   = "binary"
+      manifest_url           = module.artifacts.manifest_url
+      bin_url                = module.artifacts.natctl_bin_url
     }
   })
 

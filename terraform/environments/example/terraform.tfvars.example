@@ -129,25 +129,37 @@ admin_cidrs = ["REPLACE_ME/32"] # e.g. ["203.0.113.4/32"]
 #     environment's one public_subnet_id.
 # --------------------------------------------------------------------------
 #
-# If you plan to set natctl_on_node_enabled = true below (running the
-# control plane on every node instead of a dedicated host), a pool's
+# natctl_on_node_enabled defaults to true (running the control plane on
+# every node instead of a dedicated host) -- see that variable's own
+# comment further down for the opt-out. Under this mode, a pool's
 # floor_nodes count is a real safety decision, not just a capacity one:
 #   - 1 node: always its own leader by default -- no real failover, and
-#     this mode buys you nothing over the single dedicated host.
-#   - 2 nodes: the genuinely risky configuration. A real network
-#     partition between exactly two nodes is indistinguishable, from
-#     either side, from the other one actually being dead -- there's no
-#     third node to ask, so the quorum-confirmation gate can't add
-#     anything here. Set witness_enabled = true for this pool (see the
-#     acme example below) to add a real, cheap (g6-nanode-1) third
-#     voter that closes this gap without a full 3rd NAT-capable node --
-#     it never forwards traffic, only votes.
+#     this mode buys you nothing over the single dedicated host. No
+#     witness can fix this either (there's no partition-vs-dead
+#     ambiguity to resolve when there's only ever one candidate).
+#   - 2 nodes: the genuinely risky configuration on its own -- a real
+#     network partition between exactly two nodes is indistinguishable,
+#     from either side, from the other one actually being dead, so the
+#     quorum-confirmation gate has no third node to ask. main.tf's
+#     pool_effective_witness_enabled local now closes this BY DEFAULT:
+#     leaving witness_enabled unset on a 2-node pool auto-provisions a
+#     real, cheap (g6-nanode-1) third voter that never forwards traffic,
+#     only votes (see the common example below for the opt-OUT case,
+#     and acme for an explicit opt-IN -- both now produce the same
+#     result on a 2-node pool; acme's is just no longer required).
+#     witness_private_ip_offset still has no auto-computed default even
+#     when witness_enabled is left unset -- it's genuinely pool-specific
+#     (must not collide with anything), so you still set it explicitly
+#     whenever the EFFECTIVE witness ends up enabled; Terraform's own
+#     witness_private_ip_offset_is_set_when_witness_enabled check fails
+#     loudly at plan time if you forget.
 #   - 3+ nodes: the configuration this mode is actually designed for --
 #     see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II, 2.3/2.4 for the
 #     full detail. Already has a real 3rd (or more) voter --
-#     witness_enabled gains it nothing.
-# This has no bearing on floor_nodes when natctl_on_node_enabled stays
-# false (the default) -- that mode has no leader election at all.
+#     witness_enabled gains it nothing (and the smart default above only
+#     ever triggers at exactly floor_nodes == 2, never here).
+# This has no bearing on floor_nodes if you opt back into
+# natctl_on_node_enabled = false -- that mode has no leader election at all.
 pools = {
   common = {
     fleet_label             = "lng-common"
@@ -163,13 +175,17 @@ pools = {
     # reserved_ip_pool      = ["203.0.113.10", "203.0.113.11"] # optional -- addresses you ALREADY OWN, see variables.tf
     # --------------------------------------------------------------------
     # 2-node quorum-witness role -- only meaningful once natctl_on_node_enabled
-    # = true below, and only worth setting once THIS pool's own floor_nodes
-    # is 2 (not the current 1 above). If you raise floor_nodes to 2 and turn
-    # on natctl_on_node_enabled, uncomment these three lines -- see
-    # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II, 2.3 for what this does.
-    # witness_enabled           = true
-    # witness_instance_type     = "g6-nanode-1" # never forwards traffic -- the cheapest generally-available type is enough
-    # witness_private_ip_offset = 22            # VPC side -- must not collide with THIS pool's own private_ip_offset range or any other pool's
+    # = true below, and only relevant once THIS pool's own floor_nodes is
+    # exactly 2 (not the current 1 above). If you raise floor_nodes to 2
+    # and turn on natctl_on_node_enabled, you get a witness automatically
+    # -- witness_enabled's default is now smart (see main.tf's
+    # pool_effective_witness_enabled), not a hardcoded false, so you no
+    # longer need to uncomment anything to get one. Uncomment ONLY the
+    # opt-OUT line below if you've deliberately decided you don't want a
+    # witness for this pool despite it being 2-node -- see
+    # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II, 2.3 for what a
+    # witness does before opting out of one.
+    # witness_enabled = false # deliberate opt-out -- see comment above
     # --------------------------------------------------------------------
   }
   acme = {
@@ -185,9 +201,12 @@ pools = {
     elastic_ip_offset_start = 25 # must fit within this pool's own /27 alongside vlan_ip_offset+floor_nodes (20-21) and up to max_nodes-floor_nodes=4 elastic slots (25-28) -- a /27 only has 32 addresses total
     # 2-node quorum-witness role (only meaningful once natctl_on_node_enabled
     # = true below -- see this file's own comment on floor_nodes above).
-    # Only relevant here because acme's floor_nodes is 2; common's is 1
-    # and would need one too if natctl_on_node_enabled were ever turned
-    # on for it.
+    # witness_enabled is now redundant here (acme's floor_nodes == 2 means
+    # it defaults to true on its own) -- left explicit anyway as a worked
+    # example of the opt-IN spelling, since witness_private_ip_offset
+    # below still has no auto-computed default and must always be set by
+    # hand whenever the effective witness ends up enabled, smart-defaulted
+    # or not.
     witness_enabled           = true
     witness_instance_type     = "g6-nanode-1" # never forwards traffic -- the cheapest generally-available type is enough
     witness_private_ip_offset = 52            # VPC side -- must not collide with THIS pool's own private_ip_offset range (50-51, floor_nodes=2) or any other pool's
@@ -311,24 +330,34 @@ natctl_object_storage_bucket     = "lng-artifacts"
 natctl_object_storage_access_key = "REPLACE_ME"
 natctl_object_storage_secret_key = "REPLACE_ME"
 
-# natctl-on-node (opt-in) -- removes the requirement for a dedicated
+# natctl-on-node (the DEFAULT -- see variables.tf's own default) --
+# removes the requirement for a dedicated
 # control-plane host by running natctl itself, leader-elected with STONITH
 # fencing (power off the previous leader, poll for confirmed offline,
 # only then claim leadership -- see controller/natctl/leader_election.py
 # and docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.3/§2.4), on every NAT node
-# in every pool instead. Leave commented out / false to keep
-# the original single-dedicated-host layout (module.observability runs
-# natctl). Read the guide's leader-election section before enabling
-# this in production -- fencing briefly interrupts a node's own NAT
-# traffic, and this is defense-in-depth, not mathematically perfect
-# mutual exclusion. Only this toggle is opt-in -- the Object Storage block
-# above it is required either way (see its own comment).
+# in every pool instead. Leaving this line commented out means
+# natctl_on_node_enabled is TRUE (the variable's own default) -- to get
+# the ORIGINAL single-dedicated-host layout instead (module.observability
+# runs natctl), uncomment the line below and set it to false explicitly.
+# Read the guide's leader-election section either way -- fencing briefly
+# interrupts a node's own NAT traffic, and this is defense-in-depth, not
+# mathematically perfect mutual exclusion. The Object Storage block above
+# it is required regardless of which mode you're in (see its own comment).
 #
-# Before flipping this on, check every pool's floor_nodes count above
-# against the node-count warning right before the pools block -- 2 nodes
-# is a genuinely risky shape for this mode, 3+ is what it's designed for.
+# Every pool's floor_nodes count above matters under this mode -- see the
+# node-count warning right before the pools block -- but a 2-node pool
+# now gets a witness automatically (pool_effective_witness_enabled in
+# main.tf), so leaving this at its true default no longer requires you to
+# also remember to set witness_enabled by hand.
 #
-# natctl_on_node_enabled = true
+# natctl_on_node_enabled = false # uncomment to opt back into single-dedicated-host mode
+
+# Let already-running natctl processes pick up a fresh publish without a
+# node rebuild -- an operator-triggered rolling-restart (natctl_cli's
+# rolling-restart command) and a fully automatic, jittered live-reload.
+# Off by default; uncomment to opt in.
+# auto_update_enabled = true
 
 # Already have Prometheus/Grafana (or a remote-write-compatible
 # backend)? Set this to false to skip provisioning this project's own copy

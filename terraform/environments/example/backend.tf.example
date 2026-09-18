@@ -1,0 +1,88 @@
+# backend.tf.example (terraform/environments/example)
+#
+# No remote state backend is configured by default -- a fresh checkout
+# uses Terraform's own local `terraform.tfstate` file, with NO locking at
+# all. Two concurrent `terraform apply` runs against the same
+# environment (two operators, or one operator with two open sessions/
+# terminals) have nothing stopping state corruption or double-
+# provisioning -- Terraform simply lets both proceed, each unaware of
+# the other's in-flight changes.
+#
+# Copy this file to backend.tf (gitignored, same pattern as
+# terraform.tfvars.example -> terraform.tfvars) to store state in Linode
+# Object Storage instead, with real locking via Terraform's native
+# `use_lockfile` (a plain lock object in the SAME bucket -- no DynamoDB
+# or other external locking service needed, unlike AWS S3 backends).
+#
+# Requires Terraform >= 1.10 for use_lockfile specifically -- older
+# Terraform can still use this same bucket for state STORAGE, just
+# without the locking guarantee (drop the use_lockfile line entirely
+# rather than leave it set on a Terraform version too old to honor it,
+# which errors out at init time rather than silently ignoring it).
+#
+# -----------------------------------------------------
+# Usage:
+#
+# 1. Create a bucket for state (separate from the artifacts/leader-
+#    election bucket this environment already provisions via
+#    terraform/modules/artifacts -- state should not share a bucket
+#    with content that natctl itself reads/writes at runtime):
+#
+#      linode-cli obj mb lng-livetest-terraform-state --cluster ap-south-1
+#
+# 2. Create (or reuse) an Object Storage access key scoped to just this
+#    bucket -- a dedicated, narrowly-scoped key limits the blast radius
+#    of a leak to state storage alone, rather than whatever broader
+#    access an existing, more widely-used key already carries.
+#
+# 3. Copy this file to backend.tf, fill in the values below, then:
+#
+#      terraform init -migrate-state
+#
+#    (-migrate-state copies any existing local terraform.tfstate into
+#    the new backend in one step -- omit it only for a genuinely fresh
+#    environment with no local state yet to migrate.)
+#
+# 4. Set the access/secret key via environment variables, NEVER inline
+#    in this file (backend blocks cannot reference Terraform variables
+#    at all -- this is a hard Terraform limitation, not a choice this
+#    project made -- so credentials here would otherwise have to be
+#    literal, committed values):
+#
+#      export AWS_ACCESS_KEY_ID=<your Object Storage access key>
+#      export AWS_SECRET_ACCESS_KEY=<your Object Storage secret key>
+#
+#    (AWS_-prefixed names are correct, not a typo -- Terraform's "s3"
+#    backend type works against any S3-compatible endpoint, Linode
+#    Object Storage included, but only ever reads these AWS-branded
+#    environment variable names for credentials.)
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+terraform {
+  backend "s3" {
+    bucket = "lng-livetest-terraform-state" # the bucket you created in step 1 above
+    key    = "example/terraform.tfstate"    # change per-environment if you reuse this bucket for more than one
+    region = "ap-south-1"                   # match your bucket's own region
+
+    endpoints = {
+      s3 = "https://ap-south-1.linodeobjects.com" # match region above
+    }
+
+    # Linode Object Storage is S3-compatible but not AWS itself -- these
+    # four disable AWS-specific behaviors the "s3" backend otherwise
+    # assumes, none of which a non-AWS S3-compatible endpoint supports.
+    skip_credentials_validation = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    skip_metadata_api_check     = true
+
+    use_lockfile = true # Terraform >= 1.10 -- see this file's own header comment
+  }
+}

@@ -71,18 +71,22 @@ machine other than a live fleet node, you'll need your own local copy of
 that file (and the credentials it references).
 
 **Two different things `--config` is used for, depending on the
-command**: most commands (`status`, `nodes`, `drain`, `resize`,
-`check-orphans`) use it to talk to the **Linode API directly** — they
-build their own live view of the fleet from Linode's own state. The
-`set-*` commands instead use it only to find the pool/API defaults, then
-send a real HTTP request to a **running `natctl` process's own API** —
-see each command's own section below for which kind it is.
+command**: `status`, `nodes`, and `check-orphans` use it to talk to the
+**Linode API directly** — they build their own live view of the fleet
+from Linode's own state, and never touch a running `natctl` process at
+all. Every other command (`drain`, `resize`, `rotate-root-pass`,
+`rotate-linode-token`, `rolling-restart`, and the `set-*` commands) uses
+it only to find the pool/API defaults, then sends a real HTTP request to
+a **running `natctl` process's own API** — see each command's own
+section below for exactly what that request does.
 
-**`--natctl-url`, on the `set-*` commands only**: these commands default
-to talking to `localhost` (the common case: running the CLI from the
-same host `natctl` runs on, or against a specific node in the every-node
-placement mode). Pass `--natctl-url http://<host>:8099` explicitly if
-you're operating from anywhere else.
+**`--natctl-url`, on every command that talks to a running `natctl`
+process** (everything except `status`/`nodes`/`check-orphans` — see
+above): these commands default to talking to `localhost` (the common
+case: running the CLI from the same host `natctl` runs on, or against a
+specific node in the every-node placement mode). Pass
+`--natctl-url http://<host>:8099` explicitly if you're operating from
+anywhere else.
 
 **The Linode API token is separate from `--config`, and needs one extra
 step if you're running the CLI on a live node.** `natctl.yaml` itself
@@ -111,11 +115,14 @@ other way) rather than relying on a node's `/etc/natctl/env` at all.
 |---|---|---|
 | [`status`](#status) | Linode API | No |
 | [`nodes`](#nodes) | Linode API | No |
-| [`drain`](#drain) | Linode API | Yes — deletes one elastic node |
-| [`resize`](#resize) | Linode API | Yes — resizes one node in place |
+| [`drain`](#drain) | Linode API + a running natctl's API | Yes — deletes one elastic node |
+| [`resize`](#resize) | Linode API + a running natctl's API | Yes — resizes one node in place |
+| [`rotate-root-pass`](#rotate-root-pass) | Linode API + a running natctl's API | Yes — resets root_pass on one or more nodes |
 | [`check-orphans`](#check-orphans) | Linode API | No |
 | [`set-client-config`](#set-client-config) | A running natctl's API | Yes — live fleet-wide setting |
 | [`set-pool-scaling`](#set-pool-scaling) | A running natctl's API | Yes — live fleet-wide setting |
+| [`rotate-linode-token`](#rotate-linode-token) | A running natctl's API | Yes — live fleet-wide credential |
+| [`rolling-restart`](#rolling-restart) | A running natctl's API | Yes — restarts nodes one at a time |
 | [`set-vpc-sibling-subnets`](#set-vpc-sibling-subnets) | A running natctl's API | Yes — live fleet-wide setting |
 
 ### `status`
@@ -180,6 +187,12 @@ Terraform's to manage, not natctl's. Lower the floor count instead (edit
 that pool's `floor_nodes` field in `terraform.tfvars`'s `pools` map, then
 `terraform apply`) if you actually want to remove permanent capacity.
 
+Excluding the node from the roster immediately is a real HTTP request to
+a running `natctl` process's own API, not just a Linode API call — pass
+`--natctl-url` if you're not running the CLI from `localhost` relative
+to that process (see "Two different things `--config` is used for"
+above).
+
 ### `resize`
 
 Change a node's instance plan in place.
@@ -205,11 +218,144 @@ processed strictly one at a time, and the whole operation stops at the
 very first failure rather than continuing against a pool that's already
 short a node.
 
+Like `drain`, the drain/undrain steps around the resize itself are real
+HTTP requests to a running `natctl` process's own API — pass
+`--natctl-url` if you're not running the CLI from `localhost` relative
+to that process.
+
 **If the resized node is a Terraform floor node**, the command prints
 the exact `node_instance_type_overrides` block to add to your
 `.tfvars` immediately after — do this before the next `terraform apply`,
 or Terraform will see drift and try to revert the resize back to the
 pool's base instance type.
+
+### `rotate-root-pass`
+
+Reset `root_pass` on already-provisioned nodes.
+
+```bash
+umask 077 && printf '%s' "$(openssl rand -base64 24)" > /tmp/new-root-pass.txt
+natctl-cli --config /etc/natctl/config.yaml rotate-root-pass --pool shared \
+  --new-password-file /tmp/new-root-pass.txt
+shred -u /tmp/new-root-pass.txt   # or `rm -f` if shred isn't available
+```
+
+**Why**: `root_pass` is normally set once, at each node's own creation
+time, from your Terraform config — there's otherwise no way to change it
+on a node that's already running short of replacing the instance
+outright. **When**: you suspect the value leaked (an accidental `cat` of
+a rendered config file, a compromised operator workstation, routine
+credential hygiene), and want to rotate it without rebuilding anything.
+
+`--new-password-file` is required, and the new password is never
+accepted as a bare CLI argument — a secret passed as an argv value is
+trivially exposed via shell history and `ps`. Omit `--node-id` to rotate
+every node currently in the pool (one at a time, same as `resize` never
+running two in parallel); pass it (repeatable) to target specific nodes
+instead. Each node is drained before the reset, then genuinely powered
+off, reset, and powered back on — Linode's password-reset API rejects a
+running instance outright, so there is no lower-downtime path for this
+specific operation, unlike `resize`'s optional warm attempt — and
+un-drained after, whether the reset succeeded or not.
+
+Once the live rotation succeeds, the new value is also stored durably
+(the same live-override mechanism `set-pool-scaling` uses) so every
+`natctl` instance managing this pool picks it up within one reconcile
+pass, and any future elastic-node provision uses it immediately. **A
+later `terraform apply` will overwrite this back to whatever
+`terraform.tfvars` says for this pool's `root_pass`** — update that
+value too if you want the rotation to stick long-term.
+
+### `rotate-linode-token`
+
+Push a freshly-minted Linode API token to every `natctl` process in the
+environment.
+
+```bash
+umask 077 && printf '%s' "<the new token value>" > /tmp/new-linode-token.txt
+natctl-cli --config /etc/natctl/config.yaml rotate-linode-token \
+  --new-token-file /tmp/new-linode-token.txt
+shred -u /tmp/new-linode-token.txt   # or `rm -f` if shred isn't available
+```
+
+**Why**: the token every `natctl` instance uses to talk to the Linode API
+is set once, at deployment time, with no built-in way to change it
+afterward. **When**: you suspect it leaked, or as routine credential
+hygiene, and want every instance in the environment to converge on a
+replacement without restarting anything.
+
+Not self-rotation: a Linode API token cannot list, create, or widen the
+scope of any token — including the one it's currently using — so there
+is nothing for `natctl` to do on its own here. You mint the replacement
+yourself, through your own separately-privileged session (the Cloud
+Manager UI, or your own `linode-cli` identity — never this deployment's
+own token), and this command's only job is pushing that already-minted
+value out. `--new-token-file` is required, same reasoning as
+`rotate-root-pass`'s `--new-password-file` — never accepted as a bare
+CLI argument.
+
+No `--pool` flag: the Linode API token is a whole-environment
+credential, not a per-pool one — every pool a given `natctl` process
+manages shares one underlying API client. The instance that answers the
+request applies the new token to itself immediately, in-process; every
+other instance in the environment picks it up on its own next reconcile
+pass. The old token is left valid at Linode's side — confirm the new one
+is working before you revoke the old one yourself.
+
+### `rolling-restart`
+
+Pick up a freshly-published natctl fix on already-running nodes, staged
+and bake-checked, one at a time.
+
+```bash
+natctl-cli --config /etc/natctl/config.yaml rolling-restart --pool shared
+natctl-cli --config /etc/natctl/config.yaml rolling-restart --pool shared --canary-count 1
+natctl-cli --config /etc/natctl/config.yaml rolling-restart --pool shared --bake-seconds 60
+```
+
+**Why**: every node fetches its own natctl package once, at boot, and
+never again — a fix published afterward has zero effect on an
+already-running node until it's naturally replaced. **When**: a fix has
+been published and you want already-running nodes to pick it up without
+waiting for a rebuild. Requires `auto_update_enabled` to be set on the
+deployment first — refuses with a clear error on any node where it
+isn't.
+
+Restarts every node in the pool one at a time: tells each node's own
+control plane to re-fetch and verify its artifact (the same SHA-256
+integrity check boot-time provisioning already applies) before ever
+restarting — a failed or tampered fetch never touches the
+currently-running code, and the command reports the failure instead of
+restarting into a broken state. Waits for each node to come back
+healthy, then **bake-checks** it: samples its own reported pool health
+a few more times across `--bake-seconds` (default 30) before trusting
+the restart and moving to the next node — a real signal the new code is
+actually managing the pool correctly, not just that the process came
+back. If that check fails, the command **automatically rolls that one
+node back** to the version it was running before and stops the rollout
+there, leaving the rest of the pool untouched. At most one node's
+control plane is ever offline at a time either way; the data plane
+(NAT/masquerade traffic) is completely unaffected throughout. A node
+that fails to restart outright, or never comes back at all, also stops
+the rollout, without attempting a rollback. `--node-id` (repeatable)
+targets specific nodes instead of the whole pool;
+`--health-timeout-seconds` (default 90) controls how long to wait for
+each node to come back before giving up on it.
+
+`--canary-count N` restarts only the first N nodes and stops there once
+they're confirmed healthy, printing what to run next for the rest —
+expose a fix to a small cohort first, confirm it, then continue, rather
+than every node picking it up in one pass.
+
+An automatic counterpart exists too: once `auto_update_enabled` is on,
+every node also checks periodically on its own whether a newer artifact
+has been published, and restarts itself automatically (after a random
+short delay, so a whole fleet doesn't restart in the same instant) —
+`rolling-restart` is for triggering that pickup immediately and
+deliberately. That automatic path carries its own safety net too: a
+version that crashes before it can confirm itself healthy is rolled
+back automatically the next time that node starts up, with no operator
+having to notice or intervene.
 
 ### `check-orphans`
 

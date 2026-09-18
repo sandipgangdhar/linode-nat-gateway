@@ -177,3 +177,30 @@ groups:
           summary: "Pool {{ $labels.pool }} (natctl_on_node_enabled) has {{ $value }} confirmed leaders, not exactly 1"
           description: "0 means every node's leader-election is stuck (check Object Storage lease-store reachability and each node's own natctl logs); more than 1 means a genuine split-brain in the fencing/election path, which STONITH fencing is designed to make effectively impossible — either result needs investigation, not just waiting for the next reconcile pass. A couple of reconcile passes' grace (natctl_leader_election_is_leader is only ever scraped every 30s via natctl_sd) already absorbs the handful of seconds a real, healthy re-election normally takes — this alert firing means it did not resolve on its own. Absent entirely for pools with leader_election disabled (single-dedicated-host mode has no is_leader gauge to sum)."
 
+      - alert: NATLinodeAPICircuitBreakerOpen
+        expr: natctl_linode_api_circuit_open == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "natctl has stopped attempting mutating Linode API calls after repeated failures"
+          description: "A run of consecutive network errors or 5xx responses opened the circuit breaker — evidence of a provider-side incident, not a bad request on this project's own side (a 4xx never opens it). Fencing, elastic provisioning, and IP-sharing changes are all paused until it closes again; read-only work (discover, health checks) is unaffected, so the roster keeps serving current state. Check Linode's own status page before assuming this project's code is at fault — this closes on its own once the API recovers and a trial call succeeds, no operator action needed unless the underlying incident is prolonged."
+
+      - alert: NATPoolCostCeilingExceeded
+        expr: natctl_pool_hourly_cost_dollars > on(pool) natctl_pool_cost_ceiling_dollars
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pool {{ $labels.pool }}'s actual hourly cost exceeds its own max_nodes-derived ceiling"
+          description: "natctl_pool_cost_ceiling_dollars is max_nodes times this pool's own base instance type's real price -- what this pool should never cost more than per hour if it's staying within its own configured capacity limit. A sustained breach means the fleet actually grew past that limit, a genuine bug signal (this project has hit exactly this class of bug before, in elastic-fleet ceiling enforcement), not a budget guess to second-guess. Alert-only: this never blocks or reverses scaling on its own, so investigate rather than assume it will self-resolve."
+
+      - alert: NATPoolCostVelocityHigh
+        expr: natctl_pool_cost_velocity_percent > on(pool) natctl_pool_cost_velocity_threshold_percent
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pool {{ $labels.pool }}'s hourly cost is rising faster than its own configured threshold"
+          description: "natctl_pool_cost_velocity_percent is the percent change in natctl_pool_hourly_cost_dollars over this pool's own configured cost_velocity_window_seconds, compared against its own cost_velocity_threshold_percent -- both absent entirely for a pool that never opted in. Catches a cost climbing suspiciously fast even while still comfortably under any ceiling. A legitimate, healthy scale-out under real load can look identical to a runaway one from cost alone -- check natctl's own autoscale-explainability panels (why the last scale event fired) before assuming this is a bug rather than genuine, wanted traffic."
+

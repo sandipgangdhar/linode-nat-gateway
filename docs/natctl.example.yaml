@@ -229,3 +229,12 @@ linode:
   # cloud_init.py), so a real token set here ships to every node instead
   # of staying on one dedicated host.
   token: null
+  # How many CONSECUTIVE mutating-call failures (network errors or 5xx
+  # responses -- never a 4xx) natctl tolerates before it stops attempting
+  # further mutating Linode API calls (fencing power-offs, elastic
+  # provisioning, IP-sharing changes) outright for
+  # circuit_breaker_cooldown_seconds. Read-only calls (discover, health
+  # checks) are never affected. Defaults are conservative but not
+  # exotic -- override only if you have a specific reason to.
+  circuit_breaker_failure_threshold: 5
+  circuit_breaker_cooldown_seconds: 30

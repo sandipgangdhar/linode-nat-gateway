@@ -14,7 +14,8 @@ Author: Sandip Gangdhar (https://github.com/sandipgangdhar)
 ## How this repository is built
 
 `natctl` (the fleet controller), `natctl-cli` (the operator-facing day-2
-CLI — `status`/`nodes`/`drain`/`resize`/`check-orphans`/
+CLI — `status`/`nodes`/`drain`/`resize`/`rotate-root-pass`/
+`rotate-linode-token`/`rolling-restart`/`check-orphans`/
 `set-client-config`/`set-pool-scaling`/`set-vpc-sibling-subnets`, a
 separate entry point from the daemon with no subcommands of its own —
 see `CLI-GUIDE.md` for the complete reference), `nat-exporter` (the
@@ -98,6 +99,8 @@ needs the edit-and-restart procedure.
 |---|---|---|---|
 | `api_base` | string | `https://api.linode.com/v4` | Base URL for the Linode API. Only change for a non-default endpoint. |
 | `token` | string or omit | *(unset)* | **Leave this unset.** natctl resolves the token from the `LINODE_TOKEN` environment variable (set in `/etc/natctl/env`, mode 0600) if this field is empty — never put a real token directly in `config.yaml`, which is typically more widely readable and, under `natctl_on_node_enabled`, copied identically to every node. |
+| `circuit_breaker_failure_threshold` | int | `5` | How many consecutive mutating-call failures (network errors, 5xx responses) against the Linode API open the circuit breaker (see "High availability" below). A 4xx response never counts — that's this deployment's own bug, not evidence the provider is having an incident. |
+| `circuit_breaker_cooldown_seconds` | float | `30.0` | How long the breaker refuses every further mutating call outright, with no request even attempted, once it's open. A single trial call is let through once this elapses; success closes the breaker, failure reopens it for another cooldown. |
 
 ### `leader_election:` block — only meaningful under `natctl_on_node_enabled`
 
@@ -192,6 +195,19 @@ See "Autoscaling" below for the full semantics (when each trigger fires, the sus
 | `drain_timeout_seconds` | int | `180` | How long a scaling-in node is given to empty out before forced deletion. |
 | `unhealthy_replace_after_seconds` | int | `900` | How long an elastic node must fail its own health check continuously before it's drained and replaced. Covers a fresh node's full cloud-init boot time, not just steady-state failures — don't set this too low. |
 | `auto_provision_enabled` | bool | `true` | Whether autoscaling is active at all for this pool. `min_nodes`/`max_nodes` remain the hard bounds either way. |
+| `cost_velocity_threshold_percent` | float or omit | *(unset)* | Opt-in early-warning: alerts if this pool's own hourly cost rises by more than this percentage within `cost_velocity_window_seconds`. Unset (the default) means this pool hasn't opted in — no metric is even emitted, distinct from a reading of `0`. Never feeds back into autoscaling decisions; alert-only, by design. |
+| `cost_velocity_window_seconds` | float | `3600.0` | The rolling window `cost_velocity_threshold_percent` measures the rise over. Only meaningful once the threshold above is set. |
+
+### `auto_update:` block — opt-in, lets already-running nodes pick up a published code fix
+
+Omit this whole block entirely to leave it off (the default) — a node then keeps whatever code it booted with until it's naturally replaced.
+
+| Field | Type | Default | What it does |
+|---|---|---|---|
+| `enabled` | bool | `false` | Turns on both halves of this feature: `rolling-restart` (operator-triggered, see `CLI-GUIDE.md`) and live-reload (fully automatic — each node periodically checks whether a newer published artifact exists and restarts itself into it). `rolling-restart` refuses outright, with a clear error, on any node where this is `false`. |
+| `check_interval_seconds` | float | `600.0` | How often live-reload checks for a newer published artifact. Has no effect on `rolling-restart`, which is operator-triggered on demand. |
+| `jitter_max_seconds` | float | `120.0` | Random delay live-reload waits before actually restarting into a detected update, so a fleet-wide publish doesn't restart every node's control plane in the same instant. |
+| `canary_bake_seconds` | float | `120.0` | How long a freshly-restarted process must run without crashing before the pending-update marker is cleared. A crash before this elapses is treated as proof the update itself is bad, and the next boot automatically rolls back to the previous version instead of crash-looping on it forever. |
 
 ### Per-pool: Terraform-managed internal wiring — do not hand-edit
 
@@ -386,7 +402,7 @@ Run through this whenever you're asked "is this fleet actually highly available,
 
 Prometheus scrapes every node's `:9200/metrics` (target list tracks autoscaling automatically) plus `natctl`'s own `:8099/metrics` for fleet-wide figures. Grafana dashboard and alert rules are provisioned automatically by the observability host.
 
-Key alerts to know before you're on call: `NATConntrackTableNearFull`/`Critical`, `NATPortExhaustionImminent`, `NATNodeDown`/`Unhealthy`, `NATPoolBelowFloor`, `NATHighDropRate`, `NATConntrackBuddyUnpaired`, `NATBGPSessionNotEstablished`, `NATIPFailoverSelfNotAnnounced`, `NATAutoscaleCeilingReached`.
+Key alerts to know before you're on call: `NATConntrackTableNearFull`/`Critical`, `NATPortExhaustionImminent`, `NATNodeDown`/`Unhealthy`, `NATPoolBelowFloor`, `NATHighDropRate`, `NATConntrackBuddyUnpaired`, `NATBGPSessionNotEstablished`, `NATIPFailoverSelfNotAnnounced`, `NATAutoscaleCeilingReached`, `NATLinodeAPICircuitBreakerOpen` (the Linode API itself is having a sustained problem — read-only fleet management continues, but new mutating decisions, like fencing or provisioning, are paused until it clears), `NATPoolCostCeilingExceeded`/`NATPoolCostVelocityHigh` (alert-only cost guardrails — never feed back into an actual scaling decision, see `cost_velocity_threshold_percent` above).
 
 ## Troubleshooting
 

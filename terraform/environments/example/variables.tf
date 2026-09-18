@@ -257,12 +257,17 @@ variable "pools" {
     # 2-node quorum-witness role (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html
     # Part II, 2.3) -- mirrors terraform/modules/nat-fleet's own
     # witness_enabled/witness_instance_type/witness_private_ip_offset
-    # variables. Set witness_enabled for any pool whose floor_nodes stays
-    # below 3; only meaningful with natctl_on_node_enabled. No default
-    # for witness_private_ip_offset when witness_enabled is true -- see
+    # variables. Left unset here (null, NOT a hardcoded false) so
+    # local.pool_effective_witness_enabled (main.tf) can tell "operator
+    # never set this" apart from "operator explicitly opted out" --
+    # unset means smart-defaulted to true for a 2-node pool (see that
+    # local's own comment for why exactly 2, not <3), false explicitly
+    # opts out, true explicitly opts in regardless of floor_nodes. Only
+    # meaningful with natctl_on_node_enabled either way. No default for
+    # witness_private_ip_offset when the effective value is true -- see
     # that module variable's own description for why (must not collide
     # with this or any other pool's private_ip_offset range).
-    witness_enabled           = optional(bool, false)
+    witness_enabled           = optional(bool)
     witness_instance_type     = optional(string, "g6-nanode-1")
     witness_private_ip_offset = optional(number)
   }))
@@ -327,20 +332,38 @@ variable "placement_group_policy" {
 }
 
 # ---------------------------------------------------------------------------
-# natctl-on-node (opt-in) — removes the requirement for a dedicated
+# natctl-on-node (the default) — removes the requirement for a dedicated
 # control-plane host by running natctl itself, leader-elected with STONITH
 # fencing (power off the previous leader, poll for confirmed offline, only
 # then claim leadership), on every NAT node in every pool instead. See
 # controller/natctl/leader_election.py and
 # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §2.3/§2.4. This is defense-in-depth,
 # not mathematically perfect mutual exclusion -- fencing briefly interrupts
-# a node's own NAT traffic too. Leave natctl_on_node_enabled at its default
-# (false) to keep this environment's original single-dedicated-host layout
-# (module.observability runs natctl) unchanged.
+# a node's own NAT traffic too.
+#
+# The alternative, single-dedicated-host mode, is a real control-plane
+# SPOF -- the data plane keeps forwarding if that one host dies, but no
+# new decision (scaling, failover, drain) happens until it's back.
+# natctl-on-node avoids that at the cost of a real, stated trade-off: the
+# Linode API token now needs to live on every NAT node instead of one
+# tightly-firewalled host (see terraform/modules/nat-fleet/variables.tf's
+# linode_token description), and a 2-node pool needs a witness to close
+# the fencing-vs-partition ambiguity -- both handled automatically (see
+# pool_effective_witness_enabled in main.tf for the witness half). Set
+# natctl_on_node_enabled = false explicitly to opt into the original
+# single-dedicated-host layout (module.observability runs natctl)
+# instead, if that credential-placement trade-off doesn't suit your
+# deployment.
 # ---------------------------------------------------------------------------
 
 variable "natctl_on_node_enabled" {
-  description = "Run natctl on every NAT node (every pool, floor AND elastic) instead of on a single dedicated module.observability host. When true, this file also flips module.observability's run_natctl off (running natctl in two places at once would be redundant and the observability host isn't given its own leader-election identity) and turns on leader_election in the composed natctl.yaml, with ANY node in the fleet eligible to hold leadership."
+  description = "Run natctl on every NAT node (every pool, floor AND elastic) instead of on a single dedicated module.observability host. When true, this file also flips module.observability's run_natctl off (running natctl in two places at once would be redundant and the observability host isn't given its own leader-election identity) and turns on leader_election in the composed natctl.yaml, with ANY node in the fleet eligible to hold leadership. Default true -- single-dedicated-host mode is a real control-plane SPOF; set this to false explicitly to opt into that layout instead."
+  type        = bool
+  default     = true
+}
+
+variable "auto_update_enabled" {
+  description = "Let already-running natctl processes pick up a fresh natctl publish without a node rebuild -- an operator-triggered rolling-restart (natctl_cli's rolling-restart command) and a fully automatic, jittered live-reload, both re-verifying against the same SHA-256 manifest boot-time cloud-init already trusts before ever restarting. Disabled by default -- every existing deployment keeps its current behavior (a published fix only reaches a node the next time it's rebuilt) until this is explicitly turned on."
   type        = bool
   default     = false
 }

@@ -955,6 +955,192 @@
           "legendFormat": "peak rx"
         }
       ]
+    },
+    {
+      "id": 39,
+      "title": "Accept Reasons",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 109
+      },
+      "targets": [
+        {
+          "expr": "rate(nat_nftables_accepts_total{pool=~\"$pool\"}[5m])",
+          "legendFormat": "{{node}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "title": "Linode API Circuit Breaker",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 117
+      },
+      "description": "1 means this natctl process has stopped attempting mutating Linode API calls (fencing power-offs, elastic provisioning, IP-sharing changes) after a run of consecutive network/5xx failures -- a provider-side incident, not a leadership rejection or a bad request on this project's own side. Read-only work (discover, health checks) is never affected. Whole-environment, not per-pool -- every pool this process manages shares one Linode API client.",
+      "options": {
+        "textMode": "value",
+        "colorMode": "background",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "closed"
+                },
+                "1": {
+                  "text": "OPEN"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "natctl_linode_api_circuit_open",
+          "legendFormat": "circuit"
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "title": "Current Hourly Cost, per Pool",
+      "type": "bargauge",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 121
+      },
+      "description": "This pool's real-time run-rate, summed from each of its nodes' own live Linode plan price (floor and elastic counted together). Recomputed fresh on every scrape -- rises and falls as the pool autoscales or a node is resized, never needs resetting.",
+      "options": {
+        "displayMode": "lcd",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 3
+        }
+      },
+      "targets": [
+        {
+          "expr": "natctl_pool_hourly_cost_dollars{pool=~\"$pool\"}",
+          "legendFormat": "{{pool}}"
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "title": "Projected Monthly Cost (at current rate), per Pool",
+      "type": "bargauge",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 121
+      },
+      "description": "Current hourly rate x 730 (average hours/month) -- a projection assuming this pool stays exactly this size for the rest of the month, computed here in PromQL rather than as a second natctl-emitted metric, so it can never drift out of sync with the live hourly figure. For a pool whose size actually changes over the month, the trailing-average panel alongside this one is the more accurate figure.",
+      "options": {
+        "displayMode": "lcd",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2
+        }
+      },
+      "targets": [
+        {
+          "expr": "natctl_pool_hourly_cost_dollars{pool=~\"$pool\"} * 730",
+          "legendFormat": "{{pool}}"
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "title": "Actual Trailing 30-Day Average Monthly Cost, per Pool",
+      "type": "bargauge",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 121
+      },
+      "description": "avg_over_time() of the hourly-cost gauge across the last 30 days, x 24 x 30 -- the genuine average cost this pool has actually accrued, correctly weighting periods where it was a different size (e.g. before/after an autoscale event), rather than assuming today's size held for the whole month the way the projected-at-current-rate panel does. Needs at least 30 days of Prometheus retention to be meaningful -- shows a partial-period average otherwise.",
+      "options": {
+        "displayMode": "lcd",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2
+        }
+      },
+      "targets": [
+        {
+          "expr": "avg_over_time(natctl_pool_hourly_cost_dollars{pool=~\"$pool\"}[30d]) * 24 * 30",
+          "legendFormat": "{{pool}}"
+        }
+      ]
+    },
+    {
+      "id": 44,
+      "title": "Hourly Cost Over Time, per Pool",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 127
+      },
+      "description": "Each pool's own cost history -- a step change lines up with an autoscale event or a resize, visible on the Autoscale Explainability panels above. Stacked to also show total fleet-wide spend at a glance.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "natctl_pool_hourly_cost_dollars{pool=~\"$pool\"}",
+          "legendFormat": "{{pool}}"
+        }
+      ]
     }
   ]
 }
