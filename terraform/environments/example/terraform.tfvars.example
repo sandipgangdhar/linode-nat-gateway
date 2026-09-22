@@ -9,18 +9,30 @@
 #
 # Create a VPC + subnet yourself first (see "Bring your own VPC" below).
 # cp terraform.tfvars.example terraform.tfvars
-# # edit terraform.tfvars: real linode_token, ssh key, region, vpc_id,
-# # public_subnet_id, password
+# # edit terraform.tfvars: ssh key, region, vpc_id, public_subnet_id
+# sops secrets.enc.json   # fill in linode_token, root_pass,
+#                          # grafana_admin_password, natctl_object_storage_*
+#                          # (secrets.enc.json is already checked into this
+#                          # repo, SOPS+age encrypted -- editing it requires
+#                          # an age private key that can decrypt it; see
+#                          # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html, Part
+#                          # VIII 8.3 to generate your own and get it added
+#                          # as a recipient)
 # terraform init && terraform apply
 #
 # -----------------------------------------------------
 # Best Practices:
 #
 # - Never commit the real terraform.tfvars (only this .example file is
-#   meant to be checked in) -- it contains secrets once filled in.
-# - Use a strong, unique root_pass and grafana_admin_password; both are
-#   marked sensitive in variables.tf so Terraform will not print them in
-#   plan/apply output.
+#   meant to be checked in) -- it may contain non-secret operational
+#   values you don't want to share.
+# - linode_token, root_pass, grafana_admin_password, and the
+#   natctl_object_storage_* keys no longer live here at all -- they live
+#   in secrets.enc.json (SOPS + age encrypted, safe to commit as
+#   ciphertext) and are read in-memory at plan/apply time via
+#   data.sops_file.secrets in main.tf. See
+#   docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html, Part VIII 8.3 for the full
+#   workflow, including how to onboard a second operator.
 #
 # -----------------------------------------------------
 # Author:
@@ -32,7 +44,7 @@
 
 # Copy to terraform.tfvars and fill in.
 
-linode_token = "REPLACE_ME"
+# linode_token moved to secrets.enc.json -- see the header comment above.
 region        = "us-east"
 
 # Prefix for every resource this environment creates whose name is
@@ -92,9 +104,8 @@ authorized_keys = [
   "ssh-ed25519 AAAA... you@example.com",
 ]
 
-root_pass = "REPLACE_ME_WITH_A_STRONG_PASSWORD"
-
-grafana_admin_password = "REPLACE_ME"
+# root_pass and grafana_admin_password moved to secrets.enc.json -- see the
+# header comment above.
 
 # --------------------------------------------------------------------------
 # REQUIRED -- no default, deliberately. Every
@@ -327,8 +338,8 @@ observability_vlan_pool = "common"
 # --------------------------------------------------------------------------
 natctl_object_storage_endpoint   = "https://us-east-1.linodeobjects.com"
 natctl_object_storage_bucket     = "lng-artifacts"
-natctl_object_storage_access_key = "REPLACE_ME"
-natctl_object_storage_secret_key = "REPLACE_ME"
+# natctl_object_storage_access_key and natctl_object_storage_secret_key
+# moved to secrets.enc.json -- see the header comment above.
 
 # natctl-on-node (the DEFAULT -- see variables.tf's own default) --
 # removes the requirement for a dedicated

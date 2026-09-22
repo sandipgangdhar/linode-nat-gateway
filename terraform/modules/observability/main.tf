@@ -103,7 +103,15 @@ locals {
       # natctl_http_sd_targets local for the full story.
       natctl_http_sd_targets = var.natctl_http_sd_targets
     })
-    alertmanager_yml       = file("${path.module}/../../../ansible/templates/alertmanager.yml")
+    alertmanager_yml = templatefile("${path.module}/../../../ansible/templates/alertmanager.yml.tftpl", {
+      slack_webhook_url  = var.alertmanager_slack_webhook_url
+      smtp_host          = var.alertmanager_smtp_host
+      smtp_port          = var.alertmanager_smtp_port
+      smtp_from          = var.alertmanager_smtp_from
+      smtp_auth_username = var.alertmanager_smtp_auth_username
+      smtp_auth_password = var.alertmanager_smtp_auth_password
+      alert_email_to     = var.alertmanager_email_to
+    })
     grafana_datasource_yml = file("${path.module}/../../../ansible/templates/grafana-datasource.yml")
     grafana_dashboards_yml = file("${path.module}/../../../ansible/templates/grafana-dashboards.yml")
     nat_alerts_yml         = file("${path.module}/../../../alerts/nat-alerts.yml")
@@ -133,13 +141,15 @@ locals {
     # matching treatment.
     natctl_requirements_txt_url = var.natctl_requirements_txt_url
     natctl_service_url          = var.natctl_service_url
+    natctl_preflight_py_url     = var.natctl_preflight_py_url
     # Same treatment -- see terraform/modules/artifacts' matching change
     # and this file's nat_overview_json_url variable for why.
-    nat_overview_json_url     = var.nat_overview_json_url
-    natctl_config_yaml        = var.natctl_config_yaml
-    linode_token              = var.linode_token
-    object_storage_access_key = var.object_storage_access_key
-    object_storage_secret_key = var.object_storage_secret_key
+    nat_overview_json_url          = var.nat_overview_json_url
+    natctl_config_yaml             = var.natctl_config_yaml
+    linode_token                   = var.linode_token
+    object_storage_access_key      = var.object_storage_access_key
+    object_storage_secret_key      = var.object_storage_secret_key
+    secrets_bundle_age_private_key = var.secrets_bundle_age_private_key
 
     # "source" (default) preserves the above exactly as it behaved
     # before this variable existed -- see nat-fleet/main.tf's matching

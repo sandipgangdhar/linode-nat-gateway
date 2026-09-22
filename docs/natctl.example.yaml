@@ -221,13 +221,27 @@ prometheus_url: http://<observability-instance-ip>:9090
 # before this key existed.
 vpc_sibling_subnet_cidrs: []
 
+# Opt-in (empty/default here means OFF) runtime secrets bundle -- an
+# alternative to /etc/natctl/env for every real natctl secret (LINODE_TOKEN,
+# NATCTL_OBJECT_STORAGE_ACCESS_KEY/SECRET_KEY, NATCTL_API_MUTATION_TOKEN,
+# ...), fetched and decrypted at startup instead of pre-written to node
+# disk in plaintext. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html, Part VIII
+# 8.3 for the full workflow. Safe to publish secrets_bundle_url as
+# public-read -- it's SOPS+age ciphertext, decryptable only by a holder
+# of the matching age private key (secrets_bundle_age_key_path below).
+secrets_bundle_url: ""
+# Where this node's own age private key lives on disk (0600) -- the one
+# piece of secret material this mechanism still needs pre-placed per node.
+secrets_bundle_age_key_path: "/etc/natctl/age-key.txt"
+
 linode:
   api_base: https://api.linode.com/v4
-  # Prefer $LINODE_TOKEN (in /etc/natctl/env, 0600) over setting this
-  # directly -- this whole file is embedded in plaintext into every
-  # elastic node's cloud-init once natctl_on_node_enabled is set (see
-  # cloud_init.py), so a real token set here ships to every node instead
-  # of staying on one dedicated host.
+  # Prefer $LINODE_TOKEN (in /etc/natctl/env, 0600, or via
+  # secrets_bundle_url above) over setting this directly -- this whole
+  # file is embedded in plaintext into every elastic node's cloud-init
+  # once natctl_on_node_enabled is set (see cloud_init.py), so a real
+  # token set here ships to every node instead of staying on one
+  # dedicated host.
   token: null
   # How many CONSECUTIVE mutating-call failures (network errors or 5xx
   # responses -- never a 4xx) natctl tolerates before it stops attempting

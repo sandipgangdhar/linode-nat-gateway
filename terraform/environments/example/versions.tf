@@ -2,7 +2,8 @@
 #
 # Pins the Terraform CLI and Linode provider versions this example
 # environment is tested against, and configures the Linode provider with
-# the API token supplied via var.linode_token.
+# the API token decrypted from secrets.enc.json (see local.linode_token
+# in main.tf).
 #
 # -----------------------------------------------------
 # Usage:
@@ -15,6 +16,12 @@
 #   root module now generates its own random_password.
 #   natctl_api_mutation_token directly -- see environments/example/
 #   main.tf's matching resource comment.
+# - carlpett/sops ~> 1.0 -- reads secrets.enc.json (SOPS + age
+#   encrypted, safe to commit) directly into Terraform at plan/apply
+#   time, decrypted in-memory only -- never written to a plaintext file
+#   on disk. See locals.secrets in main.tf and
+#   docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html, Part VIII 8.3 for the full
+#   workflow.
 #
 # -----------------------------------------------------
 # Author:
@@ -36,9 +43,13 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+    sops = {
+      source  = "carlpett/sops"
+      version = "~> 1.0"
+    }
   }
 }
 
 provider "linode" {
-  token = var.linode_token
+  token = local.linode_token
 }

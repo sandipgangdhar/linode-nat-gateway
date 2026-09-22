@@ -1,0 +1,65 @@
+# alertmanager.yml.tftpl (ansible/templates)
+#
+# Alertmanager's own config, rendered by terraform/modules/observability
+# and copied to /opt/lng-observability/alertmanager.yml on the
+# control-plane host. Receives firing alerts from Prometheus
+# (alerts/nat-alerts.yml) and routes them to a receiver.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Ships with a no-op webhook receiver so `docker compose up` works out
+#   of the box with no secrets required -- this is the default when
+#   neither slack_webhook_url nor the smtp_* variables are set.
+# - Set terraform/environments/example/terraform.tfvars' alertmanager_*
+#   variables (all optional, all sensitive, all empty/off by default) to
+#   get real Slack and/or email notifications instead. Either, both, or
+#   neither can be configured independently.
+#
+# -----------------------------------------------------
+# Best Practices:
+#
+# - group_by ["alertname", "pair"] keeps related alerts from the same
+#   buddy pair grouped in one notification instead of paging once per
+#   node.
+# - A Slack incoming-webhook URL is already bound to one specific
+#   channel at creation time on Slack's side -- there is no separate
+#   channel field to set here.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+route:
+  receiver: default
+  group_by: ["alertname", "pair"]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+
+receivers:
+  - name: default
+%{ if slack_webhook_url != "" ~}
+    slack_configs:
+      - api_url: "${slack_webhook_url}"
+        send_resolved: true
+        title: '{{ .CommonAnnotations.summary }}'
+        text: '{{ .CommonAnnotations.description }}'
+%{ endif ~}
+%{ if smtp_host != "" && alert_email_to != "" ~}
+    email_configs:
+      - to: "${alert_email_to}"
+        from: "${smtp_from}"
+        smarthost: "${smtp_host}:${smtp_port}"
+        auth_username: "${smtp_auth_username}"
+        auth_password: "${smtp_auth_password}"
+        require_tls: true
+        send_resolved: true
+%{ endif ~}
+%{ if slack_webhook_url == "" && (smtp_host == "" || alert_email_to == "") ~}
+    webhook_configs: []
+%{ endif ~}

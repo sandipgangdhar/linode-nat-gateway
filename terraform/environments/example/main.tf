@@ -79,6 +79,30 @@
 # (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
 # -----------------------------------------------------
 
+# Secrets (root_pass, grafana_admin_password, linode_token, the two
+# Object Storage keys) live in secrets.enc.json -- SOPS + age encrypted,
+# safe to commit (the recipient in .sops.yaml is a public key; only the
+# matching private age key, which never leaves the operator's own
+# machine, can decrypt it). This data source decrypts it IN MEMORY,
+# inside Terraform's own process -- unlike a shell-out-to-`sops -d`
+# wrapper, it never writes a plaintext file to disk at any point. See
+# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html, Part VIII 8.3 for the full
+# operator workflow: viewing, editing, and onboarding a second operator.
+data "sops_file" "secrets" {
+  source_file = "secrets.enc.json"
+}
+
+locals {
+  root_pass                        = data.sops_file.secrets.data["root_pass"]
+  grafana_admin_password           = data.sops_file.secrets.data["grafana_admin_password"]
+  linode_token                     = data.sops_file.secrets.data["linode_token"]
+  natctl_object_storage_access_key = data.sops_file.secrets.data["natctl_object_storage_access_key"]
+  natctl_object_storage_secret_key = data.sops_file.secrets.data["natctl_object_storage_secret_key"]
+  # Optional sixth field -- try() so an existing secrets.enc.json that
+  # predates this mechanism (Part VIII 8.3) keeps working unchanged.
+  secrets_bundle_age_private_key = try(data.sops_file.secrets.data["secrets_bundle_age_private_key"], "")
+}
+
 # BYO VPC -- this module does not create the VPC or its subnet(s)
 # itself (see terraform/modules/vpc/main.tf's header comment). vpc_id/
 # public_subnet_id/private_subnet_ids come straight from variables.tf,
@@ -170,6 +194,32 @@ locals {
   pool_pairs_same_vlan = [
     for pair in setproduct(keys(var.pools), keys(var.pools)) : pair
     if local.pool_rank[pair[0]] < local.pool_rank[pair[1]] && var.pools[pair[0]].vlan_label == var.pools[pair[1]].vlan_label
+  ]
+
+  # Every pool with at least one ipsec_routes entry whose gateway_ip
+  # isn't actually inside that SAME pool's own vlan_cidr -- client-agent
+  # has no other interface to reach it on (see the pools variable's own
+  # ipsec_routes field comment). Terraform has no builtin for checking a
+  # single IP against a CIDR range (cidrcontains() is an OpenTofu-only
+  # addition, not available in HashiCorp Terraform), so this uses the
+  # same host-int-conversion technique as pool_reserved_int below to
+  # compare the gateway address against the CIDR's network/broadcast
+  # bounds.
+  pool_vlan_cidr_int_bounds = {
+    for k, p in var.pools : k => [
+      for h in [cidrhost(p.vlan_cidr, 0), cidrhost(p.vlan_cidr, -1)] :
+      sum([for i, o in split(".", h) : tonumber(o) * pow(256, 3 - i)])
+    ]
+  }
+  pools_with_ipsec_route_gateway_outside_vlan = [
+    for name, pool in var.pools : name
+    if length([
+      for r in pool.ipsec_routes : r
+      if(
+        sum([for i, o in split(".", r.gateway_ip) : tonumber(o) * pow(256, 3 - i)]) < local.pool_vlan_cidr_int_bounds[name][0] ||
+        sum([for i, o in split(".", r.gateway_ip) : tonumber(o) * pow(256, 3 - i)]) > local.pool_vlan_cidr_int_bounds[name][1]
+      )
+    ]) > 0
   ]
 
   # Plain-integer (base-256) encodings of each pool's own reserved
@@ -484,6 +534,13 @@ check "pool_reserved_cidrs_no_overlap_same_vlan" {
   }
 }
 
+check "ipsec_route_gateways_in_pool_vlan" {
+  assert {
+    condition     = length(local.pools_with_ipsec_route_gateway_outside_vlan) == 0
+    error_message = "These pools have an ipsec_routes entry whose gateway_ip is not inside their own vlan_cidr: ${join(", ", local.pools_with_ipsec_route_gateway_outside_vlan)}. client-agent has no other interface to reach it on -- point gateway_ip at an address actually inside that pool's own vlan_cidr."
+  }
+}
+
 # A pool's effective witness VPC address (smart-defaulted or explicit --
 # see pool_effective_witness_private_ip_offset) must not collide with any
 # pool's own floor/elastic range or with observability_private_ip_offset.
@@ -637,8 +694,8 @@ module "artifacts" {
 
   bucket     = var.natctl_object_storage_bucket
   s3_region  = local.natctl_object_storage_region
-  access_key = var.natctl_object_storage_access_key
-  secret_key = var.natctl_object_storage_secret_key
+  access_key = local.natctl_object_storage_access_key
+  secret_key = local.natctl_object_storage_secret_key
 }
 
 # The roster API's mutating routes need an application-level auth check
@@ -709,6 +766,16 @@ locals {
   conntrackd_peer_service_url = module.artifacts.conntrackd_peer_service_url
   natctl_service_url          = module.artifacts.natctl_service_url
   natctl_requirements_txt_url = module.artifacts.natctl_requirements_txt_url
+  # natctl_preflight.py is a source-mode-only mechanism (see the dev
+  # repo's controller/natctl_preflight.py header comment) -- this
+  # environment always runs agent_distribution == "binary", where a
+  # single compiled executable is replaced atomically as one file and
+  # can never have "some files missing," so there is nothing for this
+  # module's own artifacts copy to upload and nothing for this variable
+  # to ever actually be used for. Passed empty rather than omitted only
+  # because terraform/modules/nat-fleet/terraform/modules/observability
+  # (shared, unmodified, not part of this overlay) now require it.
+  natctl_preflight_py_url = ""
 }
 
 # One nat-fleet module instance per pool defined in var.pools -- see
@@ -744,7 +811,7 @@ module "nat_fleet" {
   private_ip_offset = each.value.private_ip_offset
   instance_type     = each.value.instance_type
   authorized_keys   = var.authorized_keys
-  root_pass         = var.root_pass
+  root_pass         = local.root_pass
   # See dev-repo terraform/environments/example/variables.tf's matching
   # comment on the pools map's egress_ips_per_node/conntrack_max/tags
   # fields -- these were never threaded through at all.
@@ -792,10 +859,15 @@ module "nat_fleet" {
   # this forward reference is fine.
   natctl_on_node_enabled    = var.natctl_on_node_enabled
   natctl_config_yaml        = var.natctl_on_node_enabled ? local.natctl_config_yaml : ""
-  linode_token              = var.natctl_on_node_enabled ? var.linode_token : ""
+  linode_token              = var.natctl_on_node_enabled ? local.linode_token : ""
   api_port                  = var.api_port
-  object_storage_access_key = var.natctl_object_storage_access_key
-  object_storage_secret_key = var.natctl_object_storage_secret_key
+  object_storage_access_key = local.natctl_object_storage_access_key
+  object_storage_secret_key = local.natctl_object_storage_secret_key
+  # Opt-in runtime secrets bundle (Part VIII 8.3) -- secrets_bundle_url
+  # itself is already embedded inside natctl_config_yaml above; only the
+  # age PRIVATE key needs separate threading here, written to
+  # /etc/natctl/age-key.txt only when secrets_bundle_url is actually set.
+  secrets_bundle_age_private_key = var.natctl_on_node_enabled && var.secrets_bundle_url != "" ? local.secrets_bundle_age_private_key : ""
 
   # Fetched-at-boot artifact URLs -- see module.artifacts above and
   # terraform/modules/artifacts/main.tf's header comment. This environment
@@ -819,6 +891,16 @@ module "nat_fleet" {
   conntrackd_peer_service_url = module.artifacts.conntrackd_peer_service_url
   natctl_service_url          = module.artifacts.natctl_service_url
   natctl_requirements_txt_url = module.artifacts.natctl_requirements_txt_url
+  # natctl_preflight.py is a source-mode-only mechanism (see the dev
+  # repo's controller/natctl_preflight.py header comment) -- this
+  # environment always runs agent_distribution == "binary", where a
+  # single compiled executable is replaced atomically as one file and
+  # can never have "some files missing," so there is nothing for this
+  # module's own artifacts copy to upload and nothing for this variable
+  # to ever actually be used for. Passed empty rather than omitted only
+  # because terraform/modules/nat-fleet/terraform/modules/observability
+  # (shared, unmodified, not part of this overlay) now require it.
+  natctl_preflight_py_url = ""
 
   # SHA-256 integrity manifest covering the artifacts above (without it,
   # a compromised or tampered artifact would be trusted with no way to
@@ -876,7 +958,7 @@ locals {
       # exception.
       firewall_id     = tonumber(module.vpc.firewall_id)
       authorized_keys = var.authorized_keys
-      root_pass       = var.root_pass
+      root_pass       = local.root_pass
       # min_nodes/max_nodes are DELIBERATELY NOT set here. This whole object
       # gets embedded into every floor node's Metadata Service user_data
       # (when natctl_on_node_enabled) and unconditionally into the
@@ -943,7 +1025,14 @@ locals {
       # from this list before ever minting a brand-new reservation --
       # with it missing, an operator's pre-owned addresses were simply
       # never reused, indistinguishable from having configured nothing.
-      reserved_ip_pool       = p.reserved_ip_pool
+      reserved_ip_pool = p.reserved_ip_pool
+      # This pool's own static-route baseline -- see the pools variable's
+      # own ipsec_routes field comment (variables.tf) and PoolConfig.
+      # ipsec_routes' own comment (config.py) for the full "why", and
+      # this file's own ipsec_route_gateways_in_pool_vlan check above for
+      # the apply-time containment guard. natctl_cli's own live override
+      # takes precedence over this within one reconcile pass once set.
+      ipsec_routes           = p.ipsec_routes
       natctl_roster_base_url = local.natctl_roster_base_url
       # Elastic nodes natctl provisions for this pool also get natctl
       # installed on themselves (leader-election-eligible), matching the
@@ -978,6 +1067,9 @@ locals {
       conntrackd_peer_service_url = module.artifacts.conntrackd_peer_service_url
       natctl_service_url          = module.artifacts.natctl_service_url
       natctl_requirements_txt_url = module.artifacts.natctl_requirements_txt_url
+      # See this file's other natctl_preflight_py_url comments -- a
+      # source-mode-only mechanism, always unused in this environment.
+      natctl_preflight_py_url = ""
       # Bucket/region fleet.py uploads THIS pool's elastic nodes' own
       # rendered nftables.conf into before fetching
       # them at boot -- see controller/natctl/config.py's matching
@@ -1054,12 +1146,19 @@ locals {
       api_base = "https://api.linode.com/v4"
       token    = null # set via LINODE_TOKEN in /etc/natctl/env instead — see modules/observability
     }
-    file_sd_path = var.natctl_on_node_enabled ? null : "/opt/lng-observability/file_sd/lng-nodes.json"
+    # Opt-in runtime secrets bundle (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html,
+    # Part VIII 8.3). "" (var.secrets_bundle_url's default) leaves the
+    # whole mechanism off -- natctl falls back to /etc/natctl/env
+    # entirely, unchanged. secrets_bundle_age_key_path is fixed at this
+    # layer, mirroring the dev repo's own environments/example/main.tf.
+    secrets_bundle_url          = var.secrets_bundle_url
+    secrets_bundle_age_key_path = "/etc/natctl/age-key.txt"
+    file_sd_path                = var.natctl_on_node_enabled ? null : "/opt/lng-observability/file_sd/lng-nodes.json"
     # Leader election + STONITH fencing (see
     # controller/natctl/leader_election.py) — only meaningful once natctl
     # runs on more than one instance at a time. object_storage_access_key/
     # secret_key are deliberately left unset here (null, not the real
-    # values) even though var.natctl_object_storage_access_key/secret_key
+    # values) even though local.natctl_object_storage_access_key/secret_key
     # exist — they resolve from NATCTL_OBJECT_STORAGE_ACCESS_KEY/
     # NATCTL_OBJECT_STORAGE_SECRET_KEY in each node's own /etc/natctl/env
     # instead (wired in module.nat_fleet's object_storage_access_key/
@@ -1134,8 +1233,8 @@ resource "linode_object_storage_object" "pool_scaling" {
 
   bucket     = var.natctl_object_storage_bucket
   region     = local.natctl_object_storage_region
-  access_key = var.natctl_object_storage_access_key
-  secret_key = var.natctl_object_storage_secret_key
+  access_key = local.natctl_object_storage_access_key
+  secret_key = local.natctl_object_storage_secret_key
 
   key = "natctl/pool-scaling/${each.key}.json"
   content = jsonencode({
@@ -1163,8 +1262,8 @@ resource "linode_object_storage_object" "pool_scaling" {
 resource "linode_object_storage_object" "vpc_sibling_subnets" {
   bucket     = var.natctl_object_storage_bucket
   region     = local.natctl_object_storage_region
-  access_key = var.natctl_object_storage_access_key
-  secret_key = var.natctl_object_storage_secret_key
+  access_key = local.natctl_object_storage_access_key
+  secret_key = local.natctl_object_storage_secret_key
 
   key = "natctl/vpc-sibling-subnets.json"
   content = jsonencode({
@@ -1186,7 +1285,7 @@ module "observability" {
   subnet_id       = module.vpc.public_subnet_id
   firewall_id     = module.vpc.control_plane_firewall_id
   authorized_keys = var.authorized_keys
-  root_pass       = var.root_pass
+  root_pass       = local.root_pass
 
   # var.observability_private_ip_offset (default 5) in the public/
   # NAT-node subnet — clear of every pool's own floor and elastic ranges
@@ -1222,15 +1321,27 @@ module "observability" {
   vlan_label = var.observability_vlan_pool != "" ? var.pools[var.observability_vlan_pool].vlan_label : ""
   vlan_ip    = local.observability_vlan_ip
 
-  grafana_admin_password = var.grafana_admin_password
+  grafana_admin_password = local.grafana_admin_password
   natctl_config_yaml     = local.natctl_config_yaml
-  linode_token           = var.linode_token
+  linode_token           = local.linode_token
+
+  # Opt-in runtime secrets bundle (Part VIII 8.3) -- see module.nat_fleet's
+  # matching argument above.
+  secrets_bundle_age_private_key = var.secrets_bundle_url != "" ? local.secrets_bundle_age_private_key : ""
+
+  alertmanager_slack_webhook_url  = var.alertmanager_slack_webhook_url
+  alertmanager_smtp_host          = var.alertmanager_smtp_host
+  alertmanager_smtp_port          = var.alertmanager_smtp_port
+  alertmanager_smtp_from          = var.alertmanager_smtp_from
+  alertmanager_smtp_auth_username = var.alertmanager_smtp_auth_username
+  alertmanager_smtp_auth_password = var.alertmanager_smtp_auth_password
+  alertmanager_email_to           = var.alertmanager_email_to
 
   # natctl on this instance needs these for every pool's elastic-node
   # uploads, independent of leader_election/natctl_on_node_enabled -- see
   # terraform/modules/observability/variables.tf's own comment.
-  object_storage_access_key = var.natctl_object_storage_access_key
-  object_storage_secret_key = var.natctl_object_storage_secret_key
+  object_storage_access_key = local.natctl_object_storage_access_key
+  object_storage_secret_key = local.natctl_object_storage_secret_key
 
   # Fetched-at-boot artifact URLs -- see module.artifacts above and
   # terraform/modules/artifacts/main.tf's header comment. Only actually
@@ -1246,6 +1357,16 @@ module "observability" {
   # terraform/modules/artifacts/main.tf's header comment.
   natctl_service_url          = module.artifacts.natctl_service_url
   natctl_requirements_txt_url = module.artifacts.natctl_requirements_txt_url
+  # natctl_preflight.py is a source-mode-only mechanism (see the dev
+  # repo's controller/natctl_preflight.py header comment) -- this
+  # environment always runs agent_distribution == "binary", where a
+  # single compiled executable is replaced atomically as one file and
+  # can never have "some files missing," so there is nothing for this
+  # module's own artifacts copy to upload and nothing for this variable
+  # to ever actually be used for. Passed empty rather than omitted only
+  # because terraform/modules/nat-fleet/terraform/modules/observability
+  # (shared, unmodified, not part of this overlay) now require it.
+  natctl_preflight_py_url = ""
 
   # SHA-256 integrity manifest covering the artifacts above (without it,
   # a compromised or tampered artifact would be trusted with no way to

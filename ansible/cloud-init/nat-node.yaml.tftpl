@@ -160,6 +160,12 @@ packages:
   # below.
   - python3-pip
 %{ endif ~}
+%{ if secrets_bundle_age_private_key != "" ~}
+  # Opt-in runtime secrets bundle (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html,
+  # Part VIII 8.3) -- decrypts secrets_bundle_url's ciphertext via this
+  # CLI binary, same condition as the age-key.txt write below.
+  - age
+%{ endif ~}
 
 write_files:
   - path: /etc/nat-exporter/env
@@ -233,6 +239,18 @@ write_files:
 %{ endif ~}
 %{ if natctl_api_mutation_token != "" ~}
       NATCTL_API_MUTATION_TOKEN=${natctl_api_mutation_token}
+%{ endif ~}
+
+%{ if secrets_bundle_age_private_key != "" ~}
+  # This fleet's own age private key, for decrypting the runtime secrets
+  # bundle (natctl_config_yaml's secrets_bundle_url) -- see
+  # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html, Part VIII 8.3. Only written
+  # when secrets_bundle_url is actually configured.
+  - path: /etc/natctl/age-key.txt
+    owner: root:root
+    permissions: '0600'
+    content: |
+      ${indent(6, secrets_bundle_age_private_key)}
 %{ endif ~}
 %{ endif ~}
 
@@ -740,6 +758,15 @@ runcmd:
   - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${url}" /opt/natctl/natctl/${rel_path}
 %{ endfor ~}
   - chmod -R 0644 /opt/natctl/natctl
+  # natctl_preflight.py -- runs as natctl.service's own ExecStartPre,
+  # fetching any file listed in auto_update.file_urls that's missing
+  # locally before natctl.main's unconditional imports get a chance to
+  # fail on it (see that script's own header comment). Fetched here,
+  # source mode only -- binary mode's natctl-binary.service has no
+  # equivalent ExecStartPre, since a single compiled binary can't have
+  # "some files missing."
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${natctl_preflight_py_url}" /opt/natctl/natctl_preflight.py
+  - chmod 0644 /opt/natctl/natctl_preflight.py
 %{ endif ~}
   - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${natctl_service_url}" /etc/systemd/system/natctl.service
   - chown root:root /etc/systemd/system/natctl.service

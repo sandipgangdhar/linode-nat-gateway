@@ -331,6 +331,13 @@ variable "object_storage_secret_key" {
   sensitive   = true
 }
 
+variable "secrets_bundle_age_private_key" {
+  description = "This fleet's own age private key for decrypting the runtime secrets bundle's ciphertext (natctl_config_yaml's own secrets_bundle_url field) -- written to /etc/natctl/age-key.txt (0600) on every node, same env-not-config-file treatment as linode_token/object_storage_access_key above. Only meaningful (and only written) when natctl_config_yaml's secrets_bundle_url is also set. A DIFFERENT keypair from the operator's own SOPS key that decrypts secrets.enc.json at Terraform apply time -- this one is deliberately narrow: useless for anything except this one bundle."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 # ---------------------------------------------------------------------------
 # Fetched-at-boot artifact URLs (terraform/modules/artifacts) -- see
 # that module's main.tf header for the full "why" (Linode's 16384-byte
@@ -392,6 +399,11 @@ variable "natctl_service_url" {
 
 variable "natctl_requirements_txt_url" {
   description = "Public URL (terraform/modules/artifacts' natctl_requirements_txt_url output) this fleet's nodes curl controller/requirements.txt from at boot, when natctl_on_node_enabled -- see nat-node.yaml.tftpl's runcmd."
+  type        = string
+}
+
+variable "natctl_preflight_py_url" {
+  description = "Public URL (terraform/modules/artifacts' natctl_preflight_py_url output) this fleet's nodes curl natctl_preflight.py from at boot, source mode only -- runs as natctl.service's own ExecStartPre. See nat-node.yaml.tftpl's runcmd and controller/natctl_preflight.py's own header comment."
   type        = string
 }
 

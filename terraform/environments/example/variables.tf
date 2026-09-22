@@ -39,11 +39,12 @@
 # (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
 # -----------------------------------------------------
 
-variable "linode_token" {
-  description = "Linode Personal Access Token (scopes: linodes:read_write, vpc:read_write, networking:read_write)"
-  type        = string
-  sensitive   = true
-}
+# linode_token, root_pass, grafana_admin_password, and the two
+# natctl_object_storage_*_key variables all moved to secrets.enc.json
+# (SOPS + age encrypted) -- see main.tf's data "sops_file" "secrets"
+# block and docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html, Part VIII 8.3. No
+# `variable` declaration for any of these five exists anymore; they're
+# sourced as `local.<name>` instead.
 
 variable "region" {
   description = "Linode region/data center, e.g. us-east"
@@ -270,6 +271,25 @@ variable "pools" {
     witness_enabled           = optional(bool)
     witness_instance_type     = optional(string, "g6-nanode-1")
     witness_private_ip_offset = optional(number)
+    # This pool's own static routes (destination CIDR -> next-hop
+    # gateway IP) client-agent applies via its VLAN interface -- e.g. a
+    # dedicated IPsec gateway instance's routes. Purely operator-
+    # supplied (nothing here auto-discovers this the way
+    # vpc_sibling_subnet_cidrs' own linode_vpc_subnets data source
+    # does), and this is only the natctl.yaml-sourced BASELINE --
+    # natctl_cli's list/add/remove/set-ipsec-routes commands manage a
+    # live, immediately-effective Object Storage override on top,
+    # exactly the same relationship every other live-overridable pool
+    # field here has to its own terraform.tfvars baseline. Each
+    # gateway_ip must be inside this pool's own vlan_cidr (enforced at
+    # both natctl.yaml load time, controller/natctl/config.py, and at
+    # apply time by this file's own ipsec_route_gateways_in_pool_vlan
+    # check below) -- client-agent has no other interface to reach it
+    # on. Default [] changes nothing for a pool with no IPsec need.
+    ipsec_routes = optional(list(object({
+      cidr       = string
+      gateway_ip = string
+    })), [])
   }))
 }
 
@@ -287,12 +307,6 @@ variable "observability_private_ip_offset" {
 variable "authorized_keys" {
   description = "SSH public key(s) installed on every instance"
   type        = list(string)
-}
-
-variable "root_pass" {
-  description = "Root password for provisioned instances (SSH key auth is still recommended as the primary access path)"
-  type        = string
-  sensitive   = true
 }
 
 variable "ip_failover_enabled" {
@@ -368,6 +382,12 @@ variable "auto_update_enabled" {
   default     = false
 }
 
+variable "secrets_bundle_url" {
+  description = "Public-read Object Storage URL for the SOPS+age-encrypted runtime secrets bundle -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html, Part VIII 8.3. Not sensitive itself (the value it points to is ciphertext) -- the matching age PRIVATE key comes from secrets.enc.json instead (local.secrets_bundle_age_private_key). \"\" (default) leaves the whole mechanism off -- natctl falls back to /etc/natctl/env entirely, unchanged from every existing deployment's behavior."
+  type        = string
+  default     = ""
+}
+
 # Threaded into module.vpc's/every module.nat_fleet's own api_port
 # variables AND the composed natctl_config_yaml's api.listen_port below,
 # so all three stay in agreement -- previously each hardcoded 8099
@@ -391,22 +411,53 @@ variable "natctl_object_storage_bucket" {
   type        = string
 }
 
-variable "natctl_object_storage_access_key" {
-  description = "Object Storage access key -- used both to upload artifacts at apply time (terraform/modules/artifacts) and, when natctl_on_node_enabled, written to each node's /etc/natctl/env for the leader-election lease (kept out of natctl_config_yaml itself -- see config.py's LeaderElectionConfig docstring for why). Required unconditionally now -- see natctl_object_storage_endpoint above."
-  type        = string
-  sensitive   = true
-}
+# natctl_object_storage_access_key, natctl_object_storage_secret_key, and
+# grafana_admin_password moved to secrets.enc.json (SOPS + age encrypted,
+# safe to commit) -- see locals.secrets in main.tf and
+# docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html, Part VIII 8.3. Not variables
+# anymore.
 
-variable "natctl_object_storage_secret_key" {
-  description = "Object Storage secret key -- see natctl_object_storage_access_key above. Required unconditionally now."
-  type        = string
-  sensitive   = true
-}
+# ---------------------------------------------------------------------------
+# Alertmanager notification receivers -- all optional, all off/empty by
+# default. See terraform/modules/observability/variables.tf's matching
+# declarations for the full description of each; this environment just
+# passes them straight through.
 
-variable "grafana_admin_password" {
+variable "alertmanager_slack_webhook_url" {
   type      = string
   sensitive = true
-  default   = "changeme-lng-grafana"
+  default   = ""
+}
+
+variable "alertmanager_smtp_host" {
+  type    = string
+  default = ""
+}
+
+variable "alertmanager_smtp_port" {
+  type    = number
+  default = 587
+}
+
+variable "alertmanager_smtp_from" {
+  type    = string
+  default = ""
+}
+
+variable "alertmanager_smtp_auth_username" {
+  type    = string
+  default = ""
+}
+
+variable "alertmanager_smtp_auth_password" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
+variable "alertmanager_email_to" {
+  type    = string
+  default = ""
 }
 
 # ---------------------------------------------------------------------------

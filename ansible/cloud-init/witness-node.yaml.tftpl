@@ -62,6 +62,12 @@ packages:
   - python3
   - python3-pip
 %{ endif ~}
+%{ if secrets_bundle_age_private_key != "" ~}
+  # Opt-in runtime secrets bundle (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html,
+  # Part VIII 8.3) -- decrypts secrets_bundle_url's ciphertext via this
+  # CLI binary, same condition as the age-key.txt write below.
+  - age
+%{ endif ~}
 
 write_files:
   # This composed config is the ONE piece of content that stays embedded
@@ -94,6 +100,21 @@ write_files:
       # LeaderElection.witness_only's own field comment for exactly what
       # this permanently disables.
       NATCTL_WITNESS_ONLY=true
+
+%{ if secrets_bundle_age_private_key != "" ~}
+  # This fleet's own age private key, for decrypting the runtime secrets
+  # bundle (natctl_config_yaml's secrets_bundle_url) -- see
+  # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html, Part VIII 8.3. Only written
+  # when secrets_bundle_url is actually configured. The witness runs
+  # natctl the same as every other node in this mode (see
+  # LeaderElection.witness_only's own comment above) and needs the same
+  # runtime secrets bundle decryption capability.
+  - path: /etc/natctl/age-key.txt
+    owner: root:root
+    permissions: '0600'
+    content: |
+      ${indent(6, secrets_bundle_age_private_key)}
+%{ endif ~}
 
   # Identical to nat-node.yaml.tftpl's own copy of this script -- every
   # fetched file (the natctl package itself, its systemd unit) is
@@ -179,6 +200,9 @@ runcmd:
   - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${url}" /opt/natctl/natctl/${rel_path}
 %{ endfor ~}
   - chmod -R 0644 /opt/natctl/natctl
+  # natctl_preflight.py -- see nat-node.yaml.tftpl's matching comment.
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${natctl_preflight_py_url}" /opt/natctl/natctl_preflight.py
+  - chmod 0644 /opt/natctl/natctl_preflight.py
 %{ endif ~}
   - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${natctl_service_url}" /etc/systemd/system/natctl.service
   - chown root:root /etc/systemd/system/natctl.service

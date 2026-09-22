@@ -598,14 +598,16 @@ locals {
       natctl_file_urls            = var.natctl_file_urls
       natctl_requirements_txt_url = var.natctl_requirements_txt_url
       natctl_service_url          = var.natctl_service_url
+      natctl_preflight_py_url     = var.natctl_preflight_py_url
       # natctl_config_yaml itself stays embedded (NOT fetched) -- every
       # other Object Storage upload here is public-read, and this
       # document carries this pool's plaintext root_pass. See
       # nat-node.yaml.tftpl's own header note.
-      natctl_config_yaml        = var.natctl_config_yaml
-      linode_token              = var.linode_token
-      object_storage_access_key = var.object_storage_access_key
-      object_storage_secret_key = var.object_storage_secret_key
+      natctl_config_yaml             = var.natctl_config_yaml
+      linode_token                   = var.linode_token
+      object_storage_access_key      = var.object_storage_access_key
+      object_storage_secret_key      = var.object_storage_secret_key
+      secrets_bundle_age_private_key = var.secrets_bundle_age_private_key
 
       # "source" (default) preserves every line above exactly as it
       # behaved before this variable existed. See
@@ -625,22 +627,24 @@ locals {
   # (natctl-on-node's config.yaml/env/fetch-verify/systemd-unit content
   # only; no FRR/nftables/exporter/buddy-sync/VLAN at all).
   witness_cloud_init = var.witness_enabled ? templatefile("${path.module}/../../../ansible/cloud-init/witness-node.yaml.tftpl", {
-    node_name                   = local.witness_id
-    node_id                     = local.witness_id
-    vpc_ip                      = local.witness_vpc_ip
-    vpc_prefix                  = split("/", var.public_subnet_cidr)[1]
-    vpc_sibling_subnet_cidrs    = var.vpc_sibling_subnet_cidrs
-    manifest_url                = var.manifest_url
-    natctl_api_mutation_token   = var.natctl_api_mutation_token
-    natctl_file_urls            = var.natctl_file_urls
-    natctl_requirements_txt_url = var.natctl_requirements_txt_url
-    natctl_service_url          = var.natctl_service_url
-    natctl_config_yaml          = var.natctl_config_yaml
-    linode_token                = var.linode_token
-    object_storage_access_key   = var.object_storage_access_key
-    object_storage_secret_key   = var.object_storage_secret_key
-    agent_distribution          = var.agent_distribution
-    natctl_bin_url              = var.natctl_bin_url
+    node_name                      = local.witness_id
+    node_id                        = local.witness_id
+    vpc_ip                         = local.witness_vpc_ip
+    vpc_prefix                     = split("/", var.public_subnet_cidr)[1]
+    vpc_sibling_subnet_cidrs       = var.vpc_sibling_subnet_cidrs
+    manifest_url                   = var.manifest_url
+    natctl_api_mutation_token      = var.natctl_api_mutation_token
+    natctl_file_urls               = var.natctl_file_urls
+    natctl_requirements_txt_url    = var.natctl_requirements_txt_url
+    natctl_service_url             = var.natctl_service_url
+    natctl_preflight_py_url        = var.natctl_preflight_py_url
+    natctl_config_yaml             = var.natctl_config_yaml
+    linode_token                   = var.linode_token
+    object_storage_access_key      = var.object_storage_access_key
+    object_storage_secret_key      = var.object_storage_secret_key
+    secrets_bundle_age_private_key = var.secrets_bundle_age_private_key
+    agent_distribution             = var.agent_distribution
+    natctl_bin_url                 = var.natctl_bin_url
   }) : ""
 }
 

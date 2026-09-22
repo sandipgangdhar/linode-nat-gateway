@@ -90,6 +90,12 @@ packages:
   - python3
   - python3-pip
 %{ endif ~}
+%{ if secrets_bundle_age_private_key != "" ~}
+  # Opt-in runtime secrets bundle (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html,
+  # Part VIII 8.3) -- decrypts secrets_bundle_url's ciphertext via this
+  # CLI binary, same condition as the age-key.txt write below.
+  - age
+%{ endif ~}
   - curl
 
 write_files:
@@ -164,6 +170,18 @@ write_files:
 %{ endif ~}
 %{ if natctl_api_mutation_token != "" ~}
       NATCTL_API_MUTATION_TOKEN=${natctl_api_mutation_token}
+%{ endif ~}
+
+%{ if secrets_bundle_age_private_key != "" ~}
+  # This deployment's own age private key, for decrypting the runtime
+  # secrets bundle (natctl_config_yaml's secrets_bundle_url) -- see
+  # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html, Part VIII 8.3. Only written
+  # when secrets_bundle_url is actually configured.
+  - path: /etc/natctl/age-key.txt
+    owner: root:root
+    permissions: '0600'
+    content: |
+      ${indent(6, secrets_bundle_age_private_key)}
 %{ endif ~}
 %{ endif ~}
 
@@ -312,6 +330,9 @@ runcmd:
   - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${url}" /opt/natctl/natctl/${rel_path}
 %{ endfor ~}
   - chmod -R 0644 /opt/natctl/natctl
+  # natctl_preflight.py -- see nat-node.yaml.tftpl's matching comment.
+  - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${natctl_preflight_py_url}" /opt/natctl/natctl_preflight.py
+  - chmod 0644 /opt/natctl/natctl_preflight.py
 %{ endif ~}
   - /usr/local/bin/lng-fetch-verified.sh "${manifest_url}" "${natctl_service_url}" /etc/systemd/system/natctl.service
   - chown root:root /etc/systemd/system/natctl.service

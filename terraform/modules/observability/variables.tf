@@ -104,6 +104,55 @@ variable "grafana_admin_password" {
   default   = "changeme-lng-grafana"
 }
 
+# Alertmanager notification receivers -- all optional, all off/empty by
+# default (ansible/templates/alertmanager.yml.tftpl renders the same
+# no-op webhook_configs: [] this shipped with before these variables
+# existed when none are set). Either Slack, email, both, or neither can
+# be configured independently.
+variable "alertmanager_slack_webhook_url" {
+  description = "Slack incoming-webhook URL (https://hooks.slack.com/services/...) to post firing/resolved alerts to. Already bound to one specific channel on Slack's own side at creation time -- there is no separate channel variable here. Empty (default) disables Slack notifications."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "alertmanager_smtp_host" {
+  description = "SMTP relay host for email notifications (e.g. smtp.gmail.com). Empty (default) disables email notifications regardless of the other smtp_*/alertmanager_email_to variables."
+  type        = string
+  default     = ""
+}
+
+variable "alertmanager_smtp_port" {
+  description = "SMTP relay port. 587 (STARTTLS) is the common default for most relays."
+  type        = number
+  default     = 587
+}
+
+variable "alertmanager_smtp_from" {
+  description = "From address for alert emails. Typically the same address as alertmanager_smtp_auth_username."
+  type        = string
+  default     = ""
+}
+
+variable "alertmanager_smtp_auth_username" {
+  description = "SMTP auth username."
+  type        = string
+  default     = ""
+}
+
+variable "alertmanager_smtp_auth_password" {
+  description = "SMTP auth password (an app password, not a real account password, for providers like Gmail that require one)."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "alertmanager_email_to" {
+  description = "Destination address for alert emails. Required alongside alertmanager_smtp_host for email notifications to actually be enabled."
+  type        = string
+  default     = ""
+}
+
 variable "natctl_config_yaml" {
   description = "Fully-rendered natctl config (natctl.example.yaml shape) as a string — compose this at the environment level with yamlencode() or a heredoc so this module stays generic. See terraform/environments/example/main.tf."
   type        = string
@@ -205,6 +254,12 @@ variable "natctl_requirements_txt_url" {
   default     = ""
 }
 
+variable "natctl_preflight_py_url" {
+  description = "Public URL (terraform/modules/artifacts' natctl_preflight_py_url output) fetched at boot, source mode only, instead of embedded inline -- kept in sync with terraform/modules/nat-fleet's equivalent variable. Only actually consumed when run_natctl is true."
+  type        = string
+  default     = ""
+}
+
 # "source" (default) or "binary" -- kept in sync with
 # terraform/modules/nat-fleet's equivalent variable, see its comment.
 variable "agent_distribution" {
@@ -256,6 +311,13 @@ variable "object_storage_access_key" {
 
 variable "object_storage_secret_key" {
   description = "Object Storage secret key, paired with object_storage_access_key above."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "secrets_bundle_age_private_key" {
+  description = "This deployment's own age private key for decrypting the runtime secrets bundle's ciphertext (natctl_config_yaml's own secrets_bundle_url field) -- written to /etc/natctl/age-key.txt (0600), same env-not-config-file treatment as linode_token/object_storage_access_key above. Only meaningful (and only written) when natctl_config_yaml's secrets_bundle_url is also set."
   type        = string
   sensitive   = true
   default     = ""
