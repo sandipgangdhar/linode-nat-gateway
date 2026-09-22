@@ -1410,21 +1410,20 @@ module "observability" {
   # independently polled and merged -- not a single URL with a list
   # value.
   #
-  # Found live during the customer-repo live-test program (2026-09-13):
-  # `values(m.node_vpc_ips)[0]` used to take ONLY that pool's first
-  # floor node -- if that specific node ever goes down (a normal,
+  # Polling only that pool's first floor node would be a single point
+  # of failure: if that specific node ever goes down (a normal,
   # expected event in exactly the HA architecture this mode exists for:
   # a leader-election fencing event, a plain crash, a maintenance
   # reboot), Prometheus's ONLY discovery source for that pool's
-  # nat_exporter targets disappears, permanently, with zero targets ever
-  # discovered again -- not just a temporary gap. Confirmed live: this
-  # silently starved every downstream autoscale metric query, which
-  # then silently prevented scale-in from ever triggering again for
-  # that pool (a Prometheus query failure correctly never counts as a
-  # confirmed-idle reading, so the pool was simply stuck oversized,
-  # forever, with no error surfaced anywhere). Every floor node in a
-  # pool answers /file_sd identically (each computes it fresh from the
-  # same underlying discover()), so listing every one of them as a
+  # nat_exporter targets would disappear, permanently, with zero targets
+  # ever discovered again -- not just a temporary gap. That silently
+  # starves every downstream autoscale metric query, which then
+  # silently prevents scale-in from ever triggering again for that pool
+  # (a Prometheus query failure correctly never counts as a
+  # confirmed-idle reading, so the pool would simply stay stuck
+  # oversized, forever, with no error surfaced anywhere). Every floor
+  # node in a pool answers /file_sd identically (each computes it fresh
+  # from the same underlying discover()), so listing every one of them as a
   # separate http_sd_configs entry -- the same multiple-independently-
   # polled-and-merged mechanism already used across pools -- costs
   # nothing extra and closes this exact single point of failure: as

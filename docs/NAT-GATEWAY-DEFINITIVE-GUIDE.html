@@ -1599,6 +1599,18 @@ flowchart LR
 
         <p><strong>Failure behavior.</strong> Any failure in this whole chain — the bundle can't be fetched, the local key is missing, decryption fails, the result isn't valid JSON — is treated as "this optional, additional credential source didn't work" rather than a fatal startup error: <code>natctl</code> logs the failure and continues starting up exactly as it would have if this mechanism didn't exist, falling through to every other credential source already in place. If the environment genuinely ends up with no usable credentials from any source, the existing, unrelated "no API token configured" startup check is what catches that — this mechanism doesn't duplicate or bypass it.</p>
 
+        <h3>Setting this up for a new deployment</h3>
+        <p>This is a one-time bootstrap, done once per deployment before the first <code>terraform apply</code> — not something repeated on every change afterward.</p>
+        <ol>
+          <li>Generate your own operator age keypair: <code>age-keygen -o ~/.config/sops/age/keys.txt</code> (then <code>chmod 600</code> it). This prints a public key starting with <code>age1...</code> — that half is not sensitive.</li>
+          <li>Copy <code>.sops.yaml.example</code> (repository root) to <code>.sops.yaml</code>, and replace its placeholder key with the public key from step 1.</li>
+          <li>Copy <code>terraform/environments/example/secrets.enc.json.example</code> to <code>secrets.enc.json</code> in that same directory.</li>
+          <li>Fill in real values in that file — at this point it's still a plain, unencrypted JSON file with placeholder text in it.</li>
+          <li>Encrypt it in place: <code>sops --encrypt --in-place terraform/environments/example/secrets.enc.json</code>. From this point on the file is ciphertext, safe to commit.</li>
+          <li>Continue with 9.2/9.3 below as normal — <code>terraform apply</code> reads this file automatically once it exists.</li>
+        </ol>
+        <p>The Layer 2 runtime bundle (<code>secrets_bundle_url</code>) is entirely optional and off by default — set it up only if you specifically want secrets kept out of a plaintext file on every node's disk; every deployment works correctly without it, falling back to that plaintext file exactly as before this mechanism existed.</p>
+
         <p><strong>What this explicitly does not close.</strong> A cloud provider's own API token — the one used to create an instance in the first place — can always read back that instance's own boot-time configuration for as long as the instance exists; this is a property of the cloud platform's own metadata service, unrelated to anything either encryption layer here does, and neither layer claims to address it.</p>
       </section>
 
@@ -1617,6 +1629,7 @@ flowchart LR
           <li>An existing VPC and at least one subnet, sized with headroom for every pool's own address range — this project intentionally never creates the VPC itself, only reads it back.</li>
           <li>An object storage bucket, created ahead of time — required for every deployment, since fetched-at-boot artifacts (Part VI) depend on it unconditionally, not only in the every-node control-plane placement.</li>
           <li>An SSH key pair for administrative access, and an explicit administrator address range for the control-plane host's dashboard and SSH access.</li>
+          <li>An age keypair for encrypting <code>secrets.enc.json</code> (Part VIII, 8.3) — every real credential (the cloud API token, root password, Object Storage keys) is encrypted into this one file rather than living in plaintext in <code>terraform.tfvars</code>. See 8.3's "Setting this up for a new deployment" for the exact steps — this must exist before your first <code>terraform apply</code>, since Terraform reads it directly.</li>
         </ul>
         <p>9.2 is the complete, variable-by-variable reference for turning these prerequisites into an actual <code>terraform.tfvars</code> — read it before your first apply.</p>
       </section>
@@ -1730,6 +1743,7 @@ flowchart LR
       <section class="chapter" id="c9-3">
         <h2><span class="chno">9.3</span> Deployment Sequence</h2>
         <ol>
+          <li>Set up <code>secrets.enc.json</code> (Part VIII, 8.3's setup steps) and fill in <code>terraform.tfvars</code> per 9.2 — both are required before the first <code>terraform apply</code> can succeed.</li>
           <li>Provision the fleet: the floor nodes for each pool, the control-plane host (or, if the every-node placement is chosen, nothing dedicated at all), and the two firewalls covering the node and control-plane traffic.</li>
           <li>Confirm the fleet is healthy: every floor node passes its own health check and appears in the roster with a healthy status.</li>
           <li>Install the routing agent on every private-subnet instance that needs egress, pointed at the pool's roster URL.</li>
