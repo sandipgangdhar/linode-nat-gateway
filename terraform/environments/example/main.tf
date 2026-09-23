@@ -1238,12 +1238,12 @@ resource "linode_object_storage_object" "pool_scaling" {
 
   key = "natctl/pool-scaling/${each.key}.json"
   content = jsonencode({
-    min_nodes = each.value.floor_nodes
+    min_nodes = coalesce(each.value.min_nodes_override, each.value.floor_nodes)
     max_nodes = each.value.max_nodes
     source    = "terraform"
   })
   etag = md5(jsonencode({
-    min_nodes = each.value.floor_nodes
+    min_nodes = coalesce(each.value.min_nodes_override, each.value.floor_nodes)
     max_nodes = each.value.max_nodes
     source    = "terraform"
   }))

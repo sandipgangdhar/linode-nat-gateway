@@ -123,6 +123,13 @@ variable "private_subnet_ids" {
 #                              (Two Tiers of Capacity).
 #   max_nodes                - Ceiling natctl will never scale this pool
 #                              past, floor + elastic combined.
+#   min_nodes_override        - Optional. This pool's real autoscale floor,
+#                              when it needs to differ from floor_nodes --
+#                              most pools leave this unset and min_nodes
+#                              simply equals floor_nodes. Needed for a
+#                              genuinely fully-elastic pool (floor_nodes =
+#                              0) that still needs a real minimum natctl
+#                              keeps healthy via elastic capacity alone.
 #   instance_type             - Linode plan for every floor node in this
 #                              pool.
 #   vlan_label                - VLAN label this pool's nodes (and its
@@ -234,9 +241,24 @@ variable "private_subnet_ids" {
 variable "pools" {
   description = "Every NAT-fleet pool this environment provisions, keyed by a short pool identifier. See this file's own header comment above for the full field-by-field breakdown."
   type = map(object({
-    fleet_label                  = string
-    floor_nodes                  = number
-    max_nodes                    = number
+    fleet_label = string
+    floor_nodes = number
+    max_nodes   = number
+    # This pool's autoscale floor, when it needs to differ from
+    # floor_nodes -- main.tf's pool_scaling_json local normally sets
+    # min_nodes = floor_nodes (the natural reading: floor_nodes IS the
+    # floor), but a genuinely fully-elastic pool (floor_nodes = 0, no
+    # Terraform-managed nodes at all) still needs a real minimum
+    # natctl provisions and keeps healthy via elastic capacity alone.
+    # Left unset (null) for every pool that doesn't need this --
+    # min_nodes then falls back to floor_nodes exactly as before.
+    # Declaring the override here, instead of only ever setting it live
+    # via `natctl_cli set-pool-scaling`, means it survives the next
+    # apply instead of being silently reset back to floor_nodes (the
+    # pool_scaling Object Storage object it feeds is a harmless
+    # in-place PUT with zero relationship to any linode_instance's own
+    # user_data, so setting this never forces a node replacement).
+    min_nodes_override           = optional(number)
     instance_type                = string
     vlan_label                   = string
     vlan_cidr                    = string

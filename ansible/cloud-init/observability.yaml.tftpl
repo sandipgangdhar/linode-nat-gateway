@@ -90,12 +90,6 @@ packages:
   - python3
   - python3-pip
 %{ endif ~}
-%{ if secrets_bundle_age_private_key != "" ~}
-  # Opt-in runtime secrets bundle (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html,
-  # Part VIII 8.3) -- decrypts secrets_bundle_url's ciphertext via this
-  # CLI binary, same condition as the age-key.txt write below.
-  - age
-%{ endif ~}
   - curl
 
 write_files:
@@ -182,6 +176,37 @@ write_files:
     permissions: '0600'
     content: |
       ${indent(6, secrets_bundle_age_private_key)}
+
+  # `age` is not an apt package on Ubuntu 22.04 (jammy) -- confirmed live:
+  # `apt-get install age` fails with "Unable to locate package" on this
+  # project's own base image. Fetched directly from the upstream GitHub
+  # Release instead, verified against a pinned SHA-256 the same way
+  # lng-fetch-verified.sh verifies this project's own artifacts. Bump
+  # AGE_VERSION/AGE_SHA256 together when upgrading, re-deriving the
+  # checksum from the real release asset rather than trusting a mirror.
+  # Identical to nat-node.yaml.tftpl's own copy of this script.
+  - path: /usr/local/bin/lng-install-age.sh
+    owner: root:root
+    permissions: '0750'
+    content: |
+      #!/bin/sh
+      set -eu
+      AGE_VERSION="v1.3.2"
+      AGE_SHA256="cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10"
+      TMP=$(mktemp -d)
+      curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 \
+        "https://github.com/FiloSottile/age/releases/download/$${AGE_VERSION}/age-$${AGE_VERSION}-linux-amd64.tar.gz" \
+        -o "$TMP/age.tar.gz"
+      ACTUAL=$(sha256sum "$TMP/age.tar.gz" | awk '{print $1}')
+      if [ "$ACTUAL" != "$AGE_SHA256" ]; then
+        echo "lng-install-age: SHA-256 mismatch for age $AGE_VERSION (expected $AGE_SHA256, got $ACTUAL) -- refusing to trust this download" >&2
+        rm -rf "$TMP"
+        exit 1
+      fi
+      tar -xzf "$TMP/age.tar.gz" -C "$TMP"
+      install -m 0755 "$TMP/age/age" /usr/local/bin/age
+      install -m 0755 "$TMP/age/age-keygen" /usr/local/bin/age-keygen
+      rm -rf "$TMP"
 %{ endif ~}
 %{ endif ~}
 
@@ -339,6 +364,9 @@ runcmd:
   - chmod 0644 /etc/systemd/system/natctl.service
 %{ if agent_distribution != "binary" ~}
   - pip3 install -r /opt/natctl/requirements.txt
+%{ endif ~}
+%{ if secrets_bundle_age_private_key != "" ~}
+  - /usr/local/bin/lng-install-age.sh
 %{ endif ~}
   - systemctl daemon-reload
   - systemctl enable --now natctl
