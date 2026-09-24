@@ -26,7 +26,7 @@ A token with `*` (unscoped, full account access) will work, but it is not least-
 
 | Scope | Level | Why |
 |---|---|---|
-| `linodes` | `read_write` | Every Compute Instance LNG creates and manages — NAT nodes (`terraform/modules/nat-fleet`), client instances (`terraform/modules/client-fleet`), the observability host (`terraform/modules/observability`) — plus `natctl`'s own elastic-node provisioning/deletion and the `natctl_cli resize`/`drain` operator commands. |
+| `linodes` | `read_write` | Every Compute Instance LNG creates and manages — NAT nodes (`terraform/modules/nat-fleet`), the observability host (`terraform/modules/observability`) — plus `natctl`'s own elastic-node provisioning/deletion and the `natctl_cli resize`/`drain` operator commands. LNG does not create client instances at all — that's always your own automation's job (`docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html` Part IX, 9.4). |
 | `firewall` | `read_write` | The three Cloud Firewalls this project creates and manages (`terraform/modules/vpc`'s `nat_node`, `control_plane`, and `client` firewalls). |
 | `ips` | `read_write` | Reserved IP creation/release (`linode_networking_ip`, opt-in `reserved_ip_enabled`), extra egress IPs (`linode_instance_ip`), and BGP-based IP Sharing calls (`natctl`'s buddy IP failover, `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html` Part IV, 4.4). |
 | `object_storage` | `read_write` | Uploading exporter/buddy-sync/natctl source and per-node config to Object Storage at boot-fetch time (`terraform/modules/artifacts`, `controller/natctl/object_storage.py`) — see that module's own header comment for why files are fetched at boot instead of embedded in cloud-init. |

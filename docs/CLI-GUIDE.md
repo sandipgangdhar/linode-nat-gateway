@@ -88,26 +88,44 @@ specific node in the every-node placement mode). Pass
 `--natctl-url http://<host>:8099` explicitly if you're operating from
 anywhere else.
 
-**The Linode API token is separate from `--config`, and needs one extra
-step if you're running the CLI on a live node.** `natctl.yaml` itself
-never contains the token — it resolves from the `LINODE_TOKEN`
+**The Linode API token is separate from `--config`.** `natctl.yaml`
+itself never contains the token — it resolves from the `LINODE_TOKEN`
 environment variable, same as the daemon (see `natctl.yaml`'s own
-`linode:` section). On a live node, that variable already lives in
-`/etc/natctl/env` (the same file the daemon's systemd unit loads via
-`EnvironmentFile=`), but a plain `source /etc/natctl/env` in your shell
-only sets it as a local shell variable — it does **not** export it, so
-a subprocess like `natctl-cli` never sees it and fails with `Linode API
-error: No Linode API token configured`. Use `set -a` first so every
-variable the file sets gets exported too:
+`linode:` section). Where that variable actually comes from depends on
+whether the runtime secrets bundle (`secrets_bundle_url`, Part VIII 8.3
+of the definitive guide) is configured:
+
+- **`secrets_bundle_url` set** — `natctl-cli` reads the same
+  `/etc/natctl/config.yaml` the daemon does, and fetches/decrypts its
+  own copy of the bundle on every invocation, exactly like the daemon
+  does at its own startup. `LINODE_TOKEN` is supplied automatically —
+  no extra step needed, even though `/etc/natctl/env` deliberately no
+  longer carries it in this mode.
+- **`secrets_bundle_url` unset (the default)** — `LINODE_TOKEN` lives
+  only in `/etc/natctl/env` (the same file the daemon's systemd unit
+  loads via `EnvironmentFile=`). A plain `source /etc/natctl/env` in
+  your shell only sets it as a local shell variable — it does **not**
+  export it, so a subprocess like `natctl-cli` never sees it and fails
+  with `Linode API error: No Linode API token configured`. Use `set -a`
+  first so every variable the file sets gets exported too:
 
 ```bash
 set -a; source /etc/natctl/env; set +a
 natctl-cli --config /etc/natctl/config.yaml status
 ```
 
+Either way, `NATCTL_API_MUTATION_TOKEN` (needed for every mutating
+command below, never for `status`/`nodes`/`check-orphans`) is **only**
+ever in `/etc/natctl/env` — it isn't part of the secrets bundle payload
+at all (Terraform generates it separately), so the `source` step above
+still matters for mutating commands even with the bundle enabled.
+
 If you're running the CLI from your own laptop instead, export
 `LINODE_TOKEN` yourself (or put it in your own shell environment some
-other way) rather than relying on a node's `/etc/natctl/env` at all.
+other way) rather than relying on a node's `/etc/natctl/env` at all —
+your laptop won't have the bundle's decryption key (`/etc/natctl/age-key.txt`)
+even if `secrets_bundle_url` is set, so the bundle fetch will fail open
+here regardless.
 
 ## Command reference
 

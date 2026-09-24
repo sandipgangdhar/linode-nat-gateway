@@ -150,7 +150,7 @@ pools:
     # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.4. Requires conntrack_buddy_sync_enabled
     # + natctl_roster_base_url above. Look up linode_bgp_dcid for your
     # region from Linode's current failover docs
-    # (https://www.linode.com/docs/products/compute/compute-instances/guides/failover/)
+    # (https://techdocs.akamai.com/cloud-computing/docs/configure-failover-on-a-compute-instance)
     # — deliberately not defaulted here.
     ip_failover_enabled: false
     linode_bgp_dcid: null
@@ -222,13 +222,17 @@ prometheus_url: http://<observability-instance-ip>:9090
 vpc_sibling_subnet_cidrs: []
 
 # Opt-in (empty/default here means OFF) runtime secrets bundle -- an
-# alternative to /etc/natctl/env for every real natctl secret (LINODE_TOKEN,
-# NATCTL_OBJECT_STORAGE_ACCESS_KEY/SECRET_KEY, NATCTL_API_MUTATION_TOKEN,
-# ...), fetched and decrypted at startup instead of pre-written to node
-# disk in plaintext. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html, Part VIII
-# 8.3 for the full workflow. Safe to publish secrets_bundle_url as
-# public-read -- it's SOPS+age ciphertext, decryptable only by a holder
-# of the matching age private key (secrets_bundle_age_key_path below).
+# alternative to /etc/natctl/env for LINODE_TOKEN and
+# NATCTL_OBJECT_STORAGE_ACCESS_KEY/SECRET_KEY, fetched and decrypted at
+# startup instead of pre-written to node disk in plaintext.
+# NATCTL_API_MUTATION_TOKEN is deliberately NOT part of this payload --
+# Terraform generates it separately, never round-tripped through
+# secrets.enc.json, so it still needs /etc/natctl/env regardless of
+# whether this mechanism is on. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html,
+# Part VIII 8.3 for the full workflow. Safe to publish secrets_bundle_url
+# as public-read -- it's SOPS+age ciphertext, decryptable only by a
+# holder of the matching age private key (secrets_bundle_age_key_path
+# below).
 secrets_bundle_url: ""
 # Where this node's own age private key lives on disk (0600) -- the one
 # piece of secret material this mechanism still needs pre-placed per node.
