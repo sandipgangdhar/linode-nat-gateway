@@ -216,6 +216,17 @@ pre.code{
 pre.code .k{color:var(--code-key)}
 pre.code .s{color:var(--code-str)}
 pre.code .m{color:var(--code-mut)}
+.code-wrap{position:relative}
+.copy-btn{
+  position:absolute;top:8px;right:8px;
+  background:rgba(255,255,255,.08);color:var(--code-ink);
+  border:1px solid rgba(255,255,255,.18);border-radius:6px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.04em;
+  padding:4px 9px;cursor:pointer;opacity:.5;transition:opacity .15s,background .15s,border-color .15s;
+}
+.code-wrap:hover .copy-btn,.copy-btn:focus-visible{opacity:1}
+.copy-btn:hover{background:rgba(255,255,255,.18)}
+.copy-btn.copied{opacity:1;border-color:var(--accent);color:var(--accent)}
 .formula{
   font-family:var(--mono);background:var(--code-bg);color:var(--code-ink);
   border-radius:10px;padding:18px 22px;text-align:center;font-size:16px;margin:18px 0;box-shadow:var(--shadow);
@@ -1797,10 +1808,12 @@ jq --version</pre>
         <h3>Step 1 — Secrets setup (SOPS + age)</h3>
         <p>Do this before touching <code>terraform.tfvars</code> — the secrets file is encrypted at rest and only ever decrypted transiently by Terraform/SOPS.</p>
         <ol>
-          <li>Generate your age keypair:
+          <li>Generate your age keypair and point <code>sops</code> at it. <code>~/.config/sops/age/keys.txt</code> below is just this example's path — if you already have a keypair there from an earlier deployment and want a separate one for this environment (a common reason to deviate), pick any other path instead, e.g. <code>~/.config/sops/age-&lt;this-environment-name&gt;/keys.txt</code>. Whatever path you choose, <strong>use that exact same path in all four lines below</strong> — the <code>mkdir</code>, <code>-o</code>, <code>chmod</code>, and <code>export</code> must all agree, or <code>sops</code> will look in the wrong place and fail with a decrypt error that gives no hint the path is the actual problem:
             <pre class="code">mkdir -p ~/.config/sops/age
 age-keygen -o ~/.config/sops/age/keys.txt
-chmod 600 ~/.config/sops/age/keys.txt</pre>
+chmod 600 ~/.config/sops/age/keys.txt
+export SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt</pre>
+            <code>SOPS_AGE_KEY_FILE</code> isn't optional if your key lives anywhere other than <code>sops</code>'s own platform default (macOS: <code>~/Library/Application Support/sops/age/keys.txt</code>; Linux: this XDG path) — which any path you choose yourself, including the example above, always is. Export it in <strong>every new shell session</strong> before running <code>sops</code> or <code>terraform apply</code> (both read it) — it does not persist once the terminal closes unless you add it to your shell profile (<code>~/.zshrc</code>/<code>~/.bashrc</code>) yourself. Needed again for every later step below that touches <code>secrets.enc.json</code>. It is <strong>not</strong> needed for <code>age-keygen</code> itself (a fresh keypair needs no existing key to generate) — only for steps that decrypt or encrypt with it.
           </li>
           <li>Copy the SOPS config and swap in your new public key (printed by <code>age-keygen</code>, also saved inside <code>keys.txt</code>):
             <pre class="code">cp .sops.yaml.example .sops.yaml
@@ -1841,7 +1854,7 @@ mv /tmp/secrets.enc.json.new secrets.enc.json</pre>
           </li>
           <li>Build and publish the actual bundle, encrypted to the <strong>same public key</strong> <code>age-keygen</code> printed back in step 1 — <strong>not a newly generated one</strong>. Get it back with:
             <pre class="code">grep "^# public key:" /tmp/bundle-key.txt</pre>
-            Use that exact value as the recipient argument:
+            Use that exact value as the recipient argument. This script internally runs <code>sops --decrypt</code> on <code>secrets.enc.json</code>, so it needs your <strong>operator</strong> <code>SOPS_AGE_KEY_FILE</code> from Step 1 still exported in this shell — not the bundle keypair from step 1 above, a different key entirely:
             <pre class="code">./scripts/build-secrets-bundle.sh age1&lt;bundle-public-key&gt; /tmp/secrets-bundle.json.age</pre>
             Then upload it to your Object Storage bucket, at the exact path <code>secrets_bundle_url</code> points to. <strong>Pick one</strong> of the two commands below, whichever tool you already have configured — running both just uploads the same file twice, harmless but pointless:
             <p><strong>Option A — AWS CLI</strong> (needs <code>aws configure</code> set up against your Object Storage keys; Linode's Object Storage is S3-compatible, so it needs an explicit <code>--endpoint-url</code>, or it defaults to real AWS S3):</p>
@@ -1915,7 +1928,8 @@ chmod +x install-nat-client.sh</pre>
           <li>Run it against the instance, pointing at its real interfaces:
             <pre class="code">./install-nat-client.sh --vlan-iface &lt;vlan-iface&gt; --vpc-iface &lt;vpc-iface&gt; \
   --roster-url http://&lt;roster-host&gt;:8099/fleet/&lt;pool-name&gt;</pre>
-            It verifies the VLAN interface actually has a real address (fails fast if not), then sets up ECMP routing across every healthy NAT node and self-heals VPC sibling-subnet routes on every roster poll (Part I, 1.2).
+            <p><code>--vlan-iface</code> is <strong>required</strong> — it's how the client actually reaches the NAT fleet and gets internet egress at all. The script verifies this interface really has a real static address applied already (fails fast if not, since it never applies one itself — Part III, 3.4), then <code>client-agent</code> uses it to set up ECMP routing across every currently healthy NAT node's VLAN address, self-healing as nodes come and go.</p>
+            <p><code>--vpc-iface</code> is <strong>optional</strong> — it's a separate concern from internet egress entirely. Pass it only if this client also has a VPC interface AND needs to reach <em>other</em> VPC-resident workloads directly (another private subnet, an LKE cluster, etc.) — it tells <code>client-agent</code> which interface is VPC, so it can self-heal explicit non-default routes to every VPC sibling subnet natctl's roster reports (Part I, 1.2), the same way NAT nodes' own <code>eth1</code> already does. A pure <code>vlan_only</code> client (no VPC interface at all) never needs this flag — there's nothing for it to manage. Omitting it when the client genuinely only needs internet egress is correct, not incomplete.</p>
           </li>
           <li>Attach the pool's <code>client_firewall_id</code> Terraform output to the client instance so its own Cloud Firewall rules apply:
             <pre class="code">terraform output client_firewall_id</pre>
@@ -2860,6 +2874,59 @@ systemctl restart natctl</pre></li>
       a.addEventListener('click', function(){ sidebar.classList.remove('open'); });
     });
   }
+})();
+</script>
+<script>
+(function(){
+  function copyText(text, btn){
+    var orig = btn.textContent;
+    var ok = function(){
+      btn.textContent = 'Copied';
+      btn.classList.add('copied');
+      setTimeout(function(){ btn.textContent = orig; btn.classList.remove('copied'); }, 1500);
+    };
+    var bad = function(){
+      btn.textContent = 'Error';
+      setTimeout(function(){ btn.textContent = orig; }, 1500);
+    };
+    try{
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(ok, function(){
+          fallbackCopy(text) ? ok() : bad();
+        });
+        return;
+      }
+    }catch(e){}
+    fallbackCopy(text) ? ok() : bad();
+  }
+  function fallbackCopy(text){
+    try{
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      var result = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return result;
+    }catch(e){ return false; }
+  }
+  document.querySelectorAll('pre.code').forEach(function(pre){
+    var wrap = document.createElement('div');
+    wrap.className = 'code-wrap';
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy-btn';
+    btn.textContent = 'Copy';
+    btn.setAttribute('aria-label', 'Copy code to clipboard');
+    btn.addEventListener('click', function(){
+      copyText(pre.innerText || pre.textContent, btn);
+    });
+    wrap.appendChild(btn);
+  });
 })();
 </script>
 </body>
