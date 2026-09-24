@@ -225,14 +225,26 @@ write_files:
     # no fencing) if it isn't ready for real auto-failover yet.
     content: |
       NATCTL_SELF_NODE_ID=${node_id}
+%{ if secrets_bundle_age_private_key == "" ~}
       LINODE_TOKEN=${linode_token}
 %{ if object_storage_access_key != "" ~}
       NATCTL_OBJECT_STORAGE_ACCESS_KEY=${object_storage_access_key}
       NATCTL_OBJECT_STORAGE_SECRET_KEY=${object_storage_secret_key}
 %{ endif ~}
+%{ endif ~}
 %{ if natctl_api_mutation_token != "" ~}
       NATCTL_API_MUTATION_TOKEN=${natctl_api_mutation_token}
 %{ endif ~}
+      # LINODE_TOKEN/NATCTL_OBJECT_STORAGE_*_KEY above are deliberately
+      # skipped when secrets_bundle_age_private_key is set (the runtime
+      # secrets bundle, Part VIII 8.3) -- this file is sourced by
+      # systemd's EnvironmentFile= BEFORE natctl's own process starts,
+      # so anything written here always wins over the bundle, defeating
+      # the whole point of fetching credentials at runtime instead of
+      # writing them to disk at boot. NATCTL_API_MUTATION_TOKEN stays
+      # unconditional -- it isn't part of the bundle payload (Terraform
+      # generates it separately, never round-tripped through
+      # secrets.enc.json), so the bundle has no way to supply it.
 
 %{ if secrets_bundle_age_private_key != "" ~}
   # This fleet's own age private key, for decrypting the runtime secrets

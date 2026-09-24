@@ -1636,21 +1636,22 @@ flowchart LR
             <tr><td>age keypair</td><td>Generated in 9.3, Step 1 below — encrypts <code>secrets.enc.json</code> (Part VIII, 8.3).</td></tr>
           </tbody>
         </table></div>
-        <p>Also have <code>terraform</code> (&gt;= 1.6) installed, plus a clone of the repository. <code>sops</code> and <code>age</code> are needed too — install them now if they aren't already on this machine.</p>
+        <p>Also have <code>terraform</code> (&gt;= 1.6) installed, plus a clone of the repository. <code>sops</code>, <code>age</code>, and <code>jq</code> are needed too — install them now if they aren't already on this machine.</p>
 
-        <h3>Installing <code>age</code> and <code>sops</code> on your own machine</h3>
-        <p><code>age-keygen</code> ships inside the <code>age</code> package. Install both <code>age</code> and <code>sops</code> on whichever machine you'll run Terraform/SOPS commands from — a one-time, per-workstation setup, separate from anything a node installs itself at boot.</p>
+        <h3>Installing <code>age</code>, <code>sops</code>, and <code>jq</code> on your own machine</h3>
+        <p><code>age-keygen</code> ships inside the <code>age</code> package. Install <code>age</code>, <code>sops</code>, and <code>jq</code> (used to safely build JSON values for <code>secrets.enc.json</code> and the runtime secrets bundle below, rather than hand-editing JSON) on whichever machine you'll run Terraform/SOPS commands from — a one-time, per-workstation setup, separate from anything a node installs itself at boot.</p>
         <p><strong>macOS</strong></p>
-        <pre class="code">brew install age sops</pre>
-        <p><strong>Linux</strong> — package availability varies by distro/version (<code>age</code> isn't packaged at all on some LTS releases, e.g. Ubuntu 22.04); try the package manager first, fall back to a pinned release download:</p>
+        <pre class="code">brew install age sops jq</pre>
+        <p><strong>Linux</strong> — package availability varies by distro/version (<code>age</code> isn't packaged at all on some LTS releases, e.g. Ubuntu 22.04); try the package manager first, fall back to a pinned release download for <code>age</code>/<code>sops</code> (<code>jq</code> is packaged everywhere):</p>
         <pre class="code"><span class="m"># Try the package manager first:</span>
-sudo apt install age sops        <span class="m"># Debian 13+/Ubuntu 24.04+</span>
-sudo dnf install age sops        <span class="m"># Fedora</span>
-sudo pacman -S age sops          <span class="m"># Arch</span>
+sudo apt install age sops jq      <span class="m"># Debian 13+/Ubuntu 24.04+</span>
+sudo dnf install age sops jq      <span class="m"># Fedora</span>
+sudo pacman -S age sops jq        <span class="m"># Arch</span>
 
-<span class="m"># If unavailable, download a pinned release binary directly (adjust</span>
-<span class="m"># version/arch as needed) -- verify the checksum against the value</span>
-<span class="m"># published on each project's GitHub Releases page before trusting it:</span>
+<span class="m"># If age/sops are unavailable, download a pinned release binary</span>
+<span class="m"># directly (adjust version/arch as needed) -- verify the checksum</span>
+<span class="m"># against the value published on each project's GitHub Releases page</span>
+<span class="m"># before trusting it:</span>
 curl -LO https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz
 tar -xzf age-v1.3.2-linux-amd64.tar.gz
 sudo install -m 0755 age/age age/age-keygen /usr/local/bin/
@@ -1661,13 +1662,15 @@ sudo install -m 0755 sops-linux-amd64 /usr/local/bin/sops</pre>
         <pre class="code"><span class="m"># winget:</span>
 winget install FiloSottile.age
 winget install Mozilla.SOPS
+winget install jqlang.jq
 
 <span class="m"># or scoop:</span>
-scoop install age sops</pre>
-        <p>No package manager available — download the <code>.zip</code>/<code>.exe</code> from each project's GitHub Releases page (<a href="https://github.com/FiloSottile/age/releases" target="_blank" rel="noopener">age</a>, <a href="https://github.com/getsops/sops/releases" target="_blank" rel="noopener">sops</a>) and add the extracted folder to your <code>PATH</code>.</p>
-        <p>Confirm both are on your <code>PATH</code> before continuing:</p>
+scoop install age sops jq</pre>
+        <p>No package manager available — download the <code>.zip</code>/<code>.exe</code> from each project's GitHub Releases page (<a href="https://github.com/FiloSottile/age/releases" target="_blank" rel="noopener">age</a>, <a href="https://github.com/getsops/sops/releases" target="_blank" rel="noopener">sops</a>, <a href="https://github.com/jqlang/jq/releases" target="_blank" rel="noopener">jq</a>) and add the extracted folder to your <code>PATH</code>.</p>
+        <p>Confirm all three are on your <code>PATH</code> before continuing:</p>
         <pre class="code">age --version
-sops --version</pre>
+sops --version
+jq --version</pre>
         <p>9.2 is the complete, variable-by-variable reference for turning these prerequisites into an actual <code>terraform.tfvars</code>; 9.3 is the exact command sequence, start to finish. Read both before your first apply.</p>
       </section>
 

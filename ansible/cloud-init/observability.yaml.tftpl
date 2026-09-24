@@ -157,14 +157,19 @@ write_files:
     # credentials). Mirrors ansible/cloud-init/nat-node.yaml.tftpl's
     # identical write for the natctl-on-node placement mode.
     content: |
+%{ if secrets_bundle_age_private_key == "" ~}
       LINODE_TOKEN=${linode_token}
 %{ if object_storage_access_key != "" ~}
       NATCTL_OBJECT_STORAGE_ACCESS_KEY=${object_storage_access_key}
       NATCTL_OBJECT_STORAGE_SECRET_KEY=${object_storage_secret_key}
 %{ endif ~}
+%{ endif ~}
 %{ if natctl_api_mutation_token != "" ~}
       NATCTL_API_MUTATION_TOKEN=${natctl_api_mutation_token}
 %{ endif ~}
+      # LINODE_TOKEN/NATCTL_OBJECT_STORAGE_*_KEY above are skipped when
+      # secrets_bundle_age_private_key is set -- see nat-node.yaml.tftpl's
+      # identical comment; keep both in sync.
 
 %{ if secrets_bundle_age_private_key != "" ~}
   # This deployment's own age private key, for decrypting the runtime
