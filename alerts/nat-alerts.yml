@@ -115,12 +115,16 @@ groups:
           description: "Informational, not urgent: this node is still fully healthy and fully in client-agent's ECMP rotation (buddy-sync is a session-loss MITIGATION, not a health signal — see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.3 'Connection-State Sync'). Expected transiently on any membership change, or permanently if the pool has an odd number of healthy nodes, or if conntrack_buddy_sync_enabled is false for this pool. Investigate only if it persists on a pool that expects buddy-sync to be active."
 
       - alert: NATThroughputNearPoolLimit
-        expr: sum by (pool) (rate(nat_interface_bytes_total{direction="tx"}[5m])) * 8 > 0.85 * (count by (pool) (nat_node_healthy == 1) * 8000000000)
+        # Compares natctl's own throughput signal to its own scale-out watermark. That signal is the pool's
+        # traffic divided by the real network limit of the pool's healthy nodes (each plan's published limit,
+        # read from the provider's API, with send and receive each measured against their own limit), so this
+        # rule needs no per-plan constant and stays correct whichever instance size a pool uses.
+        expr: max by (pool) (natctl_pool_autoscale_current{metric="throughput_ratio"}) > on (pool) max by (pool) (natctl_pool_autoscale_high_watermark{metric="throughput_ratio"})
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "Aggregate egress throughput for pool {{ $labels.pool }} is approaching the pool's total plan bandwidth"
+          summary: "Aggregate throughput for pool {{ $labels.pool }} is above the scale-out watermark for the pool's total plan bandwidth"
           description: "Feeds natctl's own scale-out decision; if it hasn't already added a node, investigate why (check cooldown_seconds and max_nodes)."
 
       - alert: NATCPUSoftirqSaturationHigh

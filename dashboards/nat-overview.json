@@ -3,7 +3,7 @@
   "description": "nat-overview.json (dashboards). Note: JSON has no comment syntax, so this field carries the documentation a header comment would elsewhere in this repo. Provisioned automatically into Grafana's 'LNG NAT Gateway' folder by ansible/templates/grafana-dashboards.yml (see terraform/modules/observability). Panels are grouped as: fleet summary (total nodes/throughput/conntrack across every pool), per-pool detail (node count, conntrack %, port headroom per IP, throughput, PPS, drop rate), node health grid, and a capacity-forecast panel. The 'pool' template variable filters every panel. Data source: Prometheus, scraping every node's :9200/metrics via natctl's fleet-aware file_sd target file, plus natctl's own :8099/metrics for fleet-wide node-count figures -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part 7 (Observability) for the full metric/alert catalogue this dashboard visualizes. Author: Sandip Gangdhar (https://github.com/sandipgangdhar). (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026.",
   "uid": "lng-nat-overview",
   "schemaVersion": 39,
-  "version": 8,
+  "version": 9,
   "editable": true,
   "timezone": "browser",
   "time": {
@@ -53,10 +53,10 @@
         "x": 0,
         "y": 0
       },
-      "description": "natctl's own authoritative, peer-corroborated node count (natctl_pool_nodes_total) -- not each node's own self-reported nat_node_healthy, which can disagree with the peer-corroborated view a node's own health-floor/autoscale decisions actually act on.",
+      "description": "natctl's own authoritative, peer-corroborated node count (natctl_pool_nodes_total) -- not each node's own self-reported nat_node_healthy, which can disagree with the peer-corroborated view a node's own health-floor/autoscale decisions actually act on. Every node's controller publishes the same pool-level figure, so it is deduplicated per pool before being combined across the selected pools.",
       "targets": [
         {
-          "expr": "max(natctl_pool_nodes_total{pool=~\"$pool\"})",
+          "expr": "sum(max by (pool) (natctl_pool_nodes_total{pool=~\"$pool\"}))",
           "legendFormat": "nodes"
         }
       ]
@@ -71,10 +71,10 @@
         "x": 4,
         "y": 0
       },
-      "description": "natctl's own authoritative, peer-corroborated healthy count (natctl_pool_nodes_healthy) -- not each node's own self-reported nat_node_healthy. A node can self-report healthy while every peer's own independent probe disagrees (natctl trusts the peers) -- this panel reflects the count that actually drives ECMP roster distribution and autoscale decisions, not each node's opinion of itself.",
+      "description": "natctl's own authoritative, peer-corroborated healthy count (natctl_pool_nodes_healthy) -- not each node's own self-reported nat_node_healthy. A node can self-report healthy while every peer's own independent probe disagrees (natctl trusts the peers) -- this panel reflects the count that actually drives ECMP roster distribution and autoscale decisions, not each node's opinion of itself. Every node's controller publishes the same pool-level figure, so it is deduplicated per pool before being combined across the selected pools.",
       "targets": [
         {
-          "expr": "max(natctl_pool_nodes_healthy{pool=~\"$pool\"})",
+          "expr": "sum(max by (pool) (natctl_pool_nodes_healthy{pool=~\"$pool\"}))",
           "legendFormat": "healthy"
         }
       ]
@@ -537,14 +537,14 @@
       "type": "stat",
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 6,
         "x": 0,
         "y": 64
       },
-      "description": "Terraform-managed floor -- never touched by autoscale.",
+      "description": "Terraform-managed floor -- never touched by autoscale. Every node's controller publishes the same pool-level figure, so it is deduplicated per pool before being combined across the selected pools.",
       "targets": [
         {
-          "expr": "sum(natctl_pool_floor_nodes{pool=~\"$pool\"})",
+          "expr": "sum(max by (pool) (natctl_pool_floor_nodes{pool=~\"$pool\"}))",
           "legendFormat": "floor"
         }
       ]
@@ -555,14 +555,14 @@
       "type": "stat",
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 4,
+        "w": 6,
+        "x": 6,
         "y": 64
       },
-      "description": "natctl-managed nodes currently added on top of the floor.",
+      "description": "natctl-managed nodes currently added on top of the floor. Every node's controller publishes the same pool-level figure, so it is deduplicated per pool before being combined across the selected pools.",
       "targets": [
         {
-          "expr": "sum(natctl_pool_elastic_nodes{pool=~\"$pool\"})",
+          "expr": "sum(max by (pool) (natctl_pool_elastic_nodes{pool=~\"$pool\"}))",
           "legendFormat": "elastic"
         }
       ]
@@ -573,16 +573,17 @@
       "type": "stat",
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 8,
+        "w": 6,
+        "x": 12,
         "y": 64
       },
       "targets": [
         {
-          "expr": "max(natctl_pool_min_nodes{pool=~\"$pool\"})",
+          "expr": "sum(max by (pool) (natctl_pool_min_nodes{pool=~\"$pool\"}))",
           "legendFormat": "min"
         }
-      ]
+      ],
+      "description": " Every node's controller publishes the same pool-level figure, so it is deduplicated per pool before being combined across the selected pools."
     },
     {
       "id": 27,
@@ -590,271 +591,61 @@
       "type": "stat",
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 12,
+        "w": 6,
+        "x": 18,
         "y": 64
       },
       "targets": [
         {
-          "expr": "max(natctl_pool_max_nodes{pool=~\"$pool\"})",
+          "expr": "sum(max by (pool) (natctl_pool_max_nodes{pool=~\"$pool\"}))",
           "legendFormat": "max"
         }
-      ]
+      ],
+      "description": " Every node's controller publishes the same pool-level figure, so it is deduplicated per pool before being combined across the selected pools."
     },
     {
       "id": 28,
       "title": "Last Scale Event",
-      "type": "stat",
+      "type": "table",
       "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 16,
-        "y": 64
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 68
       },
-      "description": "Why the most recent scale-out/scale-in fired -- direction, reason, sustained-breach metric(s), and required node count. Value is always 1; the text is carried entirely as labels (metric: natctl_pool_last_scale_event_info -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html \u00a75.2 'The Autoscaling Algorithm'). Query is deliberately instant (not range), same reasoning as the Current Leader panel above: a range query returns one box per distinct event visible in the selected time window, not just the latest. Only the pool's confirmed leader ever records a decision here -- natctl-on-node mode scrapes every node's own /metrics, and the max-by aggregation collapses those into the one authoritative value every node agrees on, rather than one box per node.",
+      "description": "The most recent scaling decision for each pool, with its plain-language reason. Read from natctl_pool_last_scale_event_info, whose labels carry the explanation: direction (out adds capacity, in removes it), reason, the signal that was sustained, the node count the sizing formula required, and the node(s) actually added or drained. See Scale Event History below for earlier decisions.",
       "options": {
-        "textMode": "name",
-        "colorMode": "background",
-        "reduceOptions": {
-          "calcs": [
-            "last"
-          ]
-        }
+        "showHeader": true
       },
       "targets": [
         {
           "expr": "max by (pool, direction, reason, sustained, required, targets) (natctl_pool_last_scale_event_info{pool=~\"$pool\"})",
-          "legendFormat": "{{direction}} required={{required}} reason={{reason}} sustained={{sustained}} targets={{targets}}",
+          "legendFormat": "",
           "instant": true,
-          "range": false
+          "range": false,
+          "format": "table"
         }
-      ]
-    },
-    {
-      "id": 29,
-      "title": "Autoscale Metric vs Watermarks (conntrack)",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 68
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "expr": "natctl_pool_autoscale_current{pool=~\"$pool\",metric=\"conntrack\"}",
-          "legendFormat": "current"
-        },
-        {
-          "expr": "natctl_pool_autoscale_high_watermark{pool=~\"$pool\",metric=\"conntrack\"}",
-          "legendFormat": "scale-out watermark"
-        },
-        {
-          "expr": "natctl_pool_autoscale_low_watermark{pool=~\"$pool\",metric=\"conntrack\"}",
-          "legendFormat": "scale-in watermark"
-        }
-      ]
-    },
-    {
-      "id": 30,
-      "title": "Autoscale Metric vs Watermarks (port headroom, throughput)",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 68
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "expr": "natctl_pool_autoscale_current{pool=~\"$pool\",metric=\"port_headroom\"}",
-          "legendFormat": "port_headroom current"
-        },
-        {
-          "expr": "natctl_pool_autoscale_low_watermark{pool=~\"$pool\",metric=\"port_headroom\"}",
-          "legendFormat": "port_headroom scale-out watermark"
-        },
-        {
-          "expr": "natctl_pool_autoscale_current{pool=~\"$pool\",metric=\"throughput_ratio\"}",
-          "legendFormat": "throughput_ratio current"
-        },
-        {
-          "expr": "natctl_pool_autoscale_high_watermark{pool=~\"$pool\",metric=\"throughput_ratio\"}",
-          "legendFormat": "throughput_ratio scale-out watermark"
-        }
-      ]
-    },
-    {
-      "id": 31,
-      "title": "Autoscale Breach Streak by Metric",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 76
-      },
-      "description": "Consecutive reconcile passes each metric has been breached on the scale-out side. A scale-out fires once this reaches sustained_breach_passes (see terraform variable of the same name).",
-      "targets": [
-        {
-          "expr": "natctl_pool_autoscale_breach_streak{pool=~\"$pool\"}",
-          "legendFormat": "{{metric}}"
-        }
-      ]
-    },
-    {
-      "id": 32,
-      "title": "Scale Event Delta Over Time",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 76
-      },
-      "description": "Node count change from each scale decision -- positive bars/steps are scale-out, negative are scale-in.",
-      "targets": [
-        {
-          "expr": "natctl_pool_last_scale_event_delta{pool=~\"$pool\"}",
-          "legendFormat": "delta"
-        }
-      ]
-    },
-    {
-      "id": 33,
-      "title": "Autoscale Metric vs Watermark (CPU/softirq)",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 84
-      },
-      "description": "Busiest-core network-softirq saturation ratio, pool-wide -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html \u00a75.2 'The Autoscaling Algorithm'. Scale-out only: unlike conntrack, there is no low (scale-in) watermark for this metric.",
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "expr": "natctl_pool_autoscale_current{pool=~\"$pool\",metric=\"cpu_softirq_ratio\"}",
-          "legendFormat": "current"
-        },
-        {
-          "expr": "natctl_pool_autoscale_high_watermark{pool=~\"$pool\",metric=\"cpu_softirq_ratio\"}",
-          "legendFormat": "scale-out watermark"
-        }
-      ]
-    },
-    {
-      "id": 34,
-      "title": "CPU Softirq Saturation by Node and Core",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 84
-      },
-      "description": "Raw per-core detail behind the explainability panel to the left -- the autoscale trigger takes max() across every one of these series, deliberately not an average, since a single saturated core can matter even while the rest of the fleet looks idle.",
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "expr": "rate(nat_cpu_softirq_seconds_total{pool=~\"$pool\"}[1m])",
-          "legendFormat": "{{node}} cpu{{cpu}}"
-        }
-      ]
-    },
-    {
-      "id": 35,
-      "title": "Current Leader (natctl_on_node_enabled pools)",
-      "type": "stat",
-      "gridPos": {
-        "h": 4,
-        "w": 12,
-        "x": 0,
-        "y": 92
-      },
-      "description": "natctl's own leader-election state (is_leader/term, see api.py's render_natctl_metrics()) is only reachable here in natctl_on_node_enabled mode -- without it, an operator has no way to see who currently holds leadership for a pool without SSHing to each node and grepping journalctl. Value is always 1; the node holding it is carried entirely as a label. Empty for pools with leader_election disabled (single-dedicated-host mode), by the same convention as the scale-event panel above. Query is deliberately instant (not range): over any time window spanning a real leadership handoff, a range query returns one series per node that was EVER leader within that window, each still showing \"1\" at its own last-seen point -- an instant query returns only whoever holds it right now.",
-      "options": {
-        "textMode": "name",
-        "colorMode": "background",
-        "reduceOptions": {
-          "calcs": [
-            "last"
-          ]
-        }
-      },
-      "targets": [
-        {
-          "expr": "natctl_leader_election_is_leader{pool=~\"$pool\"} == 1",
-          "legendFormat": "{{node_id}} (pool={{pool}})",
-          "instant": true,
-          "range": false
-        }
-      ]
-    },
-    {
-      "id": 36,
-      "title": "Leadership Term",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 4,
-        "w": 12,
-        "x": 12,
-        "y": 92
-      },
-      "description": "The leadership term each node last observed or won for its pool -- a real fencing event increments this; a flat line across every node in a pool is the healthy steady state. A step change on more than one node's series at the same moment is the visible signature of a genuine re-election, not itself a fault.",
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "expr": "natctl_leader_election_term{pool=~\"$pool\"}",
-          "legendFormat": "{{node_id}} (pool={{pool}})"
-        }
-      ]
-    },
-    {
-      "id": 37,
-      "title": "Scale Event History",
-      "type": "table",
-      "gridPos": {
-        "h": 9,
-        "w": 24,
-        "x": 0,
-        "y": 96
-      },
-      "description": "Every scale decision visible in the selected time range, not just the most recent one (see the instant-query \"Last Scale Event\" panel above for that) -- natctl_pool_last_scale_event_info is a gauge (it holds only the CURRENT last-known event, overwritten on every new decision, not an append-only log), so this is a genuine range query: each distinct combination of direction/reason/required/sustained/targets becomes its own row for as long as it stayed current. Consecutive identical rows are normal -- they mean no new decision fired in between, the same event was still the most recent one at each scrape. A new row's text differing from the one above it is a real transition. The \"targets\" column names which node_id(s) that specific decision actually provisioned or drained (comma-separated if more than one, empty if the decision recorded no actual change, e.g. a failed provision attempt) -- this is what answers \"which nodes were added/removed,\" not just why. Sort by Time (newest first) to read top-to-bottom as a timeline. Only the pool's confirmed leader ever records a decision (natctl-on-node mode runs this evaluation on every node, but only the leader's action is real) -- the max-by aggregation collapses every node's identical, synced copy of that one decision into a single row per distinct value, rather than one row per node. An empty targets column means the decision itself recorded no actual change (e.g. a failed provision attempt, or a scale-in blocked at max_nodes with nothing left to drain) -- cross-check against Scale Event Delta Over Time or the fleet's node-count panels to confirm which rows correspond to an actual node-count change.",
+      ],
       "fieldConfig": {
         "defaults": {
           "custom": {
-            "align": "left"
+            "align": "left",
+            "wrapText": true
           }
         },
         "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
           {
             "matcher": {
               "id": "byName",
@@ -890,6 +681,367 @@
                 "value": true
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pool"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 120
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "direction"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sustained"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "required"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "targets"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 300
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 29,
+      "title": "Autoscale Metric vs Watermarks (conntrack)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 73
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "max by (pool) (natctl_pool_autoscale_current{pool=~\"$pool\",metric=\"conntrack\"})",
+          "legendFormat": "{{pool}} current"
+        },
+        {
+          "expr": "max by (pool) (natctl_pool_autoscale_high_watermark{pool=~\"$pool\",metric=\"conntrack\"})",
+          "legendFormat": "{{pool}} scale-out watermark"
+        },
+        {
+          "expr": "max by (pool) (natctl_pool_autoscale_low_watermark{pool=~\"$pool\",metric=\"conntrack\"})",
+          "legendFormat": "{{pool}} scale-in watermark"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "title": "Autoscale Metric vs Watermarks (port headroom, throughput)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 73
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "max by (pool) (natctl_pool_autoscale_current{pool=~\"$pool\",metric=\"port_headroom\"})",
+          "legendFormat": "{{pool}} port_headroom current"
+        },
+        {
+          "expr": "max by (pool) (natctl_pool_autoscale_low_watermark{pool=~\"$pool\",metric=\"port_headroom\"})",
+          "legendFormat": "{{pool}} port_headroom scale-out watermark"
+        },
+        {
+          "expr": "max by (pool) (natctl_pool_autoscale_current{pool=~\"$pool\",metric=\"throughput_ratio\"})",
+          "legendFormat": "{{pool}} throughput_ratio current"
+        },
+        {
+          "expr": "max by (pool) (natctl_pool_autoscale_high_watermark{pool=~\"$pool\",metric=\"throughput_ratio\"})",
+          "legendFormat": "{{pool}} throughput_ratio scale-out watermark"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "title": "Autoscale Breach Streak by Metric",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 81
+      },
+      "description": "Consecutive reconcile passes each metric has been breached on the scale-out side. A scale-out fires once this reaches sustained_breach_passes (see terraform variable of the same name).",
+      "targets": [
+        {
+          "expr": "max by (pool, metric) (natctl_pool_autoscale_breach_streak{pool=~\"$pool\"})",
+          "legendFormat": "{{pool}} {{metric}}"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "title": "Scale Event Delta Over Time",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 81
+      },
+      "description": "Node count change from each scale decision -- positive bars/steps are scale-out, negative are scale-in.",
+      "targets": [
+        {
+          "expr": "max by (pool) (natctl_pool_last_scale_event_delta{pool=~\"$pool\"})",
+          "legendFormat": "{{pool}} delta"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "title": "Autoscale Metric vs Watermark (CPU/softirq)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 89
+      },
+      "description": "Busiest-core network-softirq saturation ratio, pool-wide -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html \u00a75.2 'The Autoscaling Algorithm'. Scale-out only: unlike conntrack, there is no low (scale-in) watermark for this metric.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "max by (pool) (natctl_pool_autoscale_current{pool=~\"$pool\",metric=\"cpu_softirq_ratio\"})",
+          "legendFormat": "{{pool}} current"
+        },
+        {
+          "expr": "max by (pool) (natctl_pool_autoscale_high_watermark{pool=~\"$pool\",metric=\"cpu_softirq_ratio\"})",
+          "legendFormat": "{{pool}} scale-out watermark"
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "title": "CPU Softirq Saturation by Node and Core",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 89
+      },
+      "description": "Raw per-core detail behind the explainability panel to the left -- the autoscale trigger takes max() across every one of these series, deliberately not an average, since a single saturated core can matter even while the rest of the fleet looks idle.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(nat_cpu_softirq_seconds_total{pool=~\"$pool\"}[1m])",
+          "legendFormat": "{{node}} cpu{{cpu}}"
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "title": "Current Leader (natctl_on_node_enabled pools)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 97
+      },
+      "description": "natctl's own leader-election state (is_leader/term, see api.py's render_natctl_metrics()) is only reachable here in natctl_on_node_enabled mode -- without it, an operator has no way to see who currently holds leadership for a pool without SSHing to each node and grepping journalctl. Value is always 1; the node holding it is carried entirely as a label. Empty for pools with leader_election disabled (single-dedicated-host mode), by the same convention as the scale-event panel above. Query is deliberately instant (not range): over any time window spanning a real leadership handoff, a range query returns one series per node that was EVER leader within that window, each still showing \"1\" at its own last-seen point -- an instant query returns only whoever holds it right now.",
+      "options": {
+        "textMode": "name",
+        "colorMode": "background",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "natctl_leader_election_is_leader{pool=~\"$pool\"} == 1",
+          "legendFormat": "{{node_id}} (pool={{pool}})",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "title": "Leadership Term",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 97
+      },
+      "description": "The leadership term each node last observed or won for its pool -- a real fencing event increments this; a flat line across every node in a pool is the healthy steady state. A step change on more than one node's series at the same moment is the visible signature of a genuine re-election, not itself a fault.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "natctl_leader_election_term{pool=~\"$pool\"}",
+          "legendFormat": "{{node_id}} (pool={{pool}})"
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "title": "Scale Event History",
+      "type": "table",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 101
+      },
+      "description": "Every scale decision visible in the selected time range, not just the most recent one (see the instant-query \"Last Scale Event\" panel above for that) -- natctl_pool_last_scale_event_info is a gauge (it holds only the CURRENT last-known event, overwritten on every new decision, not an append-only log), so this is a genuine range query: each distinct combination of direction/reason/required/sustained/targets becomes its own row for as long as it stayed current. Consecutive identical rows are normal -- they mean no new decision fired in between, the same event was still the most recent one at each scrape. A new row's text differing from the one above it is a real transition. The \"targets\" column names which node_id(s) that specific decision actually provisioned or drained (comma-separated if more than one, empty if the decision recorded no actual change, e.g. a failed provision attempt) -- this is what answers \"which nodes were added/removed,\" not just why. Sort by Time (newest first) to read top-to-bottom as a timeline. Only the pool's confirmed leader ever records a decision (natctl-on-node mode runs this evaluation on every node, but only the leader's action is real) -- the max-by aggregation collapses every node's identical, synced copy of that one decision into a single row per distinct value, rather than one row per node. An empty targets column means the decision itself recorded no actual change (e.g. a failed provision attempt, or a scale-in blocked at max_nodes with nothing left to drain) -- cross-check against Scale Event Delta Over Time or the fleet's node-count panels to confirm which rows correspond to an actual node-count change. One row per distinct scaling decision in the selected time range, timed at its first appearance.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "wrapText": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "When"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 190
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pool"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 120
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "direction"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sustained"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "required"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "targets"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 300
+              }
+            ]
           }
         ]
       },
@@ -897,7 +1049,7 @@
         "showHeader": true,
         "sortBy": [
           {
-            "displayName": "Time",
+            "displayName": "When",
             "desc": true
           }
         ]
@@ -910,6 +1062,62 @@
           "range": true,
           "format": "table"
         }
+      ],
+      "transformations": [
+        {
+          "id": "groupBy",
+          "options": {
+            "fields": {
+              "Time": {
+                "aggregations": [
+                  "min"
+                ],
+                "operation": "aggregate"
+              },
+              "pool": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "direction": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "reason": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "sustained": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "required": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "targets": {
+                "aggregations": [],
+                "operation": "groupby"
+              }
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "Time (min)": "When"
+            },
+            "indexByName": {
+              "Time (min)": 0,
+              "pool": 1,
+              "direction": 2,
+              "reason": 3,
+              "sustained": 4,
+              "required": 5,
+              "targets": 6
+            }
+          }
+        }
       ]
     },
     {
@@ -921,7 +1129,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 105
+        "y": 110
       },
       "fieldConfig": {
         "defaults": {
@@ -964,7 +1172,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 109
+        "y": 114
       },
       "targets": [
         {
@@ -981,7 +1189,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 117
+        "y": 122
       },
       "description": "1 means this natctl process has stopped attempting mutating Linode API calls (fencing power-offs, elastic provisioning, IP-sharing changes) after a run of consecutive network/5xx failures -- a provider-side incident, not a leadership rejection or a bad request on this project's own side. Read-only work (discover, health checks) is never affected. Whole-environment, not per-pool -- every pool this process manages shares one Linode API client.",
       "options": {
@@ -1025,7 +1233,7 @@
       },
       "targets": [
         {
-          "expr": "natctl_linode_api_circuit_open",
+          "expr": "max(natctl_linode_api_circuit_open)",
           "legendFormat": "circuit"
         }
       ]
@@ -1038,7 +1246,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 121
+        "y": 126
       },
       "description": "This pool's real-time run-rate, summed from each of its nodes' own live Linode plan price (floor and elastic counted together). Recomputed fresh on every scrape -- rises and falls as the pool autoscales or a node is resized, never needs resetting.",
       "options": {
@@ -1053,7 +1261,7 @@
       },
       "targets": [
         {
-          "expr": "natctl_pool_hourly_cost_dollars{pool=~\"$pool\"}",
+          "expr": "max by (pool) (natctl_pool_hourly_cost_dollars{pool=~\"$pool\"})",
           "legendFormat": "{{pool}}"
         }
       ]
@@ -1066,7 +1274,7 @@
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 121
+        "y": 126
       },
       "description": "Current hourly rate x 730 (average hours/month) -- a projection assuming this pool stays exactly this size for the rest of the month, computed here in PromQL rather than as a second natctl-emitted metric, so it can never drift out of sync with the live hourly figure. For a pool whose size actually changes over the month, the trailing-average panel alongside this one is the more accurate figure.",
       "options": {
@@ -1081,7 +1289,7 @@
       },
       "targets": [
         {
-          "expr": "natctl_pool_hourly_cost_dollars{pool=~\"$pool\"} * 730",
+          "expr": "max by (pool) (natctl_pool_hourly_cost_dollars{pool=~\"$pool\"}) * 730",
           "legendFormat": "{{pool}}"
         }
       ]
@@ -1094,7 +1302,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 121
+        "y": 126
       },
       "description": "avg_over_time() of the hourly-cost gauge across the last 30 days, x 24 x 30 -- the genuine average cost this pool has actually accrued, correctly weighting periods where it was a different size (e.g. before/after an autoscale event), rather than assuming today's size held for the whole month the way the projected-at-current-rate panel does. Needs at least 30 days of Prometheus retention to be meaningful -- shows a partial-period average otherwise.",
       "options": {
@@ -1109,7 +1317,7 @@
       },
       "targets": [
         {
-          "expr": "avg_over_time(natctl_pool_hourly_cost_dollars{pool=~\"$pool\"}[30d]) * 24 * 30",
+          "expr": "max by (pool) (avg_over_time(natctl_pool_hourly_cost_dollars{pool=~\"$pool\"}[30d])) * 24 * 30",
           "legendFormat": "{{pool}}"
         }
       ]
@@ -1122,7 +1330,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 127
+        "y": 132
       },
       "description": "Each pool's own cost history -- a step change lines up with an autoscale event or a resize, visible on the Autoscale Explainability panels above. Stacked to also show total fleet-wide spend at a glance.",
       "fieldConfig": {
@@ -1137,7 +1345,7 @@
       },
       "targets": [
         {
-          "expr": "natctl_pool_hourly_cost_dollars{pool=~\"$pool\"}",
+          "expr": "max by (pool) (natctl_pool_hourly_cost_dollars{pool=~\"$pool\"})",
           "legendFormat": "{{pool}}"
         }
       ]
