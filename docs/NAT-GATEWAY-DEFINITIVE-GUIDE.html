@@ -1039,6 +1039,9 @@ flowchart TB
           <span class="co-label">Fail-safe by design</span>
           On a roster-fetch failure, the agent keeps its last-known-good membership rather than guessing. If the healthy set it holds ever becomes completely empty, it deliberately leaves the existing route in place rather than tearing egress down — a stale route beats no route at all.
         </div>
+
+        <h3>Finding the roster again if every known node is replaced</h3>
+        <p>The agent remembers the address of every node the last roster listed, and tries those first, before the addresses it was installed with. That covers nodes being replaced one at a time. If the whole pool is replaced at once, every address the agent knows is gone, so as a last resort it looks for the roster nearby: it probes the <code>/24</code> around each address it knew, limited to its own private subnet, for something listening on the roster port. It accepts a responder only if that responder serves the roster for the agent's own pool. The scan is bounded (at most 1,024 addresses), runs no more than once a minute, and only happens after every known address has failed. It can be turned off with <code>LNG_ROSTER_REDISCOVERY=false</code>. While it is looking, the agent keeps its existing route, as above.</p>
       </section>
 
       <section class="chapter" id="c3-3">
@@ -1276,6 +1279,7 @@ flowchart LR
 
         <h3><code>max_nodes</code> as a true ceiling, not just a guardrail</h3>
         <p>Every reconcile pass also checks whether the pool's actual total node count is already <em>above</em> <code>max_nodes</code> — not just whether a scale-out would cross it. If it is, excess elastic capacity is drained back down immediately, regardless of cooldown or current demand, rather than waiting for a low-utilization reading to eventually correct it on its own. This covers a node count ending up above the ceiling for reasons that have nothing to do with load — most commonly, lowering <code>max_nodes</code> itself below the pool's current size via <code>set-pool-scaling</code> (10.2). That correction is a configuration-ceiling fix, not a scaling decision, so none of the guards above apply to it. Floor nodes are never touched this way — if floor nodes alone already meet or exceed <code>max_nodes</code>, only a <code>terraform apply</code> can resolve that.</p>
+        <p>The ceiling counts every instance that belongs to the pool, including one that is powered off or restarting, because it is still provisioned and still billed. A pool that is at its maximum will therefore not add a replacement for a node that is temporarily down; the node returning restores capacity without the pool ever exceeding the limit. If you want a failed baseline node to be replaced automatically while it is down, set <code>max_nodes</code> above the number of baseline nodes to leave room for that replacement.</p>
 
         <h3>Configuration</h3>
         <div class="table-wrap"><table>
