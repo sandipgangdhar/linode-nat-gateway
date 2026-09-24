@@ -1618,20 +1618,57 @@ flowchart LR
       <div class="part-open" id="part-9">
         <div class="part-num">Part IX</div>
         <h2 class="part-title">Deployment</h2>
-        <p class="part-dek">What's required before the first deploy, every Terraform variable you'll actually set, the deployment sequence itself, and how a real customer instance gets connected once the fleet exists.</p>
+        <p class="part-dek">Everything needed to deploy a fleet start to finish, in one place: prerequisites, every Terraform variable you'll actually set, the exact deployment sequence (secrets, Terraform, apply, verify), connecting a real client instance, and first-deployment troubleshooting.</p>
         <div class="part-rule"></div>
       </div>
 
       <section class="chapter" id="c9-1">
         <h2><span class="chno">9.1</span> Prerequisites</h2>
-        <ul>
-          <li>A cloud account with API access, and a token scoped exactly as described in the Security part above.</li>
-          <li>An existing VPC and at least one subnet, sized with headroom for every pool's own address range — this project intentionally never creates the VPC itself, only reads it back.</li>
-          <li>An object storage bucket, created ahead of time — required for every deployment, since fetched-at-boot artifacts (Part VI) depend on it unconditionally, not only in the every-node control-plane placement.</li>
-          <li>An SSH key pair for administrative access, and an explicit administrator address range for the control-plane host's dashboard and SSH access.</li>
-          <li>An age keypair for encrypting <code>secrets.enc.json</code> (Part VIII, 8.3) — every real credential (the cloud API token, root password, Object Storage keys) is encrypted into this one file rather than living in plaintext in <code>terraform.tfvars</code>. See 8.3's "Setting this up for a new deployment" for the exact steps — this must exist before your first <code>terraform apply</code>, since Terraform reads it directly.</li>
-        </ul>
-        <p>9.2 is the complete, variable-by-variable reference for turning these prerequisites into an actual <code>terraform.tfvars</code> — read it before your first apply.</p>
+        <p class="lede">Everything below is enough on its own to deploy a fleet start to finish — nothing in this Part IX requires looking anywhere else in this book, though the cross-references are there if you want the full reasoning behind a step.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Item</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>Cloud account + API token</td><td>Scoped exactly as described in Part VIII, 8.2 — read/write on instances, VPC, and networking.</td></tr>
+            <tr><td>Existing VPC + subnet</td><td>This project reuses a VPC, it does not create one (Part I, 1.2).</td></tr>
+            <tr><td>Object Storage bucket</td><td>Pre-created; holds fleet artifacts (Part VI) and, if used, the live roster/scaling state. Required unconditionally, not only for the every-node control-plane placement.</td></tr>
+            <tr><td>SSH keypair</td><td>Public key goes into <code>authorized_keys</code> in <code>terraform.tfvars</code>.</td></tr>
+            <tr><td>Admin CIDR(s)</td><td>Your own IP/range, for the control-plane firewall's SSH/Grafana allow-list (<code>admin_cidrs</code>) — never <code>0.0.0.0/0</code>.</td></tr>
+            <tr><td>age keypair</td><td>Generated in 9.3, Step 1 below — encrypts <code>secrets.enc.json</code> (Part VIII, 8.3).</td></tr>
+          </tbody>
+        </table></div>
+        <p>Also have <code>terraform</code> (&gt;= 1.6) installed, plus a clone of the repository. <code>sops</code> and <code>age</code> are needed too — install them now if they aren't already on this machine.</p>
+
+        <h3>Installing <code>age</code> and <code>sops</code> on your own machine</h3>
+        <p><code>age-keygen</code> ships inside the <code>age</code> package. Install both <code>age</code> and <code>sops</code> on whichever machine you'll run Terraform/SOPS commands from — a one-time, per-workstation setup, separate from anything a node installs itself at boot.</p>
+        <p><strong>macOS</strong></p>
+        <pre class="code">brew install age sops</pre>
+        <p><strong>Linux</strong> — package availability varies by distro/version (<code>age</code> isn't packaged at all on some LTS releases, e.g. Ubuntu 22.04); try the package manager first, fall back to a pinned release download:</p>
+        <pre class="code"><span class="m"># Try the package manager first:</span>
+sudo apt install age sops        <span class="m"># Debian 13+/Ubuntu 24.04+</span>
+sudo dnf install age sops        <span class="m"># Fedora</span>
+sudo pacman -S age sops          <span class="m"># Arch</span>
+
+<span class="m"># If unavailable, download a pinned release binary directly (adjust</span>
+<span class="m"># version/arch as needed) -- verify the checksum against the value</span>
+<span class="m"># published on each project's GitHub Releases page before trusting it:</span>
+curl -LO https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz
+tar -xzf age-v1.3.2-linux-amd64.tar.gz
+sudo install -m 0755 age/age age/age-keygen /usr/local/bin/
+
+curl -LO https://github.com/getsops/sops/releases/latest/download/sops-linux-amd64
+sudo install -m 0755 sops-linux-amd64 /usr/local/bin/sops</pre>
+        <p><strong>Windows</strong></p>
+        <pre class="code"><span class="m"># winget:</span>
+winget install FiloSottile.age
+winget install Mozilla.SOPS
+
+<span class="m"># or scoop:</span>
+scoop install age sops</pre>
+        <p>No package manager available — download the <code>.zip</code>/<code>.exe</code> from each project's GitHub Releases page (<a href="https://github.com/FiloSottile/age/releases" target="_blank" rel="noopener">age</a>, <a href="https://github.com/getsops/sops/releases" target="_blank" rel="noopener">sops</a>) and add the extracted folder to your <code>PATH</code>.</p>
+        <p>Confirm both are on your <code>PATH</code> before continuing:</p>
+        <pre class="code">age --version
+sops --version</pre>
+        <p>9.2 is the complete, variable-by-variable reference for turning these prerequisites into an actual <code>terraform.tfvars</code>; 9.3 is the exact command sequence, start to finish. Read both before your first apply.</p>
       </section>
 
       <section class="chapter" id="c9-2">
@@ -1670,6 +1707,16 @@ flowchart LR
           </tbody>
         </table></div>
         <p>This bucket's own access/secret key pair lives in <code>secrets.enc.json</code>, not here (Part VIII, 8.3) — the same bucket and keys also back the leader-election lease when <code>natctl_on_node_enabled</code> is true, below, one bucket, dual purpose.</p>
+        <p><strong>Important:</strong> <code>natctl_object_storage_endpoint</code> must be the <em>cluster-generic</em> form, with no bucket name in the hostname (e.g. <code>https://in-maa-1.linodeobjects.com</code>) — not the bucket-specific form Cloud Manager's bucket listing often shows you (e.g. <code>https://&lt;bucket&gt;.in-maa-1.linodeobjects.com</code>). This isn't a style preference: Terraform derives the Object Storage region it passes to every <code>linode_object_storage_object</code> resource by trimming <code>https://</code> and <code>.linodeobjects.com</code> off this exact value. A bucket-prefixed endpoint leaves the bucket name stuck to the region (e.g. <code>&lt;bucket&gt;.in-maa-1</code> instead of <code>in-maa-1</code>), which isn't a real Linode region slug — every one of those resources then fails at <code>terraform apply</code> with a confusing <code>404 "specified region was not found or does not support Object Storage"</code>. A <code>terraform plan</code>/<code>apply</code>-time check catches this by name if you get it wrong. If you only have the bucket-specific hostname handy (from Cloud Manager, or <code>linode-cli object-storage buckets list</code>), take just the middle <code>&lt;region&gt;</code> segment out of it.</p>
+
+        <h3>Optional: the runtime secrets bundle (Layer 2)</h3>
+        <p>See Part VIII, 8.3 for the full mechanism and reasoning; 9.3 Step 1 below has the exact commands to set it up.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Variable</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>secrets_bundle_url</code></td><td>string</td><td><code>""</code></td><td>Public-read Object Storage URL for the SOPS+age-encrypted runtime secrets bundle. Not sensitive itself (it points at ciphertext) — the matching age <strong>private</strong> key comes from <code>secrets.enc.json</code>'s own <code>secrets_bundle_age_private_key</code> field instead, a separate keypair from your operator SOPS key. <code>""</code> (default) leaves the whole mechanism off — natctl falls back to <code>/etc/natctl/env</code> entirely, unchanged from every existing deployment's behavior.</td></tr>
+          </tbody>
+        </table></div>
 
         <h3>Pools — the fleet itself (required)</h3>
         <p><code>pools</code> is a map: each key is a pool name you choose (the example ships <code>common</code> and <code>acme</code>, one shared and one dedicated-tenant pool), and each value is an object with the fields below. Add a third pool by adding another entry — nothing else in this environment's Terraform needs touching for that. Two things are checked at <code>terraform plan</code> time, not left to chance: any two pools sharing a <code>vlan_label</code> must have non-overlapping <code>vlan_cidr_reserved</code> sub-blocks, and every pool's <code>private_ip_offset</code> range must not overlap any other pool's, since all pools share one <code>public_subnet_id</code>.</p>
@@ -1716,7 +1763,7 @@ flowchart LR
           <thead><tr><th>Variable</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
           <tbody>
             <tr><td><code>ip_failover_enabled</code></td><td>bool</td><td><code>true</code></td><td>BGP-based IP failover between buddy pairs (Part IV, 4.4; Part 0, 0.2 (g)) — without it, a dead node's public IP simply goes dark rather than failing over. Requires <code>linode_bgp_dcid</code> below, enforced by a plan/apply-time check that fails loudly, by name, if it's missing. Set <code>false</code> if BGP IP Sharing isn't available in your region.</td></tr>
-            <tr><td><code>linode_bgp_dcid</code></td><td>number</td><td><em>(unset)</em></td><td>Linode's BGP data-center ID for your region's route-reflector neighbors — look this up from Linode's current failover documentation, since it's a Linode-side mapping that can change independently of this project. Required once <code>ip_failover_enabled</code> is true.</td></tr>
+            <tr><td><code>linode_bgp_dcid</code></td><td>number</td><td><em>(unset)</em></td><td>Linode's BGP data-center ID for your region's route-reflector neighbors — look this up from <a href="https://techdocs.akamai.com/cloud-computing/docs/configure-failover-on-a-compute-instance" target="_blank" rel="noopener">Linode's current failover documentation</a> (region-to-ID table), since it's a Linode-side mapping that can change independently of this project. Required once <code>ip_failover_enabled</code> is true.</td></tr>
             <tr><td><code>conntrack_buddy_sync_enabled</code></td><td>bool</td><td><code>true</code></td><td>Whether Terraform-managed floor nodes run buddy-sync at all (Part IV, 4.3). Applies uniformly to every pool — keep it matched with each pool's own natctl-side setting (10.5's per-pool HA table), or floor nodes keep syncing after you've turned it off for elastic nodes.</td></tr>
             <tr><td><code>reserved_ip_enabled</code></td><td>bool</td><td><code>false</code></td><td>Every node's primary public IP becomes a Linode Reserved IP that survives instance replacement (Part IV, 4.6) — for downstream IP-whitelisting. Account-gated on Linode's side; confirm it's enabled for your account before turning this on.</td></tr>
             <tr><td><code>placement_group_enabled</code></td><td>bool</td><td><code>false</code></td><td>Spreads every pool's floor nodes across Linode Placement Groups (Part IV, 4.5), closing the correlated-physical-host-failure gap buddy sync and BGP failover alone don't cover. Floor nodes only.</td></tr>
@@ -1742,20 +1789,150 @@ flowchart LR
 
       <section class="chapter" id="c9-3">
         <h2><span class="chno">9.3</span> Deployment Sequence</h2>
+        <p class="lede">The exact commands, start to finish — secrets, Terraform config, apply, verify. Every command below is real and complete, not a paraphrase.</p>
+
+        <h3>Step 1 — Secrets setup (SOPS + age)</h3>
+        <p>Do this before touching <code>terraform.tfvars</code> — the secrets file is encrypted at rest and only ever decrypted transiently by Terraform/SOPS.</p>
         <ol>
-          <li>Set up <code>secrets.enc.json</code> (Part VIII, 8.3's setup steps) and fill in <code>terraform.tfvars</code> per 9.2 — both are required before the first <code>terraform apply</code> can succeed.</li>
-          <li>Provision the fleet: the floor nodes for each pool, the control-plane host (or, if the every-node placement is chosen, nothing dedicated at all), and the two firewalls covering the node and control-plane traffic.</li>
-          <li>Confirm the fleet is healthy: every floor node passes its own health check and appears in the roster with a healthy status.</li>
-          <li>Install the routing agent on every private-subnet instance that needs egress, pointed at the pool's roster URL.</li>
-          <li>Open the monitoring dashboard and confirm every node is reporting metrics and showing healthy.</li>
+          <li>Generate your age keypair:
+            <pre class="code">mkdir -p ~/.config/sops/age
+age-keygen -o ~/.config/sops/age/keys.txt
+chmod 600 ~/.config/sops/age/keys.txt</pre>
+          </li>
+          <li>Copy the SOPS config and swap in your new public key (printed by <code>age-keygen</code>, also saved inside <code>keys.txt</code>):
+            <pre class="code">cp .sops.yaml.example .sops.yaml
+<span class="m"># edit .sops.yaml: replace the placeholder age public key with yours</span></pre>
+          </li>
+          <li>Copy the secrets template and fill in real values (Linode token, any bootstrap credentials the pools need):
+            <pre class="code">cd terraform/environments/example
+cp secrets.enc.json.example secrets.enc.json
+<span class="m"># edit secrets.enc.json with real values (still plaintext at this point)</span></pre>
+          </li>
+          <li>Encrypt it in place:
+            <pre class="code">sops --encrypt --in-place secrets.enc.json</pre>
+          </li>
         </ol>
+        <p>From here on, <code>secrets.enc.json</code> is safe to commit — it's ciphertext. Never commit <code>~/.config/sops/age/keys.txt</code> or a plaintext <code>terraform.tfvars</code>; both are gitignored already.</p>
+
+        <h4>Optional: the runtime secrets bundle (Layer 2)</h4>
+        <p>Separate, opt-in mechanism (9.2's <code>secrets_bundle_url</code>; full reasoning in Part VIII, 8.3) — skip this on a first deployment and come back to it later if you want it. It closes a different gap: without it, natctl writes your real credentials to <code>/etc/natctl/env</code> in plaintext on every node at boot. With it, only a small, single-purpose decryption key sits on the node — the real credentials stay encrypted until natctl decrypts them in memory at its own startup.</p>
+        <ol>
+          <li>Generate a <strong>new, separate</strong> keypair — not your operator SOPS key, not reused anywhere else:
+            <pre class="code">age-keygen -o /tmp/bundle-key.txt   <span class="m"># prints "Public key: age1..."</span></pre>
+          </li>
+          <li><strong>Don't hand-paste the key into a text editor.</strong> A literal paste inserts real line breaks, and a JSON string can't contain a literal, unescaped newline — this breaks the file silently: it still looks fine in an editor, but fails to parse. Use <code>jq</code> to inject the file's contents as a correctly-escaped string instead:
+            <pre class="code">jq --rawfile key /tmp/bundle-key.txt \
+  '.secrets_bundle_age_private_key = $key' \
+  secrets.enc.json &gt; /tmp/secrets.enc.json.new
+mv /tmp/secrets.enc.json.new secrets.enc.json</pre>
+            Confirm it's still valid JSON before encrypting (no output = valid):
+            <pre class="code">python3 -m json.tool secrets.enc.json &gt; /dev/null</pre>
+            Only once that check passes, run <code>sops --encrypt --in-place secrets.enc.json</code>.
+          </li>
+          <li>In <code>terraform.tfvars</code>, set <code>secrets_bundle_url</code> to wherever you'll publish the bundle (your Object Storage bucket, public-read — the published file is ciphertext, so public-read is fine):
+            <pre class="code">secrets_bundle_url = "https://&lt;region&gt;.linodeobjects.com/&lt;bucket&gt;/natctl/secrets-bundle.json.age"</pre>
+            Use the same cluster-generic <code>&lt;region&gt;</code> value as <code>natctl_object_storage_endpoint</code> above — see 9.2's warning about the bucket-specific-vs-cluster-generic endpoint form before proceeding.
+          </li>
+          <li>Build and publish the actual bundle, encrypted to the <strong>same public key</strong> <code>age-keygen</code> printed back in step 1 — <strong>not a newly generated one</strong>. Get it back with:
+            <pre class="code">grep "^# public key:" /tmp/bundle-key.txt</pre>
+            Use that exact value as the recipient argument:
+            <pre class="code">./scripts/build-secrets-bundle.sh age1&lt;bundle-public-key&gt; /tmp/secrets-bundle.json.age</pre>
+            Then upload it to your Object Storage bucket, at the exact path <code>secrets_bundle_url</code> points to. <strong>Pick one</strong> of the two commands below, whichever tool you already have configured — running both just uploads the same file twice, harmless but pointless:
+            <p><strong>Option A — AWS CLI</strong> (needs <code>aws configure</code> set up against your Object Storage keys; Linode's Object Storage is S3-compatible, so it needs an explicit <code>--endpoint-url</code>, or it defaults to real AWS S3):</p>
+            <pre class="code">aws s3 cp /tmp/secrets-bundle.json.age \
+  s3://&lt;bucket&gt;/natctl/secrets-bundle.json.age --acl public-read \
+  --endpoint-url https://&lt;your-object-storage-endpoint&gt;</pre>
+            <p><strong>Option B — linode-cli</strong> (needs <code>linode-cli obj configure</code> run once, using your <code>natctl_object_storage_access_key</code>/<code>secret_key</code>):</p>
+            <pre class="code">linode-cli obj --cluster &lt;region&gt; put --acl-public \
+  /tmp/secrets-bundle.json.age &lt;bucket&gt;/natctl</pre>
+            <code>linode-cli obj put</code> appends the file's own name to the bucket/prefix you give it, so this lands at <code>&lt;bucket&gt;/natctl/secrets-bundle.json.age</code> — matching the AWS CLI command above. <code>--cluster &lt;region&gt;</code> is <strong>required</strong> unless you've already set a default cluster — without it, the command hangs waiting for an interactive prompt instead of running.
+          </li>
+          <li>Verify the upload actually landed at the exact URL <code>secrets_bundle_url</code> points to, before deleting your local copies:
+            <pre class="code"><span class="m"># AWS CLI:</span>
+aws s3 ls s3://&lt;bucket&gt;/natctl/ --endpoint-url https://&lt;your-object-storage-endpoint&gt;
+
+<span class="m"># linode-cli:</span>
+linode-cli obj --cluster &lt;region&gt; ls &lt;bucket&gt;/natctl/
+
+<span class="m"># tool-agnostic, since the object is public-read:</span>
+curl -I https://&lt;bucket&gt;.&lt;region&gt;.linodeobjects.com/natctl/secrets-bundle.json.age</pre>
+            A <code>200 OK</code> (or a listed object with non-zero size) confirms the URL is reachable and matches what <code>secrets_bundle_url</code> points to. Clean up afterward:
+            <pre class="code">rm /tmp/secrets-bundle.json.age /tmp/bundle-key.txt</pre>
+          </li>
+        </ol>
+        <p>Rotating a value later means rebuilding and re-uploading the bundle, then restarting natctl fleet-wide (<code>rolling-restart</code>, Part X 10.2) — an already-running node keeps whatever it read at its own last startup.</p>
+
+        <h3>Step 2 — Terraform configuration</h3>
+        <pre class="code">cd terraform/environments/example
+cp terraform.tfvars.example terraform.tfvars</pre>
+        <p>Fill in <code>terraform.tfvars</code> per the complete field reference in 9.2 above. Validate before applying:</p>
+        <pre class="code">terraform fmt -check -recursive ../../
+terraform init -backend=false -input=false &amp;&amp; terraform validate</pre>
+
+        <h3>Step 3 — Deploying the fleet</h3>
+        <pre class="code">terraform init
+terraform plan</pre>
+        <p>Read the plan output before applying — confirm the resource count and, specifically, that no <code>admin_cidrs</code> rule reads <code>0.0.0.0/0</code>.</p>
+        <pre class="code">terraform apply</pre>
+        <p>This provisions, per pool: floor NAT nodes (three interfaces each — public, VPC, VLAN), the two Cloud Firewalls (NAT-node, control-plane), and — if <code>natctl_on_node_enabled = true</code> (the default) — natctl runs on the nodes themselves rather than a separate host. Apply typically takes several minutes; instance boot plus cloud-init (package install, FRR, natctl bootstrap) is most of that time.</p>
+        <p>If you set up a remote backend (<code>cp backend.tf.example backend.tf</code> before <code>terraform init</code>), do that first — recommended for anything beyond a solo/throwaway run, since there's no state locking by default (Part X, 10.8 covers state/locking day-2 concerns).</p>
+        <p><strong>If <code>terraform apply</code> fails partway through</strong> — most commonly a real IP address already in use in your VPC subnet (a leftover deployment you forgot to tear down, or two environments sharing overlapping <code>private_ip_offset</code> values), or the Object Storage endpoint mistake described in 9.2. Both are Linode/network-state problems, not bugs in a partial apply: re-running <code>terraform apply</code> after fixing the root cause picks up exactly where it left off, reusing whatever already succeeded.</p>
+
+        <h3>Step 4 — Verifying the deployment</h3>
+        <p>Check fleet status via natctl's own CLI (works against any node running natctl, or the dedicated observability host):</p>
+        <pre class="code">python -m natctl.natctl_cli --config natctl.yaml status
+python -m natctl.natctl_cli --config natctl.yaml nodes --pool &lt;pool-name&gt;</pre>
+        <p>Confirm:</p>
+        <ul>
+          <li>Every expected node shows healthy.</li>
+          <li>The roster API responds: <code>GET /fleet/&lt;pool&gt;</code> on a node's address.</li>
+          <li>If <code>ip_failover_enabled</code>, buddy pairings are computed and BGP sessions are up (visible in <code>status</code>/dashboards, not just config).</li>
+          <li>Grafana dashboard loads (reachable only from an <code>admin_cidrs</code> IP) and shows live metrics — conntrack accounting, BGP session state, autoscale watermarks.</li>
+        </ul>
+        <p>Run the read-only acceptance-test checks for a more thorough pass:</p>
+        <pre class="code">cd acceptance-tests
+cp config.example.yaml config.yaml   <span class="m"># fill in real deployment endpoints/hosts</span>
+python run_acceptance_tests.py --only 01-roster-and-health --only 06-observability</pre>
+        <p>Checks 03–05 are disruptive/billable (node-failure drill, live BGP failover drill, autoscale drill) — run those only in a maintenance window, opt-in.</p>
       </section>
 
       <section class="chapter" id="c9-4">
         <h2><span class="chno">9.4</span> Onboarding a Client Instance</h2>
-        <p>Once a private instance exists, has its VLAN interface attached at the account level, and has a real static VLAN address applied by your own automation (this project provides no tooling for that step, see 3.4), a single configuration step against that instance finishes the job: it verifies the address is really there, installs and starts the routing agent only if the instance genuinely needs one, and points it at the correct pool's roster URL. The instance is now a fully participating client, spreading its egress traffic across every currently healthy node in that pool.</p>
-        <p>If the instance has no internet path of its own and you don't already have a copy of the configuration script on hand, fetch it directly from the control plane instead of copying it over separately — it's served the same way the compiled routing agent itself is, over the fleet's own private network: <code>curl -fsSL http://&lt;roster-host&gt;:8099/agents/install-nat-client.sh -o install-nat-client.sh</code>.</p>
-        <p>This project also creates a purpose-built, SSH-only firewall specifically for client instances — attach it to whatever your own automation creates, via the <code>client_firewall_id</code> Terraform output (<code>terraform output client_firewall_id</code>).</p>
+        <p>This project never creates client instances or assigns their VLAN addresses — that's your own automation's job (Part III, 3.4), using an address inside the pool's <code>vlan_cidr</code> but <strong>outside</strong> its <code>vlan_cidr_reserved</code> sub-block (that sub-block is reserved for the NAT fleet's own nodes).</p>
+        <ol>
+          <li>Create the client instance with your own tooling; attach it to the pool's VLAN (<code>vlan_label</code>) with a static address you've assigned.</li>
+          <li>Fetch the onboarding script over the fleet's own network (works even before the client has internet egress, since it's served from a NAT node):
+            <pre class="code">curl -fsSL http://&lt;roster-host&gt;:8099/agents/install-nat-client.sh -o install-nat-client.sh
+chmod +x install-nat-client.sh</pre>
+          </li>
+          <li>Run it against the instance, pointing at its real interfaces:
+            <pre class="code">./install-nat-client.sh --vlan-iface &lt;vlan-iface&gt; --vpc-iface &lt;vpc-iface&gt; \
+  --roster-url http://&lt;roster-host&gt;:8099/fleet/&lt;pool-name&gt;</pre>
+            It verifies the VLAN interface actually has a real address (fails fast if not), then sets up ECMP routing across every healthy NAT node and self-heals VPC sibling-subnet routes on every roster poll (Part I, 1.2).
+          </li>
+          <li>Attach the pool's <code>client_firewall_id</code> Terraform output to the client instance so its own Cloud Firewall rules apply:
+            <pre class="code">terraform output client_firewall_id</pre>
+          </li>
+        </ol>
+        <p>Verify egress from the client: it should route out through the NAT pool's public IPs, spread across healthy nodes via ECMP — not through any single node.</p>
+      </section>
+
+      <section class="chapter" id="c9-5">
+        <h2><span class="chno">9.5</span> Troubleshooting a First Deployment</h2>
+        <p class="lede">The specific problems most likely to come up during the sequence above. Part X, 10.4 is the broader, alert-by-alert playbook for an already-running fleet — this table is scoped to first-deployment friction only.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Symptom</th><th>Check</th></tr></thead>
+          <tbody>
+            <tr><td><code>terraform apply</code> fails with <code>404 "specified region was not found"</code> on Object Storage objects</td><td><code>natctl_object_storage_endpoint</code> has a bucket name baked into the hostname — see 9.2's Object Storage section. Fix the value and re-apply; nothing needs tearing down.</td></tr>
+            <tr><td><code>terraform apply</code> fails with <code>[400] The provided IP is already in use in the subnet</code></td><td>Another deployment (or a leftover from an earlier test) already occupies that VPC address — check <code>linode-cli vpcs ips-list &lt;vpc_id&gt;</code> against your pools' <code>private_ip_offset</code>/<code>observability_private_ip_offset</code> values. Either change the offset or remove the conflicting deployment — never assume it's safe to delete without confirming what it actually is first.</td></tr>
+            <tr><td>A node shows unhealthy in <code>status</code></td><td>SSH in (from an <code>admin_cidrs</code> IP), check natctl's service logs and cloud-init logs (<code>/var/log/cloud-init-output.log</code>) — a common cause is a package-install step that silently no-op'd on a slow-network boot.</td></tr>
+            <tr><td>Client can't reach the internet</td><td>Confirm <code>install-nat-client.sh</code> actually replaced the default route on the client, and that the pool's NAT-node firewall allows the client's VLAN traffic.</td></tr>
+            <tr><td>Client can reach the internet but not a VPC sibling subnet</td><td>Check the roster is publishing <code>vpc_sibling_subnet_cidrs</code> and the client-agent's reconcile pass has run since the subnet was added (Part I, 1.2).</td></tr>
+            <tr><td>BGP failover not establishing</td><td>Confirm <code>ip_failover_auto_configure</code> is enabled (default true) and the activation delay (default 60s) has elapsed since the pairing formed (Part IV, 4.4).</td></tr>
+            <tr><td><code>terraform apply</code> fails on a firewall rule</td><td>Check <code>admin_cidrs</code> — the control-plane firewall refuses to widen to <code>0.0.0.0/0</code>.</td></tr>
+          </tbody>
+        </table></div>
+        <p>Full day-2 procedures (drain, resize, rotate credentials, rolling-restart) are in Part X below.</p>
       </section>
 
       <!-- ============ PART X ============ -->
@@ -2148,7 +2325,7 @@ natctl-cli --config /etc/natctl/config.yaml set-ipsec-routes --pool shared --cle
             <tr><td><code>conntrack_buddy_sync_enabled</code></td><td>bool</td><td><code>true</code></td><td>Whether this pool's nodes run conntrackd buddy-pair sync (Part IV, 4.3). Only takes effect if <code>natctl_roster_base_url</code> below is also set.</td></tr>
             <tr><td><code>natctl_roster_base_url</code></td><td>string</td><td><code>""</code></td><td>This pool's own roster API base URL (e.g. <code>http://10.0.0.5:8099</code>) — must match the <code>natctl_roster_url</code> Terraform variable given to this pool's <code>nat-fleet</code> module, so floor and elastic nodes sync against one consistent roster view.</td></tr>
             <tr><td><code>ip_failover_enabled</code></td><td>bool</td><td><code>true</code></td><td>Whether nodes run FRR (BGP-based IP Sharing, Part IV, 4.4) so a buddy can take over a dead node's public IP. Requires <code>conntrack_buddy_sync_enabled</code>, <code>natctl_roster_base_url</code>, and <code>linode_bgp_dcid</code> below — set <code>linode_bgp_dcid</code> for your region, or set this <code>false</code> if BGP IP Sharing isn't available there.</td></tr>
-            <tr><td><code>linode_bgp_dcid</code></td><td>int or omit</td><td><em>(unset)</em></td><td>The BGP data-center ID for this pool's region — look it up from Linode's current failover docs before enabling <code>ip_failover_enabled</code>.</td></tr>
+            <tr><td><code>linode_bgp_dcid</code></td><td>int or omit</td><td><em>(unset)</em></td><td>The BGP data-center ID for this pool's region — look it up from <a href="https://techdocs.akamai.com/cloud-computing/docs/configure-failover-on-a-compute-instance" target="_blank" rel="noopener">Linode's current failover docs</a> (region-to-ID table) before enabling <code>ip_failover_enabled</code>.</td></tr>
             <tr><td><code>ip_failover_auto_configure</code></td><td>bool</td><td><code>true</code></td><td>Whether natctl calls Linode's IP-sharing API itself as buddy pairings form. <strong>Leave this <code>true</code>.</strong> Akamai's route reflectors reject a BGP session's OPEN message outright until a matching IP share has actually been registered via the API — setting this <code>false</code> without ever running that registration by hand leaves BGP stuck silently in <code>Active</code> state forever, with no error surfaced anywhere short of a manual <code>vtysh</code> check. Set <code>false</code> only if you specifically want to run the first pairing by hand (10.3, "Enable BGP IP failover for a pool").</td></tr>
           </tbody>
         </table></div>
@@ -2604,7 +2781,8 @@ systemctl restart natctl</pre></li>
     ]},
     {label:"Part IX", title:"Deployment", chapters:[
       ["c9-1","9.1 Prerequisites"],["c9-2","9.2 Terraform Configuration Reference"],
-      ["c9-3","9.3 Deployment Sequence"],["c9-4","9.4 Onboarding a Client"]
+      ["c9-3","9.3 Deployment Sequence"],["c9-4","9.4 Onboarding a Client"],
+      ["c9-5","9.5 Troubleshooting a First Deployment"]
     ]},
     {label:"Part X", title:"Day-2 Operations", chapters:[
       ["c10-1","10.1 Pre-Production Checklist"],["c10-2","10.2 The Operator CLI"],

@@ -102,6 +102,8 @@ See docs/OPERATIONS.md for the full day-2 reference: how autoscaling works and h
 
 **Want the whole system in one document?** [`docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html`](docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html) is a single, self-contained reference covering architecture, the control plane and roster URL, every HA mechanism (including exactly how buddy pairing and the odd-node triangle work), autoscaling, Object Storage usage, observability, and day-2 operations — open it directly in a browser.
 
+**Just here to deploy?** Skip straight to [Part IX, Deployment](docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html#part-9) — prerequisites, every Terraform variable, the exact command sequence (secrets, apply, verify), connecting a client instance, and first-deployment troubleshooting, all in one self-contained section.
+
 ## Requirements
 
 - An Akamai Cloud (Linode) account with API access (Personal Access Token — see `docs/API-TOKEN-SETUP.md` for exactly which scopes to grant)

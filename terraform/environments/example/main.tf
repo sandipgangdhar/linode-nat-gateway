@@ -680,6 +680,22 @@ locals {
   natctl_object_storage_region = trimsuffix(trimprefix(var.natctl_object_storage_endpoint, "https://"), ".linodeobjects.com")
 }
 
+# A bucket-specific endpoint (e.g. "https://<bucket>.in-maa-1.linodeobjects.com")
+# is an easy, non-obvious mistake here -- it looks like a perfectly valid
+# Object Storage URL, but the trimming above leaves the bucket name stuck
+# to the front of the region ("<bucket>.in-maa-1" instead of "in-maa-1"),
+# which is not a real Linode region slug. Every linode_object_storage_object
+# resource then fails at apply time with a 404 "specified region was not
+# found" -- confusing, since the error names "region", not "endpoint". A
+# real Linode region slug never contains a "." -- catch this loudly, by
+# name, before it burns a partial apply.
+check "natctl_object_storage_endpoint_is_cluster_generic" {
+  assert {
+    condition     = !strcontains(local.natctl_object_storage_region, ".")
+    error_message = "natctl_object_storage_endpoint (\"${var.natctl_object_storage_endpoint}\") looks bucket-specific, not cluster-generic -- after stripping the scheme/suffix it's \"${local.natctl_object_storage_region}\", which still contains a \".\" and isn't a real Linode region slug (e.g. \"in-maa-1\"). Use the cluster-generic form with NO bucket name in the hostname (e.g. \"https://in-maa-1.linodeobjects.com\") -- the bucket itself is supplied separately via natctl_object_storage_bucket."
+  }
+}
+
 # Uploads the compiled agent binaries (natctl/nat-exporter/buddy-sync) to
 # Object Storage ONCE for the whole environment, so every pool's nodes
 # (floor and elastic alike) and the observability instance can fetch them

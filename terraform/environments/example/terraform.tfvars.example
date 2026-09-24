@@ -236,11 +236,13 @@ pools = {
 #
 # linode_bgp_dcid is therefore REQUIRED for a working `terraform apply`
 # with the defaults -- look up your region's BGP data-center id from
-# Linode's current failover documentation (linked in variables.tf's own
-# description); it is deliberately not hardcoded here since it's a
-# Linode-side mapping that can change independently of this project. A
-# plan/apply-time check fails loudly, by name, if this is left unset
-# while ip_failover_enabled is true.
+# Linode's current failover documentation:
+#   https://techdocs.akamai.com/cloud-computing/docs/configure-failover-on-a-compute-instance
+# (the table there maps each region to its numeric ID -- use the ID
+# next to your own region). It is deliberately not hardcoded here since
+# it's a Linode-side mapping that can change independently of this
+# project. A plan/apply-time check fails loudly, by name, if this is
+# left unset while ip_failover_enabled is true.
 #
 # Set ip_failover_enabled = false below instead if BGP IP Sharing isn't
 # available in your region, or you deliberately want to run without
@@ -369,6 +371,21 @@ natctl_object_storage_bucket     = "lng-artifacts"
 # rolling-restart command) and a fully automatic, jittered live-reload.
 # Off by default; uncomment to opt in.
 # auto_update_enabled = true
+
+# Optional runtime secrets bundle (Layer 2 of this project's SOPS+age
+# secrets design -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part VIII
+# 8.3). Off by default ("" below): natctl falls back to /etc/natctl/env
+# entirely, unchanged. Turning it on means natctl fetches and decrypts
+# one whole-file age-encrypted blob at its own startup instead of
+# relying solely on that plaintext env file -- the matching age PRIVATE
+# key comes from secrets.enc.json's own secrets_bundle_age_private_key
+# field (a SEPARATE keypair from your operator SOPS key), not from here.
+# This value itself is not sensitive -- it points at ciphertext, safe to
+# commit -- but it only does anything once you've also generated the
+# bundle keypair, filled in secrets_bundle_age_private_key, and built
+# and published the bundle with scripts/build-secrets-bundle.sh.
+#
+# secrets_bundle_url = "https://<endpoint>/<bucket>/natctl/secrets-bundle.json.age"
 
 # Already have Prometheus/Grafana (or a remote-write-compatible
 # backend)? Set this to false to skip provisioning this project's own copy
