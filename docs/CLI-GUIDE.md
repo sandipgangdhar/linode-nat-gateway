@@ -142,6 +142,8 @@ here regardless.
 | [`rotate-linode-token`](#rotate-linode-token) | A running natctl's API | Yes — live fleet-wide credential |
 | [`rolling-restart`](#rolling-restart) | A running natctl's API | Yes — restarts nodes one at a time |
 | [`set-vpc-sibling-subnets`](#set-vpc-sibling-subnets) | A running natctl's API | Yes — live fleet-wide setting |
+| [`list-ipsec-routes`](#list--add--remove--set-ipsec-routes) | A running natctl's API | No |
+| [`add`/`remove`/`set-ipsec-routes`](#list--add--remove--set-ipsec-routes) | A running natctl's API | Yes — live per-pool setting |
 
 ### `status`
 
@@ -509,6 +511,55 @@ it deliberately — for example, you've already confirmed some other path
 intentionally decommissioning this environment's own control plane.
 `--force` skips both checks and is sent through to the server too, so
 the write always succeeds when you pass it.
+
+### `list` / `add` / `remove` / `set-ipsec-routes`
+
+Route a pool's clients to a customer-operated IPsec/VPN gateway.
+
+```bash
+natctl-cli --config /etc/natctl/config.yaml list-ipsec-routes --pool shared
+
+natctl-cli --config /etc/natctl/config.yaml add-ipsec-route --pool shared \
+  --cidr 10.50.0.0/16 --gateway 192.168.100.5
+
+natctl-cli --config /etc/natctl/config.yaml remove-ipsec-route --pool shared --cidr 10.50.0.0/16
+
+natctl-cli --config /etc/natctl/config.yaml set-ipsec-routes --pool shared \
+  --route 10.50.0.0/16:192.168.100.5 --route 10.60.0.0/16:192.168.100.5
+natctl-cli --config /etc/natctl/config.yaml set-ipsec-routes --pool shared --clear
+```
+
+**What this is for**: a customer's own IPsec/VPN gateway — an instance
+you operate yourself, on this pool's own VLAN — that some destinations
+should route through instead of straight out to the internet. This
+project never runs IPsec software itself and never terminates a tunnel
+on a NAT node; it only tells every client on the pool how to reach the
+gateway once it already exists. **Per pool**, unlike
+`set-vpc-sibling-subnets` above — a dedicated gateway for one tenant's
+own pool doesn't require touching any other pool's routes.
+
+`add-ipsec-route` reads the pool's current list, then writes the whole
+thing back with your entry included — running it again for a `--cidr`
+that's already routed replaces its `--gateway`, so it's also how you
+change one; no need to already know or repeat the rest of the list.
+`remove-ipsec-route` is the same read-modify-write in reverse, and
+errors instead of silently succeeding if the `--cidr` you named isn't
+actually there. `set-ipsec-routes` is the bulk equivalent — declare the
+whole list (or `--clear` it) in one call, the better fit for a scripted
+reset than a one-off edit. `list-ipsec-routes` is a pure read, needs no
+mutation token.
+
+Every controller managing this pool re-reads the change the next
+reconcile pass, and every connected client picks it up on its next
+roster poll after that — no restarts needed anywhere. **Refuses by
+default** (both in the CLI and, independently, server-side) if a
+`--gateway` isn't actually inside this pool's own VLAN CIDR —
+client-agent has no other interface to reach it on, so an out-of-range
+gateway is always a mistake. Pass `--force` to override it deliberately.
+
+Same last-write-wins relationship with Terraform as every `set-*`
+command below: add the route to this pool's own `ipsec_routes` field in
+your `terraform.tfvars` if you want it to survive the next `apply`.
 
 ## The pattern behind the three `set-*` commands
 

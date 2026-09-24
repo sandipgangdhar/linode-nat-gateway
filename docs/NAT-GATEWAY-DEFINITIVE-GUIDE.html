@@ -1824,14 +1824,10 @@ export SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt</pre>
 cp secrets.enc.json.example secrets.enc.json
 <span class="m"># edit secrets.enc.json with real values (still plaintext at this point)</span></pre>
           </li>
-          <li>Encrypt it in place:
-            <pre class="code">sops --encrypt --in-place secrets.enc.json</pre>
-          </li>
         </ol>
-        <p>From here on, <code>secrets.enc.json</code> is safe to commit — it's ciphertext. Never commit <code>~/.config/sops/age/keys.txt</code> or a plaintext <code>terraform.tfvars</code>; both are gitignored already.</p>
 
-        <h4>Optional: the runtime secrets bundle (Layer 2)</h4>
-        <p>Separate, opt-in mechanism (9.2's <code>secrets_bundle_url</code>; full reasoning in Part VIII, 8.3) — skip this on a first deployment and come back to it later if you want it. It closes a different gap: without it, natctl writes your real credentials to <code>/etc/natctl/env</code> in plaintext on every node at boot. With it, only a small, single-purpose decryption key sits on the node — the real credentials stay encrypted until natctl decrypts them in memory at its own startup.</p>
+        <h4>Optional (step 3.1): the runtime secrets bundle (Layer 2)</h4>
+        <p>Separate, opt-in mechanism (9.2's <code>secrets_bundle_url</code>; full reasoning in Part VIII, 8.3) — skip this on a first deployment and come back to it later if you want it. It closes a different gap: without it, natctl writes your real credentials to <code>/etc/natctl/env</code> in plaintext on every node at boot. With it, only a small, single-purpose decryption key sits on the node — the real credentials stay encrypted until natctl decrypts them in memory at its own startup. Do this now, before the encrypt step below — it's still the same one-time encryption pass either way, whether or not you set this up.</p>
         <ol>
           <li>Generate a <strong>new, separate</strong> keypair — not your operator SOPS key, not reused anywhere else:
             <pre class="code">age-keygen -o /tmp/bundle-key.txt   <span class="m"># prints "Public key: age1..."</span></pre>
@@ -1841,9 +1837,8 @@ cp secrets.enc.json.example secrets.enc.json
   '.secrets_bundle_age_private_key = $key' \
   secrets.enc.json &gt; /tmp/secrets.enc.json.new
 mv /tmp/secrets.enc.json.new secrets.enc.json</pre>
-            Confirm it's still valid JSON before encrypting (no output = valid):
+            Confirm it's still valid JSON (no output = valid) — leave it as plaintext for now, you'll encrypt the whole file, base secrets and this together, in one pass at the end of this step:
             <pre class="code">python3 -m json.tool secrets.enc.json &gt; /dev/null</pre>
-            Only once that check passes, run <code>sops --encrypt --in-place secrets.enc.json</code>.
           </li>
           <li>In <code>terraform.tfvars</code>, set <code>secrets_bundle_url</code> to wherever you'll publish the bundle (your Object Storage bucket, public-read — the published file is ciphertext, so public-read is fine). Two address forms both work, but <strong>never mix pieces of the two</strong> — the single most common mistake here, confirmed live: reusing the bucket-specific hostname (below) while also keeping <code>&lt;bucket&gt;/</code> in the path repeats the bucket name twice, and 403s at fetch time with no relation to any other setting.
             <p><strong>Form A — cluster-generic host + bucket in the path</strong> (recommended: reuses <code>natctl_object_storage_endpoint</code>'s own value exactly, no separate hostname to get right):</p>
@@ -1880,7 +1875,14 @@ curl -I "$secrets_bundle_url"</pre>
             <pre class="code">rm /tmp/secrets-bundle.json.age /tmp/bundle-key.txt</pre>
           </li>
         </ol>
-        <p>Rotating a value later means rebuilding and re-uploading the bundle, then restarting natctl fleet-wide (<code>rolling-restart</code>, Part X 10.2) — an already-running node keeps whatever it read at its own last startup.</p>
+
+        <ol start="4">
+          <li>Encrypt it in place — one pass covers everything currently in the file, whether or not you did the optional step 3.1 above:
+            <pre class="code">sops --encrypt --in-place secrets.enc.json</pre>
+          </li>
+        </ol>
+        <p>From here on, <code>secrets.enc.json</code> is safe to commit — it's ciphertext. Never commit <code>~/.config/sops/age/keys.txt</code> or a plaintext <code>terraform.tfvars</code>; both are gitignored already.</p>
+        <p>Rotating a Layer 2 value later means rebuilding and re-uploading the bundle, then restarting natctl fleet-wide (<code>rolling-restart</code>, Part X 10.2) — an already-running node keeps whatever it read at its own last startup.</p>
 
         <h3>Step 2 — Terraform configuration</h3>
         <pre class="code">cd terraform/environments/example

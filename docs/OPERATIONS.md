@@ -178,6 +178,12 @@ See "High availability" below for what each layer actually protects against.
 |---|---|---|---|
 | `client_fallback_probe_enabled` / `client_fallback_probe_interval` | bool or null / int or null | `null` / `null` | `null` means "no opinion, respect each client's own local `LNG_FALLBACK_PROBE_ENABLED`/`LNG_FALLBACK_PROBE_INTERVAL` env var." **Live-overridable — see `CLI-GUIDE.md`'s `set-client-config`** for a fleet-wide change with no client restart; set here only for this pool's static baseline. |
 
+### Per-pool: IPsec/VPN destination routes
+
+| Field | Type | Default | What it does |
+|---|---|---|---|
+| `ipsec_routes` | list of `{cidr, gateway_ip}` | `[]` | Static routes client-agent applies via its VLAN interface — e.g. a customer-operated IPsec/VPN gateway's own routes on this pool's VLAN. This project never runs IPsec/VPN software itself and never terminates a tunnel on a NAT node — the gateway is a separate instance you operate yourself, on this pool's own VLAN; this field only tells every client on the pool how to reach it. Each `gateway_ip` must be inside this pool's own `vlan_cidr` — checked at `terraform plan` time, not left to chance. **Live-overridable without a re-apply — see `CLI-GUIDE.md`'s `list`/`add`/`remove`/`set-ipsec-routes`.** |
+
 ### Per-pool: `autoscale:` block
 
 See "Autoscaling" below for the full semantics (when each trigger fires, the sustained-breach window, step caps). Field-by-field:
