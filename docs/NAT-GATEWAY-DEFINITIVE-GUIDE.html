@@ -1832,9 +1832,12 @@ mv /tmp/secrets.enc.json.new secrets.enc.json</pre>
             <pre class="code">python3 -m json.tool secrets.enc.json &gt; /dev/null</pre>
             Only once that check passes, run <code>sops --encrypt --in-place secrets.enc.json</code>.
           </li>
-          <li>In <code>terraform.tfvars</code>, set <code>secrets_bundle_url</code> to wherever you'll publish the bundle (your Object Storage bucket, public-read — the published file is ciphertext, so public-read is fine):
+          <li>In <code>terraform.tfvars</code>, set <code>secrets_bundle_url</code> to wherever you'll publish the bundle (your Object Storage bucket, public-read — the published file is ciphertext, so public-read is fine). Two address forms both work, but <strong>never mix pieces of the two</strong> — the single most common mistake here, confirmed live: reusing the bucket-specific hostname (below) while also keeping <code>&lt;bucket&gt;/</code> in the path repeats the bucket name twice, and 403s at fetch time with no relation to any other setting.
+            <p><strong>Form A — cluster-generic host + bucket in the path</strong> (recommended: reuses <code>natctl_object_storage_endpoint</code>'s own value exactly, no separate hostname to get right):</p>
             <pre class="code">secrets_bundle_url = "https://&lt;region&gt;.linodeobjects.com/&lt;bucket&gt;/natctl/secrets-bundle.json.age"</pre>
-            Use the same cluster-generic <code>&lt;region&gt;</code> value as <code>natctl_object_storage_endpoint</code> above — see 9.2's warning about the bucket-specific-vs-cluster-generic endpoint form before proceeding.
+            <p><strong>Form B — bucket-specific host, NO bucket in the path</strong> (what Cloud Manager's bucket listing shows you as the bucket's own hostname):</p>
+            <pre class="code">secrets_bundle_url = "https://&lt;bucket&gt;.&lt;region&gt;.linodeobjects.com/natctl/secrets-bundle.json.age"</pre>
+            Pick one form and use it consistently through every command below — the upload command, the verify command, and this value must all agree on the same exact URL.
           </li>
           <li>Build and publish the actual bundle, encrypted to the <strong>same public key</strong> <code>age-keygen</code> printed back in step 1 — <strong>not a newly generated one</strong>. Get it back with:
             <pre class="code">grep "^# public key:" /tmp/bundle-key.txt</pre>
@@ -1857,9 +1860,10 @@ aws s3 ls s3://&lt;bucket&gt;/natctl/ --endpoint-url https://&lt;your-object-sto
 <span class="m"># linode-cli:</span>
 linode-cli obj --cluster &lt;region&gt; ls &lt;bucket&gt;/natctl/
 
-<span class="m"># tool-agnostic, since the object is public-read:</span>
-curl -I https://&lt;bucket&gt;.&lt;region&gt;.linodeobjects.com/natctl/secrets-bundle.json.age</pre>
-            A <code>200 OK</code> (or a listed object with non-zero size) confirms the URL is reachable and matches what <code>secrets_bundle_url</code> points to. Clean up afterward:
+<span class="m"># tool-agnostic, since the object is public-read -- use the EXACT</span>
+<span class="m"># same URL you set as secrets_bundle_url, whichever form you picked:</span>
+curl -I "$secrets_bundle_url"</pre>
+            A <code>200 OK</code> (or a listed object with non-zero size) confirms the URL is reachable and matches what <code>secrets_bundle_url</code> points to — testing a different address form than the one actually configured proves nothing about whether natctl itself can fetch it. Clean up afterward:
             <pre class="code">rm /tmp/secrets-bundle.json.age /tmp/bundle-key.txt</pre>
           </li>
         </ol>
@@ -1933,6 +1937,8 @@ chmod +x install-nat-client.sh</pre>
             <tr><td>Client can reach the internet but not a VPC sibling subnet</td><td>Check the roster is publishing <code>vpc_sibling_subnet_cidrs</code> and the client-agent's reconcile pass has run since the subnet was added (Part I, 1.2).</td></tr>
             <tr><td>BGP failover not establishing</td><td>Confirm <code>ip_failover_auto_configure</code> is enabled (default true) and the activation delay (default 60s) has elapsed since the pairing formed (Part IV, 4.4).</td></tr>
             <tr><td><code>terraform apply</code> fails on a firewall rule</td><td>Check <code>admin_cidrs</code> — the control-plane firewall refuses to widen to <code>0.0.0.0/0</code>.</td></tr>
+            <tr><td>Runtime secrets bundle: natctl logs <code>failed to fetch secrets bundle ... 403 Client Error</code></td><td><code>secrets_bundle_url</code> mixes the two Object Storage address forms — a bucket-specific hostname (<code>&lt;bucket&gt;.&lt;region&gt;.linodeobjects.com</code>) with the bucket name ALSO repeated in the path. Pick one form (9.3, Step 1's Layer 2 walkthrough) and make sure the value in <code>terraform.tfvars</code>, the upload command, and the verify command all agree exactly.</td></tr>
+            <tr><td>Fixed <code>secrets_bundle_url</code> in <code>terraform.tfvars</code>, but a running node still uses the old value</td><td><code>metadata.user_data</code> is a <code>ForceNew</code> field on <code>linode_instance</code> — Terraform can only apply this kind of change by destroying and recreating the node, never in place. For an already-running node, either accept that recreation (a deliberate, scheduled step) or fix it directly: edit <code>secrets_bundle_url</code> in <code>/etc/natctl/config.yaml</code> on the node and <code>systemctl restart natctl</code>. A manual fix like this is overwritten the next time that specific node is replaced.</td></tr>
           </tbody>
         </table></div>
         <p>Full day-2 procedures (drain, resize, rotate credentials, rolling-restart) are in Part X below.</p>
