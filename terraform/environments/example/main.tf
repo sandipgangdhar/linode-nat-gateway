@@ -708,6 +708,9 @@ module "nat_fleet" {
   source   = "../../modules/nat-fleet"
   for_each = local.pools
 
+  # Nodes read the pools registry when natctl starts, so it must exist first.
+  depends_on = [linode_object_storage_object.pools_registry]
+
   fleet_label        = each.value.fleet_label
   pool_name          = each.key
   region             = var.region
@@ -1035,7 +1038,19 @@ locals {
       # copy of the script on hand.
       install_nat_client_script_url = local.install_nat_client_script_url
     }
-    pools = local.natctl_pools
+    # The pool list is NOT part of this document. It lives in the pools
+    # registry object below (linode_object_storage_object.pools_registry), which
+    # natctl reads at startup and re-reads while running. A node's boot data can
+    # only be changed by replacing the node, so keeping the pool list here would
+    # replace every pool's floor nodes whenever ANY pool was added or removed.
+    # root_pass moves up to the top level because the registry deliberately
+    # holds no secrets; a pool that carries no root_pass of its own takes it.
+    root_pass = local.root_pass
+    pools_registry = {
+      bucket    = var.natctl_object_storage_bucket
+      s3_region = local.natctl_object_storage_region
+      key       = local.pools_registry_key
+    }
     # Must NOT be hardcoded to "http://localhost:9090" -- that's only
     # correct in the original single-dedicated-host layout
     # (natctl_on_node_enabled=false, where natctl and Prometheus run on
@@ -1133,6 +1148,41 @@ locals {
   create_observability_instance = !var.natctl_on_node_enabled || var.run_monitoring_stack
 }
 
+# The pools registry: every pool's settings, as one private Object Storage
+# object that natctl reads at startup and re-reads while running (see
+# controller/natctl/pools_registry.py). Because it is a separate object rather
+# than part of any instance's boot data, adding or removing a pool is a plain
+# in-place update of this object -- it replaces no instance. It holds no
+# secrets (root_pass is left out and supplied through natctl.yaml's top-level
+# root_pass), and it is private, readable only with the Object Storage
+# credentials natctl already holds.
+locals {
+  pools_registry_key = "natctl/pools-registry.json"
+
+  natctl_pools_registry = {
+    for pool, settings in local.natctl_pools : pool => {
+      for field, value in settings : field => value if field != "root_pass"
+    }
+  }
+
+  # Rendered once, referenced by both content and etag below.
+  pools_registry_json = jsonencode({
+    version = 1
+    pools   = local.natctl_pools_registry
+  })
+}
+
+resource "linode_object_storage_object" "pools_registry" {
+  bucket     = var.natctl_object_storage_bucket
+  region     = local.natctl_object_storage_region
+  access_key = local.natctl_object_storage_access_key
+  secret_key = local.natctl_object_storage_secret_key
+
+  key     = local.pools_registry_key
+  content = local.pools_registry_json
+  etag    = md5(local.pools_registry_json)
+}
+
 # min_nodes/max_nodes live here instead of inside natctl_config_yaml -- a plain, separate
 # resource whose content changing is a harmless in-place Object Storage
 # PUT, with zero relationship to any linode_instance's own user_data.
@@ -1200,6 +1250,9 @@ resource "linode_object_storage_object" "vpc_sibling_subnets" {
 module "observability" {
   source = "../../modules/observability"
   count  = local.create_observability_instance ? 1 : 0
+
+  # natctl on this host reads the pools registry when it starts.
+  depends_on = [linode_object_storage_object.pools_registry]
 
   region          = var.region
   vpc_id          = module.vpc.vpc_id

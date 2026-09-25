@@ -141,6 +141,8 @@ ways.
 | `vlan_reserved_cidr` | string | This pool's own small, wholly-owned sub-block nested inside `vlan_cidr` — every floor/elastic/observability node's address is drawn from here, never from the wider VLAN a customer's own client fleet also lives on. |
 | `vlan_ip_offset` / `elastic_ip_offset_start` | int | Host offsets within `vlan_reserved_cidr` — the floor's addresses start at `vlan_ip_offset`, elastic nodes' at `elastic_ip_offset_start`. Compared directly against each other, never summed. |
 | `vpc_elastic_ip_offset_start` | int | Optional. First VPC host offset of the elastic nodes natctl adds, when it must differ from `elastic_ip_offset_start`. A node still takes its name and VLAN offset from `elastic_ip_offset_start`; only its VPC address is shifted. Unset, one number is used on both networks. Written by Terraform — leave it alone. |
+| `pools_registry` (top level) | mapping | Optional. Keeps the pool list out of `natctl.yaml`: `bucket`, `s3_region` and `key` name a private Object Storage object `{"version": 1, "pools": {...}}` that natctl reads at startup and re-reads while running, restarting itself (after a short random delay) when it changes. Written by Terraform, so adding or removing a pool replaces no node. A registry that is empty, malformed, invalid or for a different deployment is ignored, and natctl falls back to its last saved copy. |
+| `root_pass` (top level) | string | The root password for nodes natctl provisions, for any pool that carries none of its own (the registry holds no secrets). Written by Terraform. |
 | `image` | string | Base OS image for nodes natctl provisions (default `linode/ubuntu22.04`). |
 
 ### Per-pool: sizing
