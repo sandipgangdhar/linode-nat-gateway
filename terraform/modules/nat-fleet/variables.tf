@@ -85,7 +85,7 @@ variable "vlan_ip_offset" {
   type        = number
   default     = 20
 
-  # terraform/environments/example/main.tf's pool_vlan_ip_offset_is_positive
+  # terraform/environments/example/pool_addressing.tf's vlan_ip_offset precondition
   # check already rejects 0 and 1 (offset 0 is a negative cidrhost()
   # offset, which Terraform counts backward from the end of the range;
   # offset 1 lands on vlan_reserved_cidr's own unusable network
@@ -175,7 +175,7 @@ variable "witness_instance_type" {
 }
 
 variable "witness_private_ip_offset" {
-  description = "Host offset (within public_subnet's CIDR) for the witness's own VPC IP, if enabled -- same \"give it a non-overlapping offset\" contract as private_ip_offset above, just for one address instead of a range. No default: an operator must pick a value that doesn't collide with this or any other pool's private_ip_offset range in the same subnet, the same explicit-choice convention private_ip_offset itself already requires (see terraform/environments/example/main.tf's pool_vpc_offsets_no_overlap check for the cross-pool half of this -- extend it to cover this value too when wiring up a witness in that environment). Enforced via the witness_private_ip_offset_is_set_when_witness_enabled check below, not a variable validation block here -- Terraform restricts a variable's own validation condition to referencing only that same variable, never another one (var.witness_enabled here), a real constraint this repo's own local Terraform version didn't enforce but CI's did, caught live via the publish pipeline's own safety gate failing on the assembled customer-repo tree."
+  description = "Host offset (within public_subnet's CIDR) for the witness's own VPC IP, if enabled -- same \"give it a non-overlapping offset\" contract as private_ip_offset above, just for one address instead of a range. No default: an operator must pick a value that doesn't collide with this or any other pool's private_ip_offset range in the same subnet, the same explicit-choice convention private_ip_offset itself already requires (see terraform/environments/example/pool_addressing.tf's overlapping-floor-ranges precondition for the cross-pool half of this -- extend it to cover this value too when wiring up a witness in that environment). Enforced via the witness_private_ip_offset_is_set_when_witness_enabled check below, not a variable validation block here -- Terraform restricts a variable's own validation condition to referencing only that same variable, never another one (var.witness_enabled here), a real constraint this repo's own local Terraform version didn't enforce but CI's did, caught live via the publish pipeline's own safety gate failing on the assembled customer-repo tree."
   type        = number
   default     = null
 }

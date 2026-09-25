@@ -129,15 +129,66 @@ admin_cidrs = ["REPLACE_ME/32"] # e.g. ["203.0.113.4/32"]
 # main.tf never needs touching for that. Remove "acme" entirely if you
 # only need one pool.
 #
-# Whichever pools you define, two things are validated at `terraform
-# plan` time, not left to chance:
-#   - Any two pools sharing a vlan_label must have non-overlapping
-#     vlan_cidr_reserved sub-blocks (main.tf's
-#     pool_reserved_cidrs_no_overlap_same_vlan check).
-#   - Every pool's private_ip_offset range (VPC side) must not overlap
-#     any other pool's, regardless of VLAN (main.tf's
-#     pool_vpc_offsets_no_overlap check) -- all pools share this
-#     environment's one public_subnet_id.
+# YOU DO NOT CHOOSE ANY ADDRESSES. Each pool below states only what it is:
+# how many nodes (floor_nodes / max_nodes), which plan, and which VLAN.
+# Terraform works out every address from that -- the VPC address of each
+# floor, elastic and witness node, the block of the VLAN the pool owns, and
+# where inside it each kind of node goes -- packs the pools so they cannot
+# overlap, and prints the result as the `pool_address_plan` output on every
+# plan. Read that output, and hand each VLAN's client range to whoever numbers
+# your client instances: the gateway fleet uses the ranges listed as
+# reserved_for_the_gateway_fleet, and one more block -- as large as any fleet's
+# -- is kept free as reserved_for_future_fleets, so you can add a dedicated fleet
+# tomorrow without renumbering any client. Clients may use the VLAN from
+# client_addresses_start_at (configure them as configure_clients_with, that
+# address plus the VLAN's prefix length). Nothing is held back on the VPC side:
+# Linode offers no way to reserve VPC addresses.
+#
+# How the calculation places pools (details: docs/NAT-GATEWAY-DEFINITIVE-
+# GUIDE.html, Part IX, "Planning pool addresses"):
+#   - Pools take slots in the sorted order of their names -- in this
+#     example "acme" is slot 0 and "common" is slot 1. A pool's own node
+#     counts never move any other pool.
+#   - Every pool can grow to 32 floor nodes and 31 elastic nodes before it
+#     needs a bigger block (pool_vpc_block_size), and to 56 floor nodes and
+#     63 elastic nodes inside its VLAN block (pool_vlan_reserved_prefix).
+#   - When you ADD a pool whose name sorts before an existing one, pin it
+#     with `slot = <next unused number>` so the existing pools do not move;
+#     the plan shows any node replacement, so a mistake is visible.
+#
+# Every pool's addresses -- calculated or overridden -- are checked at
+# `terraform plan` time, and a problem STOPS the plan with a message naming
+# the pools involved: overlapping ranges on the shared VPC subnet or on a
+# shared VLAN, a pool that does not fit its block, a duplicate slot.
+#
+# OPTIONAL ADVANCED OVERRIDES -- leave all of these out unless a pool must
+# sit at specific addresses (for example to match addresses your firewall
+# or routing already refer to). Each one replaces only its own calculated
+# value; everything else stays calculated, and the result is checked exactly
+# like a calculated layout. They are shown, commented out, on the "acme"
+# pool below. What each one means:
+#   slot                        Which slot of the shared VPC subnet (and,
+#                               among pools on one VLAN, which reserved
+#                               block) the pool takes.
+#   vlan_cidr_reserved          The block of the VLAN, nested inside
+#                               vlan_cidr, that the pool's own nodes draw
+#                               their VLAN addresses from. Give nothing
+#                               else an address inside it.
+#   private_ip_offset           First VPC host offset of the pool's floor
+#                               nodes, counted from the start of
+#                               public_subnet_id's CIDR. Shared by every
+#                               pool, so it must be unique across pools.
+#   vlan_ip_offset              First VLAN host offset of the floor nodes,
+#                               counted from the start of vlan_cidr_reserved.
+#                               Must be at least 2.
+#   elastic_ip_offset_start     First host offset of the elastic nodes
+#                               natctl adds, counted from the start of
+#                               vlan_cidr_reserved. Setting only this one
+#                               also uses the same number as the VPC host
+#                               offset (the original behaviour).
+#   vpc_elastic_ip_offset_start First VPC host offset of the elastic nodes,
+#                               when it must differ from the one above.
+#   witness_private_ip_offset   VPC host offset of the pool's witness node.
 # --------------------------------------------------------------------------
 #
 # natctl_on_node_enabled defaults to true (running the control plane on
@@ -152,18 +203,13 @@ admin_cidrs = ["REPLACE_ME/32"] # e.g. ["203.0.113.4/32"]
 #     network partition between exactly two nodes is indistinguishable,
 #     from either side, from the other one actually being dead, so the
 #     quorum-confirmation gate has no third node to ask. main.tf's
-#     pool_effective_witness_enabled local now closes this BY DEFAULT:
+#     pool_effective_witness_enabled local closes this BY DEFAULT:
 #     leaving witness_enabled unset on a 2-node pool auto-provisions a
 #     real, cheap (g6-nanode-1) third voter that never forwards traffic,
 #     only votes (see the common example below for the opt-OUT case,
-#     and acme for an explicit opt-IN -- both now produce the same
-#     result on a 2-node pool; acme's is just no longer required).
-#     witness_private_ip_offset still has no auto-computed default even
-#     when witness_enabled is left unset -- it's genuinely pool-specific
-#     (must not collide with anything), so you still set it explicitly
-#     whenever the EFFECTIVE witness ends up enabled; Terraform's own
-#     witness_private_ip_offset_is_set_when_witness_enabled check fails
-#     loudly at plan time if you forget.
+#     and acme for an explicit opt-IN -- both produce the same result on
+#     a 2-node pool). The witness's VPC address is calculated like every
+#     other address, so nothing more is needed to enable one.
 #   - 3+ nodes: the configuration this mode is actually designed for --
 #     see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II, 2.3/2.4 for the
 #     full detail. Already has a real 3rd (or more) voter --
@@ -173,25 +219,21 @@ admin_cidrs = ["REPLACE_ME/32"] # e.g. ["203.0.113.4/32"]
 # natctl_on_node_enabled = false -- that mode has no leader election at all.
 pools = {
   common = {
-    fleet_label             = "lng-common"
-    floor_nodes             = 1 # start minimal, raise once real load justifies it -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.1
-    max_nodes               = 12
-    instance_type           = "g6-dedicated-4"
-    vlan_label              = "lng-vlan-shared"
-    vlan_cidr               = "192.168.100.0/22" # the FULL, real VLAN -- every node's interface uses THIS prefix length
-    vlan_cidr_reserved      = "192.168.100.0/24" # nested inside vlan_cidr above -- this pool's own small, wholly-owned sub-block
-    private_ip_offset       = 20 # VPC side -- must be globally unique across all pools (they share one public_subnet_id)
-    vlan_ip_offset          = 20 # VLAN side -- POOL-LOCAL to vlan_cidr_reserved above, safe to reuse 20 in every pool
-    elastic_ip_offset_start = 100 # also POOL-LOCAL to vlan_cidr_reserved -- plenty of room in a /24 (256 addresses)
+    fleet_label   = "lng-common"
+    floor_nodes   = 1 # start minimal, raise once real load justifies it -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §5.1
+    max_nodes     = 12
+    instance_type = "g6-dedicated-4"
+    vlan_label    = "lng-vlan-shared"
+    vlan_cidr     = "192.168.100.0/22" # the FULL, real VLAN -- every node's interface uses THIS prefix length
     # reserved_ip_pool      = ["203.0.113.10", "203.0.113.11"] # optional -- addresses you ALREADY OWN, see variables.tf
     # --------------------------------------------------------------------
     # 2-node quorum-witness role -- only meaningful once natctl_on_node_enabled
     # = true below, and only relevant once THIS pool's own floor_nodes is
     # exactly 2 (not the current 1 above). If you raise floor_nodes to 2
     # and turn on natctl_on_node_enabled, you get a witness automatically
-    # -- witness_enabled's default is now smart (see main.tf's
-    # pool_effective_witness_enabled), not a hardcoded false, so you no
-    # longer need to uncomment anything to get one. Uncomment ONLY the
+    # -- witness_enabled's default is smart (see main.tf's
+    # pool_effective_witness_enabled), not a hardcoded false, so you do
+    # not need to uncomment anything to get one. Uncomment ONLY the
     # opt-OUT line below if you've deliberately decided you don't want a
     # witness for this pool despite it being 2-node -- see
     # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II, 2.3 for what a
@@ -200,27 +242,32 @@ pools = {
     # --------------------------------------------------------------------
   }
   acme = {
-    fleet_label             = "lng-acme"
-    floor_nodes             = 2
-    max_nodes               = 6
-    instance_type           = "g6-dedicated-8"
-    vlan_label              = "lng-vlan-shared" # SAME as common's -- same-VLAN mode. Use a different label for a genuinely separate VLAN instead.
-    vlan_cidr               = "192.168.100.0/22" # SAME wide VLAN as common -- only the reserved sub-block below needs to differ
-    vlan_cidr_reserved      = "192.168.101.0/27" # nested inside vlan_cidr's /22 (100-103) above, and must not overlap common's 192.168.100.0/24 -- only 32 addresses, so the two offsets below must stay small
-    private_ip_offset       = 50 # VPC side -- must not overlap common's 20 (floor_nodes=1) above
-    vlan_ip_offset          = 20 # VLAN side -- POOL-LOCAL to vlan_cidr_reserved above (a /27), same small number as common's, safe since it's a separate address space
-    elastic_ip_offset_start = 25 # must fit within this pool's own /27 alongside vlan_ip_offset+floor_nodes (20-21) and up to max_nodes-floor_nodes=4 elastic slots (25-28) -- a /27 only has 32 addresses total
+    fleet_label   = "lng-acme"
+    floor_nodes   = 2
+    max_nodes     = 6
+    instance_type = "g6-dedicated-8"
+    vlan_label    = "lng-vlan-shared"  # SAME as common's -- same-VLAN mode. Use a different label for a genuinely separate VLAN instead.
+    vlan_cidr     = "192.168.100.0/22" # SAME wide VLAN as common -- the calculation gives each pool its own block inside it
     # 2-node quorum-witness role (only meaningful once natctl_on_node_enabled
     # = true below -- see this file's own comment on floor_nodes above).
-    # witness_enabled is now redundant here (acme's floor_nodes == 2 means
-    # it defaults to true on its own) -- left explicit anyway as a worked
-    # example of the opt-IN spelling, since witness_private_ip_offset
-    # below still has no auto-computed default and must always be set by
-    # hand whenever the effective witness ends up enabled, smart-defaulted
-    # or not.
-    witness_enabled           = true
-    witness_instance_type     = "g6-nanode-1" # never forwards traffic -- the cheapest generally-available type is enough
-    witness_private_ip_offset = 52            # VPC side -- must not collide with THIS pool's own private_ip_offset range (50-51, floor_nodes=2) or any other pool's
+    # witness_enabled is redundant here (acme's floor_nodes == 2 means it
+    # defaults to true on its own) -- left explicit anyway as a worked
+    # example of the opt-IN spelling.
+    witness_enabled       = true
+    witness_instance_type = "g6-nanode-1" # never forwards traffic -- the cheapest generally-available type is enough
+    # --------------------------------------------------------------------
+    # Optional advanced overrides -- see the explanation above `pools`.
+    # Uncomment only what you must place by hand; each line replaces just
+    # its own calculated value. The numbers below are examples, not
+    # recommendations.
+    # slot                        = 1
+    # vlan_cidr_reserved          = "192.168.101.0/27" # nested inside vlan_cidr, and must not overlap common's block
+    # private_ip_offset           = 50                 # VPC side -- must not overlap any other pool's floor range
+    # vlan_ip_offset              = 20                 # VLAN side -- counted from the start of vlan_cidr_reserved
+    # elastic_ip_offset_start     = 25                 # VLAN side (and VPC side too, unless the next line is set)
+    # vpc_elastic_ip_offset_start = 200                # VPC side only -- clear of every pool's floor and elastic ranges
+    # witness_private_ip_offset   = 52                 # VPC side -- clear of every pool's floor and elastic ranges
+    # --------------------------------------------------------------------
   }
 }
 
@@ -275,6 +322,12 @@ observability_vlan_pool = "common"
 # pools/resources within THIS terraform.tfvars, never a second
 # deployment's state. Pick a value clear of that other deployment's own
 # offsets if you're sharing a subnet this way.
+#
+# This address is also where every node's natctl looks for Prometheus
+# (http://<this address>:9090). It must be the real VPC address of the host
+# that runs Prometheus -- if you run Prometheus on a host this environment
+# does not create, set this to that host's actual address offset, or natctl
+# silently cannot read any autoscale metric.
 # observability_private_ip_offset = 5
 
 # TCP port natctl's roster API listens on -- see variables.tf's api_port

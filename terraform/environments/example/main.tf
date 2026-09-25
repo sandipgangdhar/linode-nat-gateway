@@ -22,7 +22,7 @@
 #    blocks below need, computed once so every module below can reference
 #    it without a cross-module dependency cycle.
 # 3) module.nat_fleet[each pool key] - One nat-fleet module instance per
-#    entry in var.pools -- see variables.tf's pools description for the
+#    entry in local.pools -- see variables.tf's pools description for the
 #    full per-pool field list. Add, rename, or remove a pool entirely by
 #    editing that one map; this file never needs touching for that.
 # 4) locals.natctl_pools / natctl_config_yaml - Composes the full
@@ -138,7 +138,7 @@ locals {
   # "The provided IP is already in use in the subnet" at apply time) if
   # that other deployment's own observability host used the same
   # hardcoded offset. See that variable's own description for the full
-  # story and observability_vpc_offset_no_overlap_pools below for what
+  # story and pool_addressing.tf's observability-offset precondition for what
   # IS checked (this deployment's own pools) vs. what can't be (a second
   # deployment's state, invisible to this one).
   natctl_private_ip = cidrhost(module.vpc.public_subnet_cidr, var.observability_private_ip_offset)
@@ -192,8 +192,8 @@ locals {
   # unordered pair per combination, and drops self-pairs entirely (a pool
   # never needs checking against itself).
   pool_pairs_same_vlan = [
-    for pair in setproduct(keys(var.pools), keys(var.pools)) : pair
-    if local.pool_rank[pair[0]] < local.pool_rank[pair[1]] && var.pools[pair[0]].vlan_label == var.pools[pair[1]].vlan_label
+    for pair in setproduct(keys(local.pools), keys(local.pools)) : pair
+    if local.pool_rank[pair[0]] < local.pool_rank[pair[1]] && local.pools[pair[0]].vlan_label == local.pools[pair[1]].vlan_label
   ]
 
   # Every pool with at least one ipsec_routes entry whose gateway_ip
@@ -206,13 +206,13 @@ locals {
   # compare the gateway address against the CIDR's network/broadcast
   # bounds.
   pool_vlan_cidr_int_bounds = {
-    for k, p in var.pools : k => [
+    for k, p in local.pools : k => [
       for h in [cidrhost(p.vlan_cidr, 0), cidrhost(p.vlan_cidr, -1)] :
       sum([for i, o in split(".", h) : tonumber(o) * pow(256, 3 - i)])
     ]
   }
   pools_with_ipsec_route_gateway_outside_vlan = [
-    for name, pool in var.pools : name
+    for name, pool in local.pools : name
     if length([
       for r in pool.ipsec_routes : r
       if(
@@ -230,7 +230,7 @@ locals {
   # terraform/modules/nat-fleet's own vlan_reserved_cidr_nested_in_vlan_cidr
   # check uses.
   pool_reserved_int = {
-    for k, p in var.pools : k => [
+    for k, p in local.pools : k => [
       for h in [cidrhost(p.vlan_cidr_reserved, 0), cidrhost(p.vlan_cidr_reserved, -1)] :
       sum([for i, o in split(".", h) : tonumber(o) * pow(256, 3 - i)])
     ]
@@ -256,14 +256,14 @@ locals {
   # -- the VPC subnet is shared no matter what each pool's own VLAN looks
   # like.
   all_pool_pairs = [
-    for pair in setproduct(keys(var.pools), keys(var.pools)) : pair
+    for pair in setproduct(keys(local.pools), keys(local.pools)) : pair
     if local.pool_rank[pair[0]] < local.pool_rank[pair[1]]
   ]
   overlapping_vpc_offset_pool_pairs = [
     for pair in local.all_pool_pairs : "${pair[0]} <-> ${pair[1]}"
     if !(
-      var.pools[pair[0]].private_ip_offset + var.pools[pair[0]].floor_nodes <= var.pools[pair[1]].private_ip_offset ||
-      var.pools[pair[1]].private_ip_offset + var.pools[pair[1]].floor_nodes <= var.pools[pair[0]].private_ip_offset
+      local.pools[pair[0]].private_ip_offset + local.pools[pair[0]].floor_nodes <= local.pools[pair[1]].private_ip_offset ||
+      local.pools[pair[1]].private_ip_offset + local.pools[pair[1]].floor_nodes <= local.pools[pair[0]].private_ip_offset
     )
   ]
 
@@ -287,14 +287,14 @@ locals {
   overlapping_elastic_vpc_pool_pairs = [
     for pair in local.all_pool_pairs : "${pair[0]} <-> ${pair[1]}"
     if !(
-      var.pools[pair[0]].elastic_ip_offset_start + (var.pools[pair[0]].max_nodes - var.pools[pair[0]].floor_nodes) <= var.pools[pair[1]].private_ip_offset ||
-      var.pools[pair[1]].private_ip_offset + var.pools[pair[1]].floor_nodes <= var.pools[pair[0]].elastic_ip_offset_start
+      local.pool_vpc_elastic_start[pair[0]] + (local.pools[pair[0]].max_nodes - local.pools[pair[0]].floor_nodes) <= local.pools[pair[1]].private_ip_offset ||
+      local.pools[pair[1]].private_ip_offset + local.pools[pair[1]].floor_nodes <= local.pool_vpc_elastic_start[pair[0]]
       ) || !(
-      var.pools[pair[1]].elastic_ip_offset_start + (var.pools[pair[1]].max_nodes - var.pools[pair[1]].floor_nodes) <= var.pools[pair[0]].private_ip_offset ||
-      var.pools[pair[0]].private_ip_offset + var.pools[pair[0]].floor_nodes <= var.pools[pair[1]].elastic_ip_offset_start
+      local.pool_vpc_elastic_start[pair[1]] + (local.pools[pair[1]].max_nodes - local.pools[pair[1]].floor_nodes) <= local.pools[pair[0]].private_ip_offset ||
+      local.pools[pair[0]].private_ip_offset + local.pools[pair[0]].floor_nodes <= local.pool_vpc_elastic_start[pair[1]]
       ) || !(
-      var.pools[pair[0]].elastic_ip_offset_start + (var.pools[pair[0]].max_nodes - var.pools[pair[0]].floor_nodes) <= var.pools[pair[1]].elastic_ip_offset_start ||
-      var.pools[pair[1]].elastic_ip_offset_start + (var.pools[pair[1]].max_nodes - var.pools[pair[1]].floor_nodes) <= var.pools[pair[0]].elastic_ip_offset_start
+      local.pool_vpc_elastic_start[pair[0]] + (local.pools[pair[0]].max_nodes - local.pools[pair[0]].floor_nodes) <= local.pool_vpc_elastic_start[pair[1]] ||
+      local.pool_vpc_elastic_start[pair[1]] + (local.pools[pair[1]].max_nodes - local.pools[pair[1]].floor_nodes) <= local.pool_vpc_elastic_start[pair[0]]
     )
   ]
 
@@ -309,18 +309,18 @@ locals {
   # one address, not a [start, start+count) range, so this is a
   # point-in-range test rather than a pairwise interval-overlap test.
   pools_with_colliding_witness_vpc_offset = [
-    for k, p in var.pools : k
+    for k, p in local.pools : k
     if local.pool_effective_witness_enabled[k] && (
-      (local.pool_effective_witness_private_ip_offset[k] >= p.elastic_ip_offset_start &&
-      local.pool_effective_witness_private_ip_offset[k] < p.elastic_ip_offset_start + (p.max_nodes - p.floor_nodes)) ||
+      (local.pool_effective_witness_private_ip_offset[k] >= local.pool_vpc_elastic_start[k] &&
+      local.pool_effective_witness_private_ip_offset[k] < local.pool_vpc_elastic_start[k] + (p.max_nodes - p.floor_nodes)) ||
       local.pool_effective_witness_private_ip_offset[k] == var.observability_private_ip_offset ||
       length([
-        for k2, p2 in var.pools : k2
+        for k2, p2 in local.pools : k2
         if k2 != k && (
           (local.pool_effective_witness_private_ip_offset[k] >= p2.private_ip_offset &&
           local.pool_effective_witness_private_ip_offset[k] < p2.private_ip_offset + p2.floor_nodes) ||
-          (local.pool_effective_witness_private_ip_offset[k] >= p2.elastic_ip_offset_start &&
-          local.pool_effective_witness_private_ip_offset[k] < p2.elastic_ip_offset_start + (p2.max_nodes - p2.floor_nodes))
+          (local.pool_effective_witness_private_ip_offset[k] >= local.pool_vpc_elastic_start[k2] &&
+          local.pool_effective_witness_private_ip_offset[k] < local.pool_vpc_elastic_start[k2] + (p2.max_nodes - p2.floor_nodes))
         )
       ]) > 0
     )
@@ -336,7 +336,7 @@ locals {
   # entirely separate deployment sharing the same public_subnet_id is
   # invisible to this check.
   pools_overlapping_observability_offset = [
-    for k, p in var.pools : k
+    for k, p in local.pools : k
     if var.observability_private_ip_offset >= p.private_ip_offset && var.observability_private_ip_offset < p.private_ip_offset + p.floor_nodes
   ]
 
@@ -345,15 +345,15 @@ locals {
   # overlapping_elastic_vpc_pool_pairs' own comment for why that range
   # needs its own collision checks at all.
   pools_with_elastic_range_overlapping_observability_offset = [
-    for k, p in var.pools : k
-    if var.observability_private_ip_offset >= p.elastic_ip_offset_start && var.observability_private_ip_offset < p.elastic_ip_offset_start + (p.max_nodes - p.floor_nodes)
+    for k, p in local.pools : k
+    if var.observability_private_ip_offset >= local.pool_vpc_elastic_start[k] && var.observability_private_ip_offset < local.pool_vpc_elastic_start[k] + (p.max_nodes - p.floor_nodes)
   ]
 
   # Every pool whose own floor range reaches its own elastic_ip_offset_start
   # -- a pool's own floor count against its own elastic start, entirely
   # self-contained, nothing to do with any OTHER pool.
   pools_with_floor_reaching_elastic_offset = [
-    for k, p in var.pools : k
+    for k, p in local.pools : k
     if p.vlan_ip_offset + p.floor_nodes > p.elastic_ip_offset_start
   ]
 
@@ -373,10 +373,10 @@ locals {
   # test, not an ordering assumption, or it would misfire on exactly that
   # valid case.
   pools_with_floor_overlapping_own_elastic_vpc_range = [
-    for k, p in var.pools : k
+    for k, p in local.pools : k
     if !(
-      p.private_ip_offset + p.floor_nodes <= p.elastic_ip_offset_start ||
-      p.elastic_ip_offset_start + (p.max_nodes - p.floor_nodes) <= p.private_ip_offset
+      p.private_ip_offset + p.floor_nodes <= local.pool_vpc_elastic_start[k] ||
+      local.pool_vpc_elastic_start[k] + (p.max_nodes - p.floor_nodes) <= p.private_ip_offset
     )
   ]
 
@@ -391,7 +391,7 @@ locals {
   # this check now catches at plan time instead of apply succeeding
   # silently.
   pools_with_non_positive_vlan_ip_offset = [
-    for k, p in var.pools : k
+    for k, p in local.pools : k
     if p.vlan_ip_offset < 1
   ]
 
@@ -408,7 +408,7 @@ locals {
   # the same shared natctl process's /file_sd regardless of its own floor
   # node count).
   pools_with_zero_floor_nodes_under_natctl_on_node = var.natctl_on_node_enabled ? [
-    for k, p in var.pools : k
+    for k, p in local.pools : k
     if p.floor_nodes == 0
   ] : []
 
@@ -427,7 +427,7 @@ locals {
   # explicitly -- that's respected as a deliberate choice, not
   # overridden by this default.
   pool_effective_witness_enabled = {
-    for k, p in var.pools : k => (
+    for k, p in local.pools : k => (
       p.witness_enabled != null ? p.witness_enabled : (var.natctl_on_node_enabled && p.floor_nodes == 2)
     )
   }
@@ -446,9 +446,7 @@ locals {
   # pools_with_colliding_witness_vpc_offset below the same as an
   # explicitly-set value would be.
   pool_effective_witness_private_ip_offset = {
-    for k, p in var.pools : k => (
-      p.witness_private_ip_offset != null ? p.witness_private_ip_offset : p.private_ip_offset + p.floor_nodes
-    )
+    for k, p in local.pools : k => p.witness_private_ip_offset
   }
 
   # A pool's floor_nodes count under natctl_on_node_enabled is a real
@@ -470,7 +468,7 @@ locals {
   # advisory; the operator retains final say, same as every other check
   # in this file).
   pools_with_floor_nodes_below_3_under_natctl_on_node = var.natctl_on_node_enabled ? [
-    for k, p in var.pools : k
+    for k, p in local.pools : k
     if p.floor_nodes == 1 || (p.floor_nodes == 2 && !local.pool_effective_witness_enabled[k])
   ] : []
 
@@ -484,7 +482,7 @@ locals {
   # blocking that pool's elastic scaling with no plan/apply-time signal
   # that the config itself is the real problem.
   pools_with_max_nodes_below_floor_nodes = [
-    for k, p in var.pools : k
+    for k, p in local.pools : k
     if p.max_nodes < p.floor_nodes
   ]
 
@@ -501,8 +499,8 @@ locals {
   # Linode API "[400] Label must be unique among your Linodes" error,
   # not at plan time the way this file's other pool-config mistakes do.
   pools_with_duplicate_fleet_label = [
-    for k, p in var.pools : k
-    if length([for k2, p2 in var.pools : k2 if p2.fleet_label == p.fleet_label]) > 1
+    for k, p in local.pools : k
+    if length([for k2, p2 in local.pools : k2 if p2.fleet_label == p.fleet_label]) > 1
   ]
 
   # The observability host's own VLAN address, as a full "host/prefix"
@@ -519,110 +517,15 @@ locals {
   # is "" (opting out of a VLAN interface entirely).
   observability_vlan_ip = (
     var.observability_vlan_pool != ""
-    ? "${cidrhost(var.pools[var.observability_vlan_pool].vlan_cidr_reserved, var.pools[var.observability_vlan_pool].vlan_ip_offset - 1)}/${split("/", var.pools[var.observability_vlan_pool].vlan_cidr)[1]}"
+    ? "${cidrhost(local.pools[var.observability_vlan_pool].vlan_cidr_reserved, local.pools[var.observability_vlan_pool].vlan_ip_offset - 1)}/${split("/", local.pools[var.observability_vlan_pool].vlan_cidr)[1]}"
     : ""
   )
-}
-
-# Every pair of pools sharing one physical VLAN must keep their own
-# reserved sub-blocks from overlapping -- when no two pools share a
-# vlan_label, pool_pairs_same_vlan is empty and this check does nothing.
-check "pool_reserved_cidrs_no_overlap_same_vlan" {
-  assert {
-    condition     = length(local.overlapping_reserved_pool_pairs) == 0
-    error_message = "These pool pairs share a vlan_label but have overlapping vlan_cidr_reserved sub-blocks: ${join(", ", local.overlapping_reserved_pool_pairs)}. Both pools' floor+elastic nodes would draw addresses from the same space on the same physical VLAN, a real collision risk. Pick non-overlapping reserved sub-blocks for every pool on the same VLAN."
-  }
 }
 
 check "ipsec_route_gateways_in_pool_vlan" {
   assert {
     condition     = length(local.pools_with_ipsec_route_gateway_outside_vlan) == 0
     error_message = "These pools have an ipsec_routes entry whose gateway_ip is not inside their own vlan_cidr: ${join(", ", local.pools_with_ipsec_route_gateway_outside_vlan)}. client-agent has no other interface to reach it on -- point gateway_ip at an address actually inside that pool's own vlan_cidr."
-  }
-}
-
-# A pool's effective witness VPC address (smart-defaulted or explicit --
-# see pool_effective_witness_private_ip_offset) must not collide with any
-# pool's own floor/elastic range or with observability_private_ip_offset.
-check "witness_vpc_offset_does_not_collide" {
-  assert {
-    condition     = length(local.pools_with_colliding_witness_vpc_offset) == 0
-    error_message = "These pools' effective witness VPC (eth1) address collides with another pool's floor/elastic range, their own elastic range, or observability_private_ip_offset: ${join(", ", local.pools_with_colliding_witness_vpc_offset)}. Set witness_private_ip_offset explicitly to a value clear of every pool's ranges."
-  }
-}
-
-# Every pair of pools' VPC-side private_ip_offset ranges must not overlap,
-# regardless of VLAN -- all pools share this environment's one
-# public_subnet_id.
-check "pool_vpc_offsets_no_overlap" {
-  assert {
-    condition     = length(local.overlapping_vpc_offset_pool_pairs) == 0
-    error_message = "These pool pairs have overlapping private_ip_offset ranges on the shared VPC subnet: ${join(", ", local.overlapping_vpc_offset_pool_pairs)}. Both pools' nodes would get the same VPC (eth1) address, a real collision. Give every pool a non-overlapping private_ip_offset range (offset..offset+floor_nodes-1)."
-  }
-}
-
-# observability_private_ip_offset must not fall inside any pool's own
-# private_ip_offset range, or the observability host and that pool's
-# floor node would collide on the shared VPC subnet.
-check "observability_vpc_offset_no_overlap_pools" {
-  assert {
-    condition     = length(local.pools_overlapping_observability_offset) == 0
-    error_message = "observability_private_ip_offset (${var.observability_private_ip_offset}) falls inside these pools' own private_ip_offset ranges: ${join(", ", local.pools_overlapping_observability_offset)}. The observability host and one of that pool's floor nodes would get the same VPC (eth1) address. Move observability_private_ip_offset outside every pool's [private_ip_offset, private_ip_offset+floor_nodes-1] range."
-  }
-}
-
-# Every pool's VPC-side elastic range must not overlap any OTHER pool's
-# floor range or elastic range -- see overlapping_elastic_vpc_pool_pairs'
-# own comment for the collision this closes.
-check "pool_elastic_vpc_ranges_no_overlap" {
-  assert {
-    condition     = length(local.overlapping_elastic_vpc_pool_pairs) == 0
-    error_message = "These pool pairs have a VPC-side elastic range ([elastic_ip_offset_start, elastic_ip_offset_start+max_nodes-floor_nodes)) that overlaps the other pool's private_ip_offset (floor) range or its own elastic range, on the shared VPC subnet: ${join(", ", local.overlapping_elastic_vpc_pool_pairs)}. Unlike the VLAN side, there is no per-pool reserved sub-block protecting elastic_ip_offset_start on the VPC side -- give every pool's elastic range room clear of every other pool's floor AND elastic ranges too."
-  }
-}
-
-# Same check as above, but against the observability host's single fixed
-# VPC address instead of another pool's range.
-check "observability_vpc_offset_no_overlap_pool_elastic_ranges" {
-  assert {
-    condition     = length(local.pools_with_elastic_range_overlapping_observability_offset) == 0
-    error_message = "observability_private_ip_offset (${var.observability_private_ip_offset}) falls inside these pools' own VPC-side elastic ranges: ${join(", ", local.pools_with_elastic_range_overlapping_observability_offset)}. The observability host and one of that pool's elastic nodes would get the same VPC (eth1) address. Move observability_private_ip_offset outside every pool's [elastic_ip_offset_start, elastic_ip_offset_start+max_nodes-floor_nodes) range."
-  }
-}
-
-# Plan-time validation that a pool's own FLOOR node count can never grow
-# large enough to collide with that same pool's elastic node range. Floor
-# nodes occupy offsets [vlan_ip_offset, vlan_ip_offset+floor_nodes-1]
-# within their own vlan_cidr_reserved; elastic nodes start at that pool's
-# own elastic_ip_offset_start. Nothing stops an operator from setting
-# floor_nodes large enough to walk into that gap -- Terraform would apply
-# it silently otherwise, producing a real floor-node/elastic-node VLAN IP
-# collision the first time natctl provisions an elastic node.
-check "pool_floor_nodes_below_elastic_offset" {
-  assert {
-    condition     = length(local.pools_with_floor_reaching_elastic_offset) == 0
-    error_message = "These pools have floor_nodes large enough that their floor VLAN offsets reach their own elastic_ip_offset_start: ${join(", ", local.pools_with_floor_reaching_elastic_offset)}. This would be a real IP collision the first time natctl provisions an elastic node for that pool. Lower floor_nodes, or raise elastic_ip_offset_start, for the affected pool(s)."
-  }
-}
-
-# VPC-side twin of the check above -- see
-# pools_with_floor_overlapping_own_elastic_vpc_range's own comment for why
-# this needs a real overlap test rather than the VLAN side's simpler
-# ordering check.
-check "pool_floor_vpc_range_no_overlap_own_elastic_vpc_range" {
-  assert {
-    condition     = length(local.pools_with_floor_overlapping_own_elastic_vpc_range) == 0
-    error_message = "These pools have a VPC-side floor range ([private_ip_offset, private_ip_offset+floor_nodes)) that overlaps their OWN elastic range ([elastic_ip_offset_start, elastic_ip_offset_start+max_nodes-floor_nodes)): ${join(", ", local.pools_with_floor_overlapping_own_elastic_vpc_range)}. This would be a real duplicate-VPC-IP collision the first time natctl provisions an elastic node for that pool. Adjust private_ip_offset, floor_nodes, elastic_ip_offset_start, or max_nodes for the affected pool(s) so the two ranges don't overlap."
-  }
-}
-
-# vlan_ip_offset must be a real, positive host offset -- see
-# pools_with_non_positive_vlan_ip_offset's own comment for why 0 (or
-# negative) is a genuine collision risk, not just an unusual choice.
-check "pool_vlan_ip_offset_is_positive" {
-  assert {
-    condition     = length(local.pools_with_non_positive_vlan_ip_offset) == 0
-    error_message = "These pools have vlan_ip_offset < 1: ${join(", ", local.pools_with_non_positive_vlan_ip_offset)}. vlan_ip_offset must be a positive host offset -- a value of 0 makes observability_vlan_ip's own cidrhost(vlan_cidr_reserved, vlan_ip_offset - 1) call use a NEGATIVE offset, which Terraform interprets as counting backward from the end of the range, landing near where elastic nodes are allocated instead of just below the floor range as intended."
   }
 }
 
@@ -794,7 +697,7 @@ locals {
   natctl_preflight_py_url = ""
 }
 
-# One nat-fleet module instance per pool defined in var.pools -- see
+# One nat-fleet module instance per pool defined in local.pools -- see
 # variables.tf's pools description for the full per-pool field list. A
 # pool is the unit of both scaling and isolation: the default pool every
 # tenant uses unless assigned elsewhere, or a tenant's own dedicated pool
@@ -803,7 +706,7 @@ locals {
 # Tiers of Capacity").
 module "nat_fleet" {
   source   = "../../modules/nat-fleet"
-  for_each = var.pools
+  for_each = local.pools
 
   fleet_label        = each.value.fleet_label
   pool_name          = each.key
@@ -941,7 +844,7 @@ locals {
   # from a NAT/failover standpoint. One object per pool, built the same
   # shape module.nat_fleet's own per-pool inputs use.
   natctl_pools = {
-    for k, p in var.pools : k => {
+    for k, p in local.pools : k => merge({
       region               = var.region
       vpc_id               = module.vpc.vpc_id
       public_subnet_id     = module.vpc.public_subnet_id
@@ -1003,7 +906,7 @@ locals {
       tags                = p.tags
       # Both offsets are ABSOLUTE host offsets within vlan_reserved_cidr
       # above, compared directly against each other (never summed) --
-      # see this file's own pool_floor_nodes_below_elastic_offset check
+      # see pool_addressing.tf's floor-below-elastic precondition
       # and fleet.py's _provision(). Without vlan_ip_offset explicitly
       # wired through here, PoolConfig would silently fall back to its
       # own Python-side default (20) regardless of what this pool's
@@ -1096,7 +999,9 @@ locals {
         auto_provision_enabled = true
         cooldown_seconds       = 300
       }
-    }
+      },
+      p.vpc_elastic_ip_offset_start != null ? { vpc_elastic_ip_offset_start = p.vpc_elastic_ip_offset_start } : {}
+    )
   }
 
   # file_sd_path is only meaningful when natctl and Prometheus share a
@@ -1245,7 +1150,7 @@ locals {
 # authenticated boto3 client, never curl'd at boot the way the
 # public-read artifacts are. One object per pool, keyed by pool name.
 resource "linode_object_storage_object" "pool_scaling" {
-  for_each = var.pools
+  for_each = local.pools
 
   bucket     = var.natctl_object_storage_bucket
   region     = local.natctl_object_storage_region
@@ -1306,8 +1211,8 @@ module "observability" {
   # var.observability_private_ip_offset (default 5) in the public/
   # NAT-node subnet — clear of every pool's own floor and elastic ranges
   # by default (see variables.tf's pools description), and checked
-  # against them at plan time (observability_vpc_offset_no_overlap_pools
-  # above). Same value as local.natctl_private_ip above, kept as one
+  # against them at plan time (pool_addressing.tf's observability-offset precondition)
+  # . Same value as local.natctl_private_ip above, kept as one
   # local so it's impossible for this and the buddy-sync/client-agent
   # roster URL to drift apart. Only actually reachable/meaningful when
   # create_observability_instance is true, of course.
@@ -1334,7 +1239,7 @@ module "observability" {
   # when observability_vlan_pool is "", skipping the VLAN interface
   # entirely -- that module's own dynamic block is gated on vlan_label
   # being non-empty.
-  vlan_label = var.observability_vlan_pool != "" ? var.pools[var.observability_vlan_pool].vlan_label : ""
+  vlan_label = var.observability_vlan_pool != "" ? local.pools[var.observability_vlan_pool].vlan_label : ""
   vlan_ip    = local.observability_vlan_ip
 
   grafana_admin_password = local.grafana_admin_password

@@ -14,10 +14,9 @@
 #    short pool identifier -- sizing, VLAN identity, and addressing per
 #    pool. Add, rename, or remove a pool entirely by editing this one
 #    map; main.tf never needs touching for that. See its own description
-#    below for the full field-by-field breakdown and the two plan-time
-#    checks (main.tf's pool_reserved_cidrs_no_overlap_same_vlan and
-#    pool_vpc_offsets_no_overlap) that keep multiple pools from silently
-#    colliding.
+#    below for the full field-by-field breakdown, how pool_addressing.tf
+#    calculates every pool's addresses, and the plan-time errors that stop
+#    any collision between pools.
 # 3) observability_vlan_pool - Which pool's VLAN (if any) the
 #    observability host joins directly.
 # 4) ip_failover_enabled/linode_bgp_dcid - Buddy IP failover (see
@@ -100,16 +99,21 @@ variable "private_subnet_ids" {
 # VLAN identity) -- but multiple pools MAY share one physical VLAN
 # ("same-VLAN mode": some customers already run one VLAN per account for
 # both NAT gateway traffic and other workloads, and standing up a second
-# VLAN just for a second pool isn't practical for them). When two or more
-# pools share a vlan_label, the only thing that needs coordinating is
-# that their own vlan_cidr_reserved sub-blocks don't overlap each other --
-# main.tf's "pool_reserved_cidrs_no_overlap_same_vlan" check enforces this
-# for EVERY pair of pools on the same VLAN at plan time, not just two.
-# Regardless of VLAN sharing, every pool's private_ip_offset range (VPC
-# side, [private_ip_offset, private_ip_offset+floor_nodes-1]) must also
-# not overlap any other pool's, since every pool shares this
-# environment's one public_subnet_id -- main.tf's
-# "pool_vpc_offsets_no_overlap" check covers this one too.
+# VLAN just for a second pool isn't practical for them).
+#
+# ADDRESSES ARE CALCULATED FOR YOU. Every pool needs a VPC address for each
+# node (one subnet, shared by every pool) and a VLAN address for each node
+# (the pool's own private network). pool_addressing.tf derives all of
+# these from the pool's name, floor_nodes, max_nodes and vlan_cidr, packs
+# the pools so they cannot collide, and prints the result as the
+# pool_address_plan output -- including, per VLAN, the address from which
+# your own client instances may be numbered. The settings listed under
+# "Optional advanced overrides" below exist only for the rare deployment
+# that must place a pool at specific addresses; leave them out otherwise.
+# Whether calculated or overridden, every pool's addresses are checked
+# for collisions and capacity, and a problem stops `terraform plan`.
+# See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html, Part IX, "Planning pool
+# addresses".
 #
 # Per-pool fields:
 #   fleet_label             - Unique label prefix for this pool's Linode
@@ -150,59 +154,43 @@ variable "private_subnet_ids" {
 #                              genuinely separate VLANs are fully
 #                              isolated L2 domains on Linode regardless of
 #                              numeric CIDR overlap.
-#   vlan_cidr_reserved          - A small sub-block nested inside
-#                              vlan_cidr, wholly owned by this pool's own
-#                              floor+elastic nodes (and the observability
-#                              host, if it joins this pool's VLAN) --
-#                              nothing else should ever be assigned an
-#                              address inside it. Communicate this to the
-#                              customer as a clean, round boundary
-#                              ("everything from X onward is yours")
-#                              rather than sizing it precisely -- generous
-#                              slack here is harmless. Must be nested
-#                              inside this pool's own vlan_cidr --
-#                              validated at plan time
-#                              (terraform/modules/nat-fleet's
-#                              vlan_reserved_cidr_nested_in_vlan_cidr
-#                              check).
-#   private_ip_offset            - Starting host offset within
-#                              public_subnet_id's CIDR for this pool's
-#                              static VPC IPs. Must not overlap any other
-#                              pool's [private_ip_offset,
-#                              private_ip_offset+floor_nodes-1] range --
-#                              see pool_vpc_offsets_no_overlap above. A
-#                              GLOBALLY-scoped number (all pools share
-#                              one public_subnet_id), unlike vlan_ip_offset
-#                              below.
-#   vlan_ip_offset               - Starting host offset within THIS
-#                              pool's own vlan_cidr_reserved (not
-#                              private_ip_offset's address space -- a
-#                              separate, POOL-LOCAL range) for this
-#                              pool's static VLAN IPs. Does not need to
-#                              be globally unique across pools the way
-#                              private_ip_offset does, since each pool's
-#                              vlan_cidr_reserved is its own independent
-#                              address space -- reusing the same small
-#                              number (e.g. 20) in every pool is normal
-#                              and expected.
-#   elastic_ip_offset_start        - Starting VLAN host offset (within
-#                              this pool's own vlan_cidr_reserved) for
-#                              natctl-provisioned elastic nodes. Must
-#                              leave enough room after [vlan_ip_offset,
-#                              vlan_ip_offset + floor_nodes - 1] that
-#                              raising floor_nodes later can never reach
-#                              it -- see main.tf's
-#                              "pool_floor_nodes_below_elastic_offset"
-#                              check. Must also actually fit inside this
-#                              pool's own (possibly small)
-#                              vlan_cidr_reserved block, together with
-#                              enough room for up to (max_nodes -
-#                              floor_nodes) elastic nodes -- Terraform's
-#                              own cidrhost() will hard-error at apply
-#                              time if it doesn't (this module doesn't
-#                              add a separate plan-time check for that
-#                              specific case, since cidrhost()'s own
-#                              error is already immediate and clear).
+#   slot                         - Optional. Which slot of the shared VPC
+#                              subnet (and, among pools on one VLAN,
+#                              which reserved block) this pool takes.
+#                              Left unset, a pool's slot is its position
+#                              in the sorted list of pool names. Pin it
+#                              when you add a pool whose name sorts
+#                              BEFORE an existing one, so the existing
+#                              pools do not move.
+#
+# Optional advanced overrides -- leave all of these out unless a pool must
+# sit at specific addresses. Each one replaces just its own calculated
+# value; the rest stay calculated.
+#   vlan_cidr_reserved          - The block, nested inside vlan_cidr, that
+#                              this pool's own floor and elastic nodes
+#                              (and the observability host, if it joins
+#                              this pool's VLAN) draw their VLAN addresses
+#                              from. Nothing else should be given an
+#                              address inside it. Calculated by default:
+#                              a block of pool_vlan_reserved_prefix bits
+#                              taken from the start of vlan_cidr.
+#   private_ip_offset            - First VPC host offset of this pool's
+#                              floor nodes, within public_subnet_id's
+#                              CIDR. A globally scoped number (every
+#                              pool shares one subnet).
+#   vlan_ip_offset               - First VLAN host offset of this pool's
+#                              floor nodes, within vlan_cidr_reserved.
+#                              Must be >= 2.
+#   elastic_ip_offset_start        - First host offset of this pool's
+#                              natctl-provisioned elastic nodes, within
+#                              vlan_cidr_reserved. Also the node's name
+#                              suffix. Setting it WITHOUT
+#                              vpc_elastic_ip_offset_start below keeps
+#                              the original behaviour: the same number
+#                              is used as the VPC host offset too.
+#   vpc_elastic_ip_offset_start    - First VPC host offset of this pool's
+#                              elastic nodes, when it must differ from
+#                              the VLAN one above.
 #   reserved_ip_pool             - Optional. Reserved IPv4 addresses you
 #                              ALREADY OWN (reused from a prior
 #                              deployment on this account, or reserved
@@ -262,10 +250,12 @@ variable "pools" {
     instance_type                = string
     vlan_label                   = string
     vlan_cidr                    = string
-    vlan_cidr_reserved           = string
-    private_ip_offset            = number
-    vlan_ip_offset               = number
-    elastic_ip_offset_start      = number
+    slot                         = optional(number)
+    vlan_cidr_reserved           = optional(string)
+    private_ip_offset            = optional(number)
+    vlan_ip_offset               = optional(number)
+    elastic_ip_offset_start      = optional(number)
+    vpc_elastic_ip_offset_start  = optional(number)
     reserved_ip_pool             = optional(list(string), [])
     node_instance_type_overrides = optional(map(string), {})
     # These three mirror terraform/modules/nat-fleet's own
@@ -321,7 +311,7 @@ variable "observability_vlan_pool" {
 }
 
 variable "observability_private_ip_offset" {
-  description = "Starting host offset within public_subnet_id's CIDR for the observability host's static VPC (eth1) address -- same mechanism as each pool's own private_ip_offset (see the pools variable above), but for the one non-pool instance this environment creates. Defaults to 5, clear of every pool's own private_ip_offset range in a fresh deployment (pools default to 20+). If this environment's public_subnet_id is a VPC subnet ALSO used by a completely separate LNG deployment (different terraform.tfvars/state) that happens to use the same offset for its own observability host, this collides at apply time (Linode's [400] \"The provided IP is already in use in the subnet\") -- this project's own pool_vpc_offsets_no_overlap-style checks can only ever see pools/resources within THIS state, never a second deployment's. Change this if you know this subnet is shared with another deployment already using the default. Checked against every pool's own private_ip_offset range at plan time (see main.tf's observability_vpc_offset_no_overlap_pools check) -- but only within this one deployment's own pools, same limitation as every other check here."
+  description = "Starting host offset within public_subnet_id's CIDR for the observability host's static VPC (eth1) address -- same mechanism as each pool's own private_ip_offset (see the pools variable above), but for the one non-pool instance this environment creates. Defaults to 5, clear of every pool's own private_ip_offset range in a fresh deployment (pools default to 20+). If this environment's public_subnet_id is a VPC subnet ALSO used by a completely separate LNG deployment (different terraform.tfvars/state) that happens to use the same offset for its own observability host, this collides at apply time (Linode's [400] \"The provided IP is already in use in the subnet\") -- this project's own pool_addressing.tf's overlapping-floor-ranges precondition-style checks can only ever see pools/resources within THIS state, never a second deployment's. Change this if you know this subnet is shared with another deployment already using the default. Checked against every pool's own private_ip_offset range at plan time (see pool_addressing.tf's observability-offset precondition) -- but only within this one deployment's own pools, same limitation as every other check here. This address is also where every node's natctl looks for Prometheus (its prometheus_url is http://<this address>:9090), so it must be the VPC (eth1) address of the host that actually runs Prometheus: if you run Prometheus on a host this environment does not create, set this offset to that host's real address offset. A wrong value does not fail loudly -- natctl cannot read any autoscale metric and every signal reads as 0, so metric-driven scaling silently never fires. That host must also accept TCP 9090 from the VPC CIDR (the control-plane Cloud Firewall's prometheus-vpc-internal rule does)."
   type        = number
   default     = 5
 }

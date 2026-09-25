@@ -895,7 +895,7 @@ flowchart TB
         </div>
 
         <h3>The witness role: real quorum safety at two nodes, without a third full node</h3>
-        <p>Set <code>witness_enabled = true</code> on a pool (alongside <code>witness_instance_type</code>, default <code>g6-nanode-1</code>, and <code>witness_private_ip_offset</code>) to provision one small, permanent instance that votes in leader-election corroboration and independently health-checks the pool's real nodes — without ever forwarding traffic, holding a public IP, or joining buddy pairing. It's a fully real third voter from every other node's point of view, just sized to what the role actually needs rather than to NAT-node parity. Only meaningful alongside every-node placement — a witness has nothing to vote in otherwise. Adding or removing one later is a normal <code>terraform apply</code>, same as any other resource.</p>
+        <p>Set <code>witness_enabled = true</code> on a pool (alongside <code>witness_instance_type</code>, default <code>g6-nanode-1</code>; its VPC address is calculated like every other address) to provision one small, permanent instance that votes in leader-election corroboration and independently health-checks the pool's real nodes — without ever forwarding traffic, holding a public IP, or joining buddy pairing. It's a fully real third voter from every other node's point of view, just sized to what the role actually needs rather than to NAT-node parity. Only meaningful alongside every-node placement — a witness has nothing to vote in otherwise. Adding or removing one later is a normal <code>terraform apply</code>, same as any other resource.</p>
 
         <h3>Can you switch this on an already-live fleet?</h3>
         <p>Yes, but treat it as a maintenance-window change, not a zero-impact toggle. This setting changes what's embedded in every floor node's own boot configuration, and the infrastructure tooling has no way to update that in place on a running instance — so applying the change destroys and recreates every floor node to pick up the new configuration. Reserved IPs and the deterministic address scheme (Part IV) mean every recreated node comes back with the exact same address it had before, so nothing downstream needs to be reconfigured — but every floor node does go through a real boot cycle to get there.</p>
@@ -977,12 +977,14 @@ flowchart TB
             <tr><td>Loses leadership between passes, caught by the fresh per-call check</td><td>Refuses that one specific mutating action and marks itself no longer leader</td></tr>
             <tr><td>The previous leader's lease looked expired, but it answered the direct liveness check</td><td>Backs off entirely — does not fence, and does not become leader this pass either</td></tr>
             <tr><td>The lease's named leader doesn't match any node this pool's own discovery currently knows about</td><td>Refuses to fence outright, without ever checking liveness or asking peers — <strong>unless</strong> the pool genuinely has zero real members right now, or the lease itself was won while the pool was in exactly that state (see the paragraph and callout just below the table for why both are expected, not evidence of tampering)</td></tr>
+            <tr><td>The previous leader only ever held this lease through the empty-pool bootstrap exception — it belongs to a <em>different</em> pool — and its own natctl still answers the direct liveness check</td><td>Claims leadership <strong>without fencing it</strong>. That node is alive and serving its own pool, its lease here has already expired, and it can no longer act on it, so there is nothing to protect against. A bootstrap leader that does <em>not</em> answer goes through the ordinary path below</td></tr>
             <tr><td><strong>The previous leader's lease looks expired, the candidate is a pool member, the named leader IS a genuine member of the pool, and the liveness check found nothing</strong></td><td><strong>Fences it — the only path that powers a node off</strong></td></tr>
           </tbody>
         </table></div>
 
         <p>The membership check exists to stop a node with no real stake in a pool from acting on its behalf — but a pool with <strong>no permanent capacity at all</strong> (every node in it elastic, none from a fixed baseline) can, in principle, churn all the way down to zero nodes. Applied without exception, the membership check would make that state permanent: nobody could ever be a "member" of a pool with no members, including whichever node eventually gets created to fill it. The one exception carved out of the table above handles exactly this: when a pool's own live discovery confirms — through the cloud provider's own API, not a mere health-check guess — that it genuinely has zero real nodes, any other node in the fleet becomes eligible to elect itself for that one pool for as long as it stays empty, purely so it can provision the first replacement. A quorum witness present on that pool doesn't change this — a witness can never itself become leader, so a witnessed pool at zero real nodes needs the same bootstrap path as one with no witness at all. Every other row in the table above still applies exactly as written during this window; the only thing skipped is the membership refusal that would otherwise leave the pool stuck at zero permanently. The instant a real node exists again, the ordinary membership check resumes protecting it.</p>
         <p>One piece of this carries forward past that instant, though: the lease a node writes for itself while winning this bootstrap election stays recognized as legitimate for as long as it holds it, even once the pool has gained its first real member. A bootstrap leader can never retroactively become a "member" of the pool it was elected to fill — by definition, nothing was ever a real member of a pool with zero real members — so if the fencing-target check started treating that same lease as suspicious the moment a real member showed up, the pool would simply trade one permanent deadlock for another: the pool's own brand-new first real node would find itself unable to ever take over from the bootstrap leader whose job was to get it provisioned in the first place. That first real node is exactly who's expected to eventually supersede the bootstrap leader — so its lease keeps being treated as legitimate specifically because of how it was won, independent of whatever the pool's membership looks like by the time someone actually tries to take over from it.</p>
+        <p><strong>Taking over from a bootstrap leader never powers off a node that belongs to another pool.</strong> Every node runs a controller for every pool, so the node that wins an empty pool's bootstrap election is usually a perfectly healthy member of some <em>other</em> pool — one that is busy forwarding that pool's traffic. It can never appear as a healthy member in the roster of the pool it briefly led, so the ordinary "is the previous leader still fit to lead" check would always judge it unfit. When the pool's first real node takes over, that outcome is therefore replaced by a narrower rule: if the bootstrap leader's own natctl still answers the direct liveness check, the new node claims the lease and leaves it running. This is safe for three reasons — the bootstrap leader's lease has already expired; it is no longer eligible to renew it, because the pool now has a real member and the bootstrap exception only applies to an empty pool; and every mutating action is re-checked against the current lease immediately before it runs, so a node that no longer holds the lease cannot act on it. A bootstrap leader that does <em>not</em> answer is still fenced through the ordinary liveness, corroboration and fencing steps.</p>
 
         <div class="callout warn">
           <span class="co-label">Why checking the named leader's identity matters</span>
@@ -1919,6 +1921,19 @@ curl -s http://localhost:9090/api/v1/query \
 
         <p><strong>The decrypt step, in detail.</strong> Once the ciphertext blob is in memory, <code>natctl</code> decrypts it by invoking the <code>age</code> command-line tool directly (a subprocess call, not a new library dependency — every node already needs the <code>age</code> binary present) and pointing it at one local file: this node's own age private key. That decrypted plaintext — the JSON object an operator assembled at build time — is parsed and applied straight into this process's own environment variables, immediately, with no intermediate file ever written to disk. Every existing credential-resolution path in the codebase (an explicit configuration field, an environment variable, the plaintext <code>/etc/natctl/env</code> file) keeps working completely unchanged; this bundle is simply one more, earlier source for the same environment variables those paths already read. A value already present in the environment is never overwritten by the bundle — this is what lets a single credential be overridden locally, on one node, without touching or rebuilding the published bundle at all.</p>
 
+        <div class="callout warn">
+          <span class="co-label">Before you upgrade: rebuild the bundle with the current script</span>
+          <p>The bundle's keys are applied to the process environment <strong>exactly as written</strong>, with no case translation, so they must be the environment variable names natctl reads: <code>LINODE_TOKEN</code>, <code>NATCTL_OBJECT_STORAGE_ACCESS_KEY</code> and <code>NATCTL_OBJECT_STORAGE_SECRET_KEY</code>. <code>scripts/build-secrets-bundle.sh</code> produces exactly these three and nothing else. A bundle built by an older copy of the script (lowercase field names such as <code>linode_token</code>, plus other fields natctl never reads) still decrypts and still logs <code>applied N key(s)</code> — but none of those keys is one natctl looks up.</p>
+          <p>This matters because, whenever <code>secrets_bundle_age_private_key</code> is set, a node's own environment file no longer carries the credentials in plaintext: the bundle is the only place they come from. Nodes that already exist keep running, but every node created <em>after</em> the upgrade — floor nodes on the next <code>terraform apply</code>, elastic nodes at the next scale-out or replacement — depends on the bundle being correct, and a stale one leaves natctl unable to start (<code>no Linode API token configured</code>, restarting continuously). Do this before rolling out the new release:</p>
+          <ol>
+            <li>Rebuild and upload the bundle with the current script (9.3, Step 1's Layer 2 walkthrough).</li>
+            <li>Check the uploaded object from any node, using that node's own key — this prints key <em>names</em> only, never values:
+              <pre class="code">curl -fsS "$secrets_bundle_url" | age --decrypt --identity /etc/natctl/age-key.txt | jq -r 'keys[]'</pre>
+              It must print exactly the three names above. Anything else means the bundle is stale.</li>
+          </ol>
+          <p>If a node is already stuck, rebuilding and re-uploading the bundle is the whole fix: a restarting natctl re-fetches it on every start, so affected nodes recover on their own within seconds, with no per-node action.</p>
+        </div>
+
         <p><strong>The one piece of secret material a node still needs on disk, and why it's different from what came before.</strong> Decrypting the bundle requires an age private key, and that key has to live somewhere a fresh node can read it at boot — there's no way around a node needing <em>some</em> local secret to bootstrap trust in anything fetched over the network. What changed is the shape and scope of that one remaining secret: instead of every real credential sitting in one plaintext file, exactly one small, narrowly-scoped key sits there — a key that can decrypt nothing except this one bundle, and is otherwise completely inert. This is a deliberate, honestly-stated trade-off, not a claim that on-disk secret material has been eliminated: it's reduced from "every credential, directly usable" to "one minimal key, useless for anything else."</p>
 
         <p><strong>Which servers actually run this, and how it behaves across the whole fleet.</strong> Every instance that runs <code>natctl</code> at all gets this same treatment identically: every floor node and the quorum-witness instance (when <code>natctl_on_node_enabled</code> is true), the single dedicated control-plane host (when it's false), and every elastic node <code>natctl</code> itself later provisions. An instance that never runs <code>natctl</code> — a plain private-subnet client, a customer's own IPsec gateway — never receives this key at all, because there's nothing on it that would ever need to decrypt anything.</p>
@@ -2014,7 +2029,7 @@ jq --version</pre>
           <tbody>
             <tr><td><code>region</code></td><td>string</td><td>Linode region for every resource this environment creates. Defaults to <code>us-east</code> in the example file — change it to your own.</td></tr>
             <tr><td><code>vpc_id</code></td><td>int</td><td>The existing VPC this environment joins — this project never creates a VPC itself, only reads one back (9.1's prerequisites).</td></tr>
-            <tr><td><code>public_subnet_id</code></td><td>int</td><td>The VPC subnet every pool's nodes and the control plane share. Its CIDR needs enough headroom for every pool's <code>private_ip_offset</code> range combined.</td></tr>
+            <tr><td><code>public_subnet_id</code></td><td>int</td><td>The VPC subnet every pool's nodes and the control plane share. Every pool takes its own block of it, so its CIDR sets how many pools you can run — 15 in a <code>/22</code>, 63 in a <code>/20</code> with the default block size (9.6).</td></tr>
             <tr><td><code>private_subnet_ids</code></td><td>map of string to int</td><td>Optional (default <code>{}</code>). Only needed if some other VPC-resident workload needs to reach natctl's roster API on the control-plane host — a Cloud Firewall allow-list concern, not a routing one. Does not affect the NAT client fleet, which rides VLAN, not VPC (Part I, 1.2).</td></tr>
             <tr><td><code>admin_cidrs</code></td><td>list of strings</td><td>Required, no default — every firewall this environment creates scopes SSH (and the control plane's dashboards) to exactly these CIDRs. Never left open to <code>0.0.0.0/0</code> by default; use your own admin/office/VPN egress range(s).</td></tr>
           </tbody>
@@ -2052,7 +2067,7 @@ jq --version</pre>
         </table></div>
 
         <h3>Pools — the fleet itself (required)</h3>
-        <p><code>pools</code> is a map: each key is a pool name you choose (the example ships <code>common</code> and <code>acme</code>, one shared and one dedicated-tenant pool), and each value is an object with the fields below. Add a third pool by adding another entry — nothing else in this environment's Terraform needs touching for that. Two things are checked at <code>terraform plan</code> time, not left to chance: any two pools sharing a <code>vlan_label</code> must have non-overlapping <code>vlan_cidr_reserved</code> sub-blocks, and every pool's <code>private_ip_offset</code> range must not overlap any other pool's, since all pools share one <code>public_subnet_id</code>.</p>
+        <p><code>pools</code> is a map: each key is a pool name you choose (the example ships <code>common</code> and <code>acme</code>, one shared and one dedicated-tenant pool), and each value is an object with the fields below. Add a third pool by adding another entry — nothing else in this environment's Terraform needs touching for that. <strong>You do not choose any addresses.</strong> Each pool states only what it is — its node counts, plan and VLAN — and Terraform calculates every VPC and VLAN address from that, packs the pools so they cannot overlap, and prints the result as the <code>pool_address_plan</code> output (9.6). Whether calculated or overridden, every layout is checked at <code>terraform plan</code> time and a problem stops the plan.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Field</th><th>Type</th><th>What it does</th></tr></thead>
           <tbody>
@@ -2060,9 +2075,11 @@ jq --version</pre>
             <tr><td><code>floor_nodes</code> / <code>max_nodes</code></td><td>int</td><td>Terraform-managed baseline capacity, and the ceiling natctl's own elastic autoscaling can grow to (Part V, 5.1). If <code>natctl_on_node_enabled</code> is true, <code>floor_nodes</code> is also a real safety decision — see that variable's own row below.</td></tr>
             <tr><td><code>instance_type</code></td><td>string</td><td>Linode plan for this pool's floor nodes, e.g. <code>g6-dedicated-4</code>. Dedicated-CPU plans are recommended (Part V, 5.3) — shared-CPU plans risk noisy-neighbor throughput variance for a NAT node.</td></tr>
             <tr><td><code>vlan_label</code> / <code>vlan_cidr</code></td><td>string</td><td>The VLAN this pool's client-facing <code>eth2</code> joins, and its full, real CIDR — every node's interface uses this exact prefix length. Two pools may share one <code>vlan_label</code> ("same-VLAN mode") to serve one physical VLAN with isolated capacity per tenant.</td></tr>
-            <tr><td><code>vlan_cidr_reserved</code></td><td>string</td><td>This pool's own small, wholly-owned sub-block nested inside <code>vlan_cidr</code> — every floor/elastic/witness/observability address for this pool is drawn from here, never from the wider VLAN a customer's own client fleet also lives on.</td></tr>
-            <tr><td><code>private_ip_offset</code></td><td>int</td><td>VPC-side host offset — must be globally unique across every pool in this environment, since they all share one <code>public_subnet_id</code>.</td></tr>
-            <tr><td><code>vlan_ip_offset</code> / <code>elastic_ip_offset_start</code></td><td>int</td><td>VLAN-side host offsets, pool-local to this pool's own <code>vlan_cidr_reserved</code> — safe to reuse the same small numbers across different pools, since each pool's reserved sub-block is its own address space. Floor addresses start at <code>vlan_ip_offset</code>, elastic nodes' at <code>elastic_ip_offset_start</code>.</td></tr>
+            <tr><td><code>vlan_cidr_reserved</code></td><td>string</td><td><em>Optional advanced override.</em> The block of the VLAN, nested inside <code>vlan_cidr</code>, that this pool's own floor, elastic, witness and observability addresses are drawn from — never from the wider VLAN your own client fleet lives on. Calculated by default: a block of <code>pool_vlan_reserved_prefix</code> bits (<code>/25</code>) from the start of <code>vlan_cidr</code>.</td></tr>
+            <tr><td><code>private_ip_offset</code></td><td>int</td><td><em>Optional advanced override.</em> First VPC host offset of this pool's floor nodes. Shared by every pool, so it must be unique across them. Calculated by default from the pool's slot.</td></tr>
+            <tr><td><code>vlan_ip_offset</code> / <code>elastic_ip_offset_start</code></td><td>int</td><td><em>Optional advanced overrides.</em> Host offsets counted from the start of this pool's <code>vlan_cidr_reserved</code>: floor nodes start at <code>vlan_ip_offset</code> (default <code>8</code>), elastic nodes at <code>elastic_ip_offset_start</code> (default: the middle of the block). Setting only <code>elastic_ip_offset_start</code> also uses the same number as the VPC host offset, the original behaviour.</td></tr>
+            <tr><td><code>vpc_elastic_ip_offset_start</code></td><td>int</td><td><em>Optional advanced override.</em> First VPC host offset of this pool's elastic nodes, when it must differ from the VLAN one above. Calculated by default from the pool's slot.</td></tr>
+            <tr><td><code>slot</code></td><td>int</td><td><em>Optional.</em> Which slot of the shared VPC subnet — and, among pools on one VLAN, which reserved block — this pool takes. Left unset it is the pool's position in the sorted list of pool names. Pin it when you add a pool whose name sorts before an existing one, so the existing pools do not move (9.6).</td></tr>
             <tr><td><code>reserved_ip_pool</code></td><td>list of strings</td><td>Optional. Addresses you already own for natctl to prefer over minting a fresh reservation — verified against the account's real unattached reserved IPs before ever being trusted. Only meaningful with <code>reserved_ip_enabled</code> below.</td></tr>
             <tr><td><code>ipsec_routes</code></td><td>list of <code>{cidr, gateway_ip}</code></td><td>Optional, default <code>[]</code>. Static routes client-agent applies via its VLAN interface — e.g. a customer-operated IPsec/VPN gateway's own routes on this pool's VLAN. Each <code>gateway_ip</code> must be inside this pool's own <code>vlan_cidr</code> — checked at <code>terraform plan</code> time, not left to chance. Live-overridable without a re-apply (10.2's <code>list</code>/<code>add</code>/<code>remove</code>/<code>set-ipsec-routes</code>).</td></tr>
           </tbody>
@@ -2075,7 +2092,7 @@ jq --version</pre>
           <tbody>
             <tr><td><code>witness_enabled</code></td><td>bool</td><td><em>smart default</em></td><td>Provisions the witness instance for this pool. Left unset, defaults to <code>true</code> whenever this pool's <code>floor_nodes</code> is exactly 2 under <code>natctl_on_node_enabled</code> (the shape a witness actually fixes), and <code>false</code> otherwise. Set explicitly to <code>true</code> or <code>false</code> to override the smart default either way.</td></tr>
             <tr><td><code>witness_instance_type</code></td><td>string</td><td><code>g6-nanode-1</code></td><td>The witness never forwards traffic, so the cheapest generally-available plan is enough.</td></tr>
-            <tr><td><code>witness_private_ip_offset</code></td><td>int</td><td><em>(required if <code>witness_enabled</code>)</em></td><td>VPC-side offset for the witness — must not collide with this pool's own <code>private_ip_offset</code> range or any other pool's.</td></tr>
+            <tr><td><code>witness_private_ip_offset</code></td><td>int</td><td><em>Optional advanced override.</em></td><td>VPC-side host offset of the witness. Calculated by default: the last offset of the pool's VPC block.</td></tr>
           </tbody>
         </table></div>
 
@@ -2084,7 +2101,11 @@ jq --version</pre>
           <thead><tr><th>Variable</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
           <tbody>
             <tr><td><code>observability_vlan_pool</code></td><td>string</td><td><em>(required, no default)</em></td><td>Which pool's VLAN the observability host joins directly — must be a key in <code>pools</code> above, or <code>""</code> to skip joining any VLAN. Only meaningful when <code>natctl_on_node_enabled</code> is false (the single-dedicated-host layout, Part II, 2.3).</td></tr>
-            <tr><td><code>observability_private_ip_offset</code></td><td>int</td><td><code>5</code></td><td>VPC-side offset for the observability host's own static address. Only worth changing if this environment shares its <code>public_subnet_id</code> with a completely separate LNG deployment already using the default.</td></tr>
+            <tr><td><code>observability_private_ip_offset</code></td><td>int</td><td><code>5</code></td><td>VPC-side host offset for the observability host's own static address. It is also where every node's natctl looks for Prometheus, so it must be the real address of the host that runs Prometheus, and it must sit below <code>pool_vpc_base_offset</code> (default <code>32</code>) so it never lands inside a pool's block. Change it if you run Prometheus on a host this environment does not create, or if this environment shares its <code>public_subnet_id</code> with a completely separate LNG deployment already using the default.</td></tr>
+            <tr><td><code>pool_vpc_base_offset</code></td><td>int</td><td><code>32</code></td><td>Host offset in <code>public_subnet_id</code> where the calculated pool blocks begin. Everything below it is left for the observability host. Changing it moves every pool that uses calculated addresses.</td></tr>
+            <tr><td><code>pool_vpc_block_size</code></td><td>int</td><td><code>64</code></td><td>Host offsets each pool slot owns in the shared VPC subnet: half for floor nodes, half for elastic nodes plus the witness — up to 32 floor and 31 elastic nodes per pool. Raise it, in steps of 2, only if a pool needs more; doing so moves every pool that uses calculated addresses.</td></tr>
+            <tr><td><code>pool_vlan_reserved_prefix</code></td><td>int</td><td><code>25</code></td><td>Prefix length of the block reserved for each pool's own nodes inside its <code>vlan_cidr</code>. A <code>/25</code> holds 128 addresses — up to 56 floor and 63 elastic nodes. Use a longer prefix to reserve less when many pools share one VLAN, or <code>/24</code> for very large pools. Changing it moves every pool that uses calculated addresses.</td></tr>
+            <tr><td><code>pool_vlan_spare_blocks</code></td><td>int</td><td><code>1</code></td><td>How many extra blocks, each as large as a pool's own, to keep free after the pools on every VLAN for dedicated fleets you add later. Even with two fleets today, one more is held back, so it can hold a fleet as large as the biggest the calculation supports. The client range starts after it (9.6). Set <code>0</code> to give clients everything after the current pools.</td></tr>
             <tr><td><code>natctl_on_node_enabled</code></td><td>bool</td><td><code>true</code></td><td>Runs natctl on every NAT node (leader-elected, STONITH-fenced) instead of a single dedicated host (Part II, 2.3/2.4) — the default, since a single dedicated host is a control-plane single point of failure. A pool whose <code>floor_nodes</code> is exactly 2 gets a quorum-witness automatically (see <code>witness_enabled</code> above) — the genuinely risky shape under this mode is otherwise a 2-node pool with no witness. Set this to <code>false</code> to opt into the single-dedicated-host layout instead.</td></tr>
             <tr><td><code>auto_update_enabled</code></td><td>bool</td><td><code>false</code></td><td>Lets already-running natctl processes pick up a freshly-published fix without a node rebuild — an operator-triggered, stageable <code>rolling-restart</code> (Part X, 10.2) and a fully automatic, jittered live-reload, both re-verifying the SHA-256 integrity manifest before ever restarting, and both backed by automatic rollback if the new version doesn't survive its own health check. Off by default.</td></tr>
             <tr><td><code>api_port</code></td><td>int</td><td><code>8099</code></td><td>TCP port natctl's roster API listens on, threaded through every firewall rule, nftables ruleset, and the composed <code>natctl.yaml</code> automatically. Changing it on an already-deployed environment does not retroactively update URLs already baked into provisioned clients.</td></tr>
@@ -2239,7 +2260,7 @@ python run_acceptance_tests.py --only 01-roster-and-health --only 06-observabili
 
       <section class="chapter" id="c9-4">
         <h2><span class="chno">9.4</span> Onboarding a Client Instance</h2>
-        <p>This project never creates client instances or assigns their VLAN addresses — that's your own automation's job (Part III, 3.4), using an address inside the pool's <code>vlan_cidr</code> but <strong>outside</strong> its <code>vlan_cidr_reserved</code> sub-block (that sub-block is reserved for the NAT fleet's own nodes).</p>
+        <p>This project never creates client instances or assigns their VLAN addresses — that's your own automation's job (Part III, 3.4), using an address inside the pool's <code>vlan_cidr</code> but <strong>outside</strong> its <code>vlan_cidr_reserved</code> sub-block (that sub-block is reserved for the NAT fleet's own nodes). The <code>pool_address_plan</code> output prints, for every VLAN, the address from which client instances may be numbered (9.6).</p>
         <ol>
           <li>Create the client instance with your own tooling; attach it to the pool's VLAN (<code>vlan_label</code>) with a static address you've assigned.</li>
           <li>Fetch the onboarding script over the fleet's own network (works even before the client has internet egress, since it's served from a NAT node):
@@ -2266,17 +2287,143 @@ chmod +x install-nat-client.sh</pre>
           <thead><tr><th>Symptom</th><th>Check</th></tr></thead>
           <tbody>
             <tr><td><code>terraform apply</code> fails with <code>404 "specified region was not found"</code> on Object Storage objects</td><td><code>natctl_object_storage_endpoint</code> has a bucket name baked into the hostname — see 9.2's Object Storage section. Fix the value and re-apply; nothing needs tearing down.</td></tr>
-            <tr><td><code>terraform apply</code> fails with <code>[400] The provided IP is already in use in the subnet</code></td><td>Another deployment (or a leftover from an earlier test) already occupies that VPC address — check <code>linode-cli vpcs ips-list &lt;vpc_id&gt;</code> against your pools' <code>private_ip_offset</code>/<code>observability_private_ip_offset</code> values. Either change the offset or remove the conflicting deployment — never assume it's safe to delete without confirming what it actually is first.</td></tr>
+            <tr><td><code>terraform apply</code> fails with <code>[400] The provided IP is already in use in the subnet</code></td><td>Another deployment (or a leftover from an earlier test) already occupies that VPC address — check <code>linode-cli vpcs ips-list &lt;vpc_id&gt;</code> against the ranges printed in the <code>pool_address_plan</code> output and <code>observability_private_ip_offset</code>. Either move the pool with an explicit <code>slot</code> or address override, or remove the conflicting deployment — never assume it's safe to delete without confirming what it actually is first.</td></tr>
             <tr><td>A node shows unhealthy in <code>status</code></td><td>SSH in (from an <code>admin_cidrs</code> IP), check natctl's service logs and cloud-init logs (<code>/var/log/cloud-init-output.log</code>) — a common cause is a package-install step that silently no-op'd on a slow-network boot.</td></tr>
             <tr><td>Client can't reach the internet</td><td>Confirm <code>install-nat-client.sh</code> actually replaced the default route on the client, and that the pool's NAT-node firewall allows the client's VLAN traffic.</td></tr>
             <tr><td>Client can reach the internet but not a VPC sibling subnet</td><td>Check the roster is publishing <code>vpc_sibling_subnet_cidrs</code> and the client-agent's reconcile pass has run since the subnet was added (Part I, 1.2).</td></tr>
             <tr><td>BGP failover not establishing</td><td>Confirm <code>ip_failover_auto_configure</code> is enabled (default true) and the activation delay (default 60s) has elapsed since the pairing formed (Part IV, 4.4).</td></tr>
             <tr><td><code>terraform apply</code> fails on a firewall rule</td><td>Check <code>admin_cidrs</code> — the control-plane firewall refuses to widen to <code>0.0.0.0/0</code>.</td></tr>
             <tr><td>Runtime secrets bundle: natctl logs <code>failed to fetch secrets bundle ... 403 Client Error</code></td><td><code>secrets_bundle_url</code> mixes the two Object Storage address forms — a bucket-specific hostname (<code>&lt;bucket&gt;.&lt;region&gt;.linodeobjects.com</code>) with the bucket name ALSO repeated in the path. Pick one form (9.3, Step 1's Layer 2 walkthrough) and make sure the value in <code>terraform.tfvars</code>, the upload command, and the verify command all agree exactly.</td></tr>
+            <tr><td>natctl logs <code>runtime secrets bundle: applied N key(s)</code> immediately followed by <code>no Linode API token configured</code>, and restarts continuously</td><td>The published bundle's keys are not the environment variable names natctl reads (typically a bundle built by an older copy of <code>build-secrets-bundle.sh</code>, with lowercase names like <code>linode_token</code>). Rebuild and re-upload it with the current script and confirm <code>jq -r 'keys[]'</code> on the decrypted bundle prints <code>LINODE_TOKEN</code>, <code>NATCTL_OBJECT_STORAGE_ACCESS_KEY</code> and <code>NATCTL_OBJECT_STORAGE_SECRET_KEY</code> (see the upgrade note in Part VIII, 8.3). Affected nodes recover on their next automatic restart.</td></tr>
             <tr><td>Fixed <code>secrets_bundle_url</code> in <code>terraform.tfvars</code>, but a running node still uses the old value</td><td><code>metadata.user_data</code> is a <code>ForceNew</code> field on <code>linode_instance</code> — Terraform can only apply this kind of change by destroying and recreating the node, never in place. For an already-running node, either accept that recreation (a deliberate, scheduled step) or fix it directly: edit <code>secrets_bundle_url</code> in <code>/etc/natctl/config.yaml</code> on the node and <code>systemctl restart natctl</code>. A manual fix like this is overwritten the next time that specific node is replaced.</td></tr>
           </tbody>
         </table></div>
         <p>Full day-2 procedures (drain, resize, rotate credentials, rolling-restart) are in Part X below.</p>
+      </section>
+
+      <section class="chapter" id="c9-6">
+        <h2><span class="chno">9.6</span> Planning Pool Addresses</h2>
+        <p class="lede">You do not choose any addresses. Each pool states how many nodes it has, which plan they run on and which VLAN they join; Terraform works out every address from that, packs the pools so they cannot overlap, and prints the result. This chapter explains what it calculates and why, how to size several dedicated fleets, and how to override a value when you must.</p>
+
+        <h3>What needs an address, and from which network</h3>
+        <p>Every NAT node has a VPC address on <code>eth1</code> and a VLAN address on <code>eth2</code>. They come from two different places, and each is protected differently:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Setting</th><th>Network</th><th>What it places</th><th>Calculated as</th></tr></thead>
+          <tbody>
+            <tr><td><code>private_ip_offset</code></td><td>VPC — one subnet shared by <em>every</em> pool</td><td>The pool's floor nodes, counted from the start of <code>public_subnet_id</code>'s CIDR</td><td>The start of the pool's block</td></tr>
+            <tr><td><code>vpc_elastic_ip_offset_start</code></td><td>VPC</td><td>The elastic nodes natctl adds</td><td>The middle of the pool's block</td></tr>
+            <tr><td><code>witness_private_ip_offset</code></td><td>VPC</td><td>The witness, if the pool has one</td><td>The last offset of the pool's block</td></tr>
+            <tr><td><code>vlan_cidr_reserved</code></td><td>VLAN — the pool's own private network</td><td>The block of the VLAN the gateway fleet owns; nothing else may be given an address in it</td><td>A <code>/25</code> taken from the start of <code>vlan_cidr</code></td></tr>
+            <tr><td><code>vlan_ip_offset</code></td><td>VLAN</td><td>The floor nodes, counted from the start of the reserved block</td><td>Offset <code>8</code></td></tr>
+            <tr><td><code>elastic_ip_offset_start</code></td><td>VLAN</td><td>The elastic nodes, counted from the start of the reserved block</td><td>The middle of the reserved block (offset <code>64</code> in a <code>/25</code>)</td></tr>
+          </tbody>
+        </table></div>
+        <p>The VPC side is one shared space, so pools must be packed against each other. The VLAN side is separate for each pool, so a pool only needs a block that is big enough and does not overlap another pool on the <em>same</em> VLAN.</p>
+        <p>The two networks also differ in who chooses the addresses of everything else. On the <strong>VPC</strong>, Linode assigns an address to every other instance automatically, and it offers no way to hold a range of VPC addresses back — so the gateway fleet is given fixed addresses inside its own range, but nothing prevents Linode from having already given one of them to another instance. If it has, <code>terraform apply</code> fails with <code>The provided IP is already in use in the subnet</code>, and moving the pool with its own <code>slot</code> resolves it. On the <strong>VLAN</strong>, nothing assigns addresses at all: your own automation numbers every client instance. That is why the VLAN needs a range you can be told to keep clear of, and why it is the network where room for future fleets is held back.</p>
+
+        <h3>How the calculation works</h3>
+        <p>Every pool has a <strong>slot</strong>: its position in the sorted list of pool names, unless you set <code>slot</code> yourself. The slot decides where the pool lives. Nothing else about a pool moves it — not its node counts, not its instance type — so resizing one pool never renumbers another.</p>
+        <p><strong>VPC side.</strong> Each slot owns a fixed block of <code>pool_vpc_block_size</code> host offsets (default <code>64</code>), starting at <code>pool_vpc_base_offset</code> (default <code>32</code>) plus <code>slot</code> times the block size. Offsets below the base are left for the observability host.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Part of the block</th><th>Offsets (default block of 64)</th><th>Holds</th></tr></thead>
+          <tbody>
+            <tr><td>First half</td><td>0 – 31</td><td>Floor nodes — up to 32</td></tr>
+            <tr><td>Second half</td><td>32 – 62</td><td>Elastic nodes — up to 31</td></tr>
+            <tr><td>Last offset</td><td>63</td><td>The witness</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>VLAN side.</strong> Each pool gets a block of <code>pool_vlan_reserved_prefix</code> bits (default <code>/25</code>, 128 addresses) taken from the start of its <code>vlan_cidr</code>. Pools that share a VLAN take consecutive blocks in slot order; a pool on its own VLAN is always first.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Part of the block</th><th>Offsets (a <code>/25</code>)</th><th>Holds</th></tr></thead>
+          <tbody>
+            <tr><td>Start</td><td>0 – 7</td><td>The network address, and the observability host at offset 7 if it joins this VLAN</td></tr>
+            <tr><td>Floor</td><td>8 – 63</td><td>Floor nodes — up to 56</td></tr>
+            <tr><td>Elastic</td><td>64 – 126</td><td>Elastic nodes — up to 63</td></tr>
+          </tbody>
+        </table></div>
+        <h3>Keeping room for the next dedicated fleet</h3>
+        <p>Even when only two fleets exist today, one more fleet's block is held back at the end of the reserved area of every VLAN (<code>pool_vlan_spare_blocks</code>, default <code>1</code>). It is the same size as any fleet's block, so it can hold a fleet as large as the biggest this calculation supports — up to 56 floor and 63 elastic nodes. If you need another dedicated fleet later, it takes that block, and nothing already numbered on the client side has to change. That protects your client addressing; adding the fleet is still a normal <code>terraform apply</code>, which replaces the existing pools' floor nodes as described below.</p>
+        <p>Tell whoever numbers your client instances what the plan tells you:</p>
+        <div class="callout">
+          <span class="co-label">What to tell your clients' address owner</span>
+          The gateway fleet uses the ranges listed as <code>reserved_for_the_gateway_fleet</code>, and one more range, listed as <code>reserved_for_future_fleets</code>, is being kept free for a dedicated fleet you may add later — do not give client instances addresses in either. Client instances may use the VLAN from <code>client_addresses_start_at</code> to <code>client_addresses_end_at</code>; configure each one with <code>configure_clients_with</code> (that first available address together with the VLAN's prefix length, for example <code>192.168.1.128/22</code>).
+        </div>
+        <p>A spare block is only held while at least one address is left over for clients. On a VLAN too small for that, the plan holds back fewer blocks — or none — and says so in its <code>note</code>, so you can choose a larger <code>vlan_cidr</code> before clients are numbered.</p>
+
+        <h3>A worked example</h3>
+        <p>Three pools in a VPC subnet of <code>10.20.0.0/22</code>: <code>acme</code> and <code>bravo</code> share the VLAN <code>192.168.0.0/22</code>, and <code>zulu</code> has a VLAN of its own, <code>192.168.8.0/23</code>. <code>acme</code> has 2 floor nodes and can grow to 6 (so it gets a witness); <code>bravo</code> has 3 and can grow to 10; <code>zulu</code> has 3 and can grow to 5. Nothing about addresses is written in the pool definitions. The plan prints:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Pool</th><th>Slot</th><th>VPC floor</th><th>VPC elastic</th><th>VPC witness</th><th>VLAN reserved block</th><th>VLAN floor</th><th>VLAN elastic</th></tr></thead>
+          <tbody>
+            <tr><td><code>acme</code></td><td>0</td><td>10.20.0.32 – .33</td><td>10.20.0.64 – .67</td><td>10.20.0.95</td><td>192.168.0.0/25</td><td>192.168.0.8 – .9</td><td>192.168.0.64 – .67</td></tr>
+            <tr><td><code>bravo</code></td><td>1</td><td>10.20.0.96 – .98</td><td>10.20.0.128 – .134</td><td>none</td><td>192.168.0.128/25</td><td>192.168.0.136 – .138</td><td>192.168.0.192 – .198</td></tr>
+            <tr><td><code>zulu</code></td><td>2</td><td>10.20.0.160 – .162</td><td>10.20.0.192 – .193</td><td>none</td><td>192.168.8.0/25</td><td>192.168.8.8 – .10</td><td>192.168.8.64 – .65</td></tr>
+          </tbody>
+        </table></div>
+        <p>For each VLAN the plan also reports the block held back for a future fleet and where clients may start. On the shared VLAN the two pools fill <code>192.168.0.0</code> – <code>192.168.0.255</code>, <code>192.168.1.0/25</code> is held for a future fleet, and clients may start at <code>192.168.1.128</code> (configure them as <code>192.168.1.128/22</code>). On <code>zulu</code>'s VLAN, <code>192.168.8.128/25</code> is held and clients may start at <code>192.168.9.0</code> (<code>192.168.9.0/23</code>). Read all of it with <code>terraform output pool_address_plan</code> after an apply, or in the plan itself. The output also lists the VPC addresses the gateway fleet uses, as information only.</p>
+
+        <h3>How many pools and nodes fit</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Limit</th><th>Default</th><th>How to raise it</th></tr></thead>
+          <tbody>
+            <tr><td>Floor nodes per pool</td><td>32 (VPC) and 56 (VLAN)</td><td>Raise <code>pool_vpc_block_size</code> for the VPC limit; use a shorter <code>pool_vlan_reserved_prefix</code> for the VLAN one</td></tr>
+            <tr><td>Elastic nodes per pool (<code>max_nodes</code> − <code>floor_nodes</code>)</td><td>31 (VPC) and 63 (VLAN)</td><td>The same two settings</td></tr>
+            <tr><td>Pools in one VPC subnet</td><td>15 in a <code>/22</code>, 63 in a <code>/20</code>, 3 in a <code>/24</code></td><td>Use a larger subnet. In general: (subnet size − 1 − <code>pool_vpc_base_offset</code>) ÷ <code>pool_vpc_block_size</code>, rounded down</td></tr>
+            <tr><td>Pools sharing one VLAN</td><td>A <code>/22</code> holds eight <code>/25</code> blocks: seven fleets today, with the eighth block held for the next one. A <code>/24</code> holds one fleet; its second block stays available to clients instead of being held back</td><td>A larger <code>vlan_cidr</code>, or a longer <code>pool_vlan_reserved_prefix</code> (for example <code>/26</code> for 64 addresses per pool)</td></tr>
+          </tbody>
+        </table></div>
+        <p>When a pool does not fit, the plan stops and names the pool and the limit it exceeded.</p>
+
+        <h3>Several dedicated fleets: what moves and what does not</h3>
+        <p>The usual shape for dedicated tenants is one VLAN per tenant — a separate <code>vlan_label</code> and <code>vlan_cidr</code> for each — so tenants are isolated on the network. Each pool then sits in its own VLAN block, and only the VPC subnet is shared. Pools can also share a VLAN when a customer already runs one for everything.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>You change…</th><th>Does any existing pool's address move?</th></tr></thead>
+          <tbody>
+            <tr><td><code>floor_nodes</code> or <code>max_nodes</code> of a pool, within the limits above</td><td>No</td></tr>
+            <tr><td>A pool's <code>instance_type</code>, witness setting or tags</td><td>No</td></tr>
+            <tr><td>Add a pool whose name sorts <strong>after</strong> every existing pool</td><td>No address moves — it takes the next slot. The apply does, however, <strong>replace every existing pool's floor nodes</strong> (see the callout below)</td></tr>
+            <tr><td>Add a pool whose name sorts <strong>before</strong> an existing pool</td><td><strong>Yes</strong> — the later pools shift up one slot and are renumbered, on top of the replacement described below. Give the new pool <code>slot = &lt;next unused number&gt;</code> to avoid the renumbering</td></tr>
+            <tr><td><code>pool_vlan_spare_blocks</code></td><td>No pool moves — only the address clients may start from changes, so change it before client instances are numbered</td></tr>
+            <tr><td>Remove a pool</td><td>Pools that sorted after it shift down one slot unless you pinned their slots. Pin a slot on any pool before removing one that sorts before it</td></tr>
+            <tr><td><code>pool_vpc_base_offset</code>, <code>pool_vpc_block_size</code> or <code>pool_vlan_reserved_prefix</code></td><td><strong>Yes, every pool</strong> — treat these as fixed once a deployment exists</td></tr>
+          </tbody>
+        </table></div>
+        <div class="callout warn">
+          <span class="co-label">Adding or removing a pool replaces the other pools' floor nodes</span>
+          natctl's list of pools is part of every floor node's boot data, and boot data can only be changed by replacing the node. So an apply that adds or removes a pool shows every <em>other</em> pool's floor nodes as "must be replaced", even though none of their addresses change. Replaced nodes are rebuilt with the same addresses, and elastic nodes (which natctl created itself) are not touched. Plan it like any change that replaces the whole floor: run it in a maintenance window, and read the plan first so the replacement is expected.
+        </div>
+        <div class="callout warn">
+          <span class="co-label">Always read the plan before applying</span>
+          A node whose address changes is replaced, not renumbered in place. If a plan you did not expect shows floor nodes or witnesses being replaced, an address moved — stop and check the slots before applying.
+        </div>
+
+        <h3>Overriding a value</h3>
+        <p>Leave every address setting out unless a pool must sit at specific addresses — for example to match addresses your firewall or routing already refer to. The settings in the table at the start of this chapter, plus <code>slot</code>, are each an optional override that replaces only its own calculated value; everything else stays calculated. The example <code>terraform.tfvars</code> lists them, commented out, with an explanation above them.</p>
+        <ul>
+          <li>An override is checked exactly like a calculated layout: a collision or a pool that does not fit stops the plan.</li>
+          <li>Setting <code>elastic_ip_offset_start</code> on its own keeps the original behaviour, where one number is the host offset on both the VPC and the VLAN side. To give the two sides different numbers, also set <code>vpc_elastic_ip_offset_start</code>.</li>
+          <li>Setting <code>private_ip_offset</code> but not <code>witness_private_ip_offset</code> puts the witness at the first offset after the floor range, as before.</li>
+          <li>A VLAN offset must leave room below it for the observability host: <code>vlan_ip_offset</code> must be at least 2.</li>
+        </ul>
+        <p>If you do place a pool by hand, choose values that satisfy these rules — the plan checks every one of them:</p>
+        <ul>
+          <li>Floor VLAN offsets <code>[vlan_ip_offset, vlan_ip_offset + floor_nodes)</code> must end before <code>elastic_ip_offset_start</code>, and elastic offsets <code>[elastic_ip_offset_start, elastic_ip_offset_start + max_nodes − floor_nodes)</code> must end before the last usable address of <code>vlan_cidr_reserved</code> (its size minus 2).</li>
+          <li>On the VPC side, the floor range, the elastic range and the witness offset of every pool, and the observability offset, must be pairwise disjoint.</li>
+          <li>Reserved blocks of pools on the same VLAN must not overlap, and each must sit inside its <code>vlan_cidr</code>.</li>
+        </ul>
+
+        <h3>What stops a plan</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>The plan says</th><th>Cause and fix</th></tr></thead>
+          <tbody>
+            <tr><td>These pools share a slot</td><td>Two pools pinned to the same <code>slot</code>. Give each its own.</td></tr>
+            <tr><td>These pools need more than a calculated VPC block holds</td><td>A pool has more floor or elastic nodes than one block can hold. Lower <code>floor_nodes</code>/<code>max_nodes</code>, or raise <code>pool_vpc_block_size</code>.</td></tr>
+            <tr><td>Reserved VLAN block does not fit inside their <code>vlan_cidr</code></td><td>Too many pools on one VLAN for its size. Use a larger <code>vlan_cidr</code>, a longer <code>pool_vlan_reserved_prefix</code>, or fewer pools on that VLAN.</td></tr>
+            <tr><td>Nodes do not fit inside their reserved VLAN block</td><td>Too many nodes for the block. Lower the counts, or use a shorter <code>pool_vlan_reserved_prefix</code>.</td></tr>
+            <tr><td>Overlapping ranges on the shared VPC subnet, or on a shared VLAN</td><td>An override collides with another pool. Remove the override, or give the pools different slots.</td></tr>
+            <tr><td><code>observability_private_ip_offset</code> falls inside a pool's range</td><td>Move it below <code>pool_vpc_base_offset</code>.</td></tr>
+          </tbody>
+        </table></div>
       </section>
 
       <!-- ============ PART X ============ -->
@@ -2623,6 +2770,7 @@ natctl-cli --config /etc/natctl/config.yaml set-ipsec-routes --pool shared --cle
             <tr><td><code>vlan_label</code> / <code>vlan_cidr</code></td><td>string</td><td>The VLAN every node's <code>eth2</code> joins, and its CIDR. Must match this pool's <code>nat-fleet</code> module's own <code>vlan_label</code>/<code>vlan_cidr</code>.</td></tr>
             <tr><td><code>vlan_reserved_cidr</code></td><td>string</td><td>This pool's own small, wholly-owned sub-block nested inside <code>vlan_cidr</code> — every floor/elastic/observability node's address is drawn from here, never from the wider VLAN a customer's own client fleet also lives on. Named <code>vlan_cidr_reserved</code> on the Terraform side (9.2) — same field, populated across the two layers, different word order in each.</td></tr>
             <tr><td><code>vlan_ip_offset</code> / <code>elastic_ip_offset_start</code></td><td>int</td><td>Host offsets within <code>vlan_reserved_cidr</code> — the floor's addresses start at <code>vlan_ip_offset</code>, elastic nodes' at <code>elastic_ip_offset_start</code>. Compared directly against each other, never summed.</td></tr>
+            <tr><td><code>vpc_elastic_ip_offset_start</code></td><td>int</td><td>Optional. First VPC host offset of the elastic nodes natctl adds, when it must differ from <code>elastic_ip_offset_start</code>. A node still takes its name and VLAN offset from <code>elastic_ip_offset_start</code>; only its VPC address is shifted by the difference. Unset, one number is used on both networks. Written by Terraform, so leave it alone.</td></tr>
             <tr><td><code>tags</code></td><td>list of strings</td><td>Extra tags merged onto this pool's own required floor/elastic/pool-name tags (a supplement, never a replacement — natctl's own discovery still depends on the required ones being present).</td></tr>
             <tr><td><code>ip_failover_phantom_grace_seconds</code></td><td>int</td><td>Default <code>300</code>. How long a buddy keeps covering a node's public IP after that node vanishes from discovery entirely (not just unhealthy — genuinely gone), before giving up. Long enough to survive a routine reboot or a transient API-visibility blip; short enough that a permanently-gone resource doesn't stay misrepresented as covered forever.</td></tr>
             <tr><td><code>image</code></td><td>string</td><td>Base OS image for nodes natctl provisions (default <code>linode/ubuntu22.04</code>).</td></tr>
@@ -3129,7 +3277,7 @@ systemctl restart natctl</pre></li>
     {label:"Part IX", title:"Deployment", chapters:[
       ["c9-1","9.1 Prerequisites"],["c9-2","9.2 Terraform Configuration Reference"],
       ["c9-3","9.3 Deployment Sequence"],["c9-4","9.4 Onboarding a Client"],
-      ["c9-5","9.5 Troubleshooting a First Deployment"]
+      ["c9-5","9.5 Troubleshooting a First Deployment"],["c9-6","9.6 Planning Pool Addresses"]
     ]},
     {label:"Part X", title:"Day-2 Operations", chapters:[
       ["c10-1","10.1 Pre-Production Checklist"],["c10-2","10.2 The Operator CLI"],
