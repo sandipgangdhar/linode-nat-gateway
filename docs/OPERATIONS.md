@@ -77,6 +77,7 @@ needs the edit-and-restart procedure.
 | Field | Type | Default | What it does |
 |---|---|---|---|
 | `reconcile_interval_seconds` | int | `15` | How often the background loop runs: discover nodes, health-check, pair buddies, evaluate autoscale. Lower = faster reaction, more Linode API calls. |
+| `health_check_interval_seconds` | float | `5` | How often every node's health is re-probed between reconcile passes, with any change published to the roster immediately, so clients drop a dead node's route within seconds even while a reconcile pass is slow. `0` disables it. |
 | `prometheus_url` | string | *(required)* | Where natctl queries Prometheus for the real per-node conntrack/port/throughput metrics autoscaling decisions depend on. |
 | `file_sd_path` | string or omit | *(unset)* | Local disk path to write a Prometheus file_sd target list to after every reconcile pass. Leave unset if Prometheus runs on a different host than natctl — use `GET /file_sd` over HTTP instead (natctl's roster API already serves the same data that way). |
 | `vpc_sibling_subnet_cidrs` | list of strings | `[]` | **Live-overridable — see `CLI-GUIDE.md`'s `set-vpc-sibling-subnets`.** The whole-VPC sibling-subnet list; Terraform keeps this current automatically on every `apply`, rarely hand-edited. |
@@ -196,7 +197,7 @@ See "Autoscaling" below for the full semantics (when each trigger fires, the sus
 | `conntrack_high_watermark` / `conntrack_low_watermark` | float | `0.70` / `0.30` | Scale-out / scale-in triggers on connection-tracking table occupancy. |
 | `port_headroom_low_watermark` | float | `0.15` | Scale-out trigger: only this fraction of usable source ports per destination remain free. |
 | `throughput_high_watermark` | float | `0.85` | Scale-out trigger: this fraction of the node's real, per-instance-type bandwidth capacity (queried live from Linode's API). |
-| `cpu_high_watermark` | float | `0.80` | Scale-out-only trigger: the busiest core's network-softirq saturation ratio. No scale-in equivalent. |
+| `cpu_high_watermark` | float | `0.80` | Scale-out-only trigger: the busiest core's network-softirq saturation ratio. Never triggers a scale-in, but scale-in will not remove a node this load still needs. |
 | `target_conntrack_ratio` / `target_port_utilization_ratio` / `target_throughput_ratio` / `target_cpu_ratio` | float | `0.50` each | Where a scale action aims to land each metric after acting, not the trigger watermark itself — see "Autoscaling" below's sizing formula. |
 | `sustained_breach_passes` | int | `2` | Consecutive reconcile passes a metric must stay past its watermark before it's trusted enough to act on. |
 | `max_scale_out_step_fraction` / `max_scale_in_step_fraction` | float | `1.0` / `0.5` | Caps a single scaling action as a fraction of current (scale-out) or current elastic (scale-in) capacity. |

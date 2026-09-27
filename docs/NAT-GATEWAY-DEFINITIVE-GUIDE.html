@@ -958,6 +958,7 @@ flowchart TB
 
         <h3>The trade-off fencing accepts</h3>
         <p>A fenced node is powered off, not just demoted. Once the controller runs on the NAT nodes themselves rather than an isolated dedicated host, the node being fenced is also, at that moment, forwarding real NAT traffic — so a fencing event briefly interrupts that node's own data-plane role too. Buddy IP failover (Part IV) is what limits the blast radius of that specific interruption, exactly the same way it limits any other single node's failure.</p>
+        <p>natctl never powers a fenced node back on. It stays <em>offline</em> in the cloud console until an operator has checked why it was fenced and decided it is safe to boot. Until then the pool runs one baseline node short; natctl compensates with elastic capacity, and the <code>NATNodeDown</code> alert fires after a minute so the missing node does not go unnoticed. Boot it again from the console or the API once you have investigated (Operations runbook, "A node was fenced").</p>
 
         <h3>What happens if the cloud provider's own API is the thing that's unreliable</h3>
         <p>Every mutating call the control plane makes to the cloud provider — a fencing power-off, provisioning or removing elastic capacity, registering an IP-failover pairing — passes through a circuit breaker first. After a run of consecutive network errors or server-side (5xx) failures against that API, the breaker opens: every further mutating call is refused outright, without even attempting it, for a short cooldown period. A single trial call is allowed through once the cooldown elapses, and a success there closes the breaker again; a failure reopens it. A request the provider's API itself rejects as malformed (a 4xx) never counts toward opening the breaker — that's a problem on this system's own side, not evidence the provider is having an incident.</p>
@@ -1279,6 +1280,9 @@ flowchart LR
         </ul>
         <p>A cooldown period after every scaling action, independent of both guards above, blocks re-evaluation entirely for a while — giving freshly added capacity real time to start absorbing load before the next decision is made.</p>
 
+        <h3>Scale-in keeps enough capacity for the traffic</h3>
+        <p>Only connection-tracking utilization and port headroom have a low watermark, so on their own they cannot tell whether the traffic still needs the nodes. A workload of a few high-bandwidth flows keeps connection tracking near zero while it runs close to the pool's throughput ceiling. Before removing anything, natctl therefore also checks the throughput and CPU readings: it removes a node only if the remaining nodes would carry the current traffic at or below the same target utilization a scale-out aims for (50% by default). A pool that has just scaled out to relieve a busy period therefore holds its size until the traffic really drops, and a throughput or CPU reading that cannot be confirmed skips the scale-in for that pass instead of being read as an idle pool.</p>
+
         <h3><code>max_nodes</code> as a true ceiling, not just a guardrail</h3>
         <p>Every reconcile pass also checks whether the pool's actual total node count is already <em>above</em> <code>max_nodes</code> — not just whether a scale-out would cross it. If it is, excess elastic capacity is drained back down immediately, regardless of cooldown or current demand, rather than waiting for a low-utilization reading to eventually correct it on its own. This covers a node count ending up above the ceiling for reasons that have nothing to do with load — most commonly, lowering <code>max_nodes</code> itself below the pool's current size via <code>set-pool-scaling</code> (10.2). That correction is a configuration-ceiling fix, not a scaling decision, so none of the guards above apply to it. Floor nodes are never touched this way — if floor nodes alone already meet or exceed <code>max_nodes</code>, only a <code>terraform apply</code> can resolve that.</p>
         <p>The ceiling counts every instance that belongs to the pool, including one that is powered off or restarting, because it is still provisioned and still billed. A pool that is at its maximum will therefore not add a replacement for a node that is temporarily down; the node returning restores capacity without the pool ever exceeding the limit. If you want a failed baseline node to be replaced automatically while it is down, set <code>max_nodes</code> above the number of baseline nodes to leave room for that replacement.</p>
@@ -1288,7 +1292,7 @@ flowchart LR
           <thead><tr><th>Setting</th><th>Default</th><th>Meaning</th></tr></thead>
           <tbody>
             <tr><td>Target utilization (each signal)</td><td>50%</td><td>How far below its trigger line a scale-out action aims to land</td></tr>
-            <tr><td>CPU / softirq trigger</td><td>80%</td><td>No low-watermark equivalent — scale-out only, see above</td></tr>
+            <tr><td>CPU / softirq trigger</td><td>80%</td><td>No low-watermark equivalent, so it never triggers a scale-in; scale-in will not remove a node the CPU load still needs</td></tr>
             <tr><td>Sustained-breach passes</td><td>2</td><td>Consecutive breached passes required before a reading is trusted for sizing</td></tr>
             <tr><td>Max scale-out step</td><td>100% of current size</td><td>Never more than doubling in a single action</td></tr>
             <tr><td>Max scale-in step</td><td>50% of elastic capacity</td><td>Never removes more than half the current elastic node count at once</td></tr>
@@ -2039,7 +2043,7 @@ jq --version</pre>
         <div class="table-wrap"><table>
           <thead><tr><th>Variable</th><th>Type</th><th>What it does</th></tr></thead>
           <tbody>
-            <tr><td><code>label</code></td><td>string</td><td>Optional (default <code>lng-example</code>). Prefix for every resource whose name would otherwise be fixed — this environment's three Cloud Firewalls. Change it to run a second, clearly-distinguishable copy of this environment in the same account/region.</td></tr>
+            <tr><td><code>label</code></td><td>string</td><td>Optional (default <code>lng-example</code>). Prefix for every resource whose name would otherwise be fixed — this environment's three Cloud Firewalls and its observability host (<code>&lt;label&gt;-observability</code>). Linode instance labels are unique per account, so change it to run a second, clearly-distinguishable copy of this environment in the same account/region. Upgrading an existing deployment renames its observability host in place (no replacement).</td></tr>
             <tr><td><code>authorized_keys</code></td><td>list of strings</td><td>SSH public keys installed on every node this environment creates — floor nodes and, for every pool, the natctl-provisioned elastic nodes that mirror this same list.</td></tr>
           </tbody>
         </table></div>
@@ -2278,6 +2282,7 @@ chmod +x install-nat-client.sh</pre>
           </li>
         </ol>
         <p>Verify egress from the client: it should route out through the NAT pool's public IPs, spread across healthy nodes via ECMP — not through any single node.</p>
+        <p><strong>The pool name is part of the roster address</strong> (<code>/fleet/&lt;pool-name&gt;</code>). Renaming a pool, or moving a client to a different pool, means changing <code>NATCTL_ROSTER_URL</code> in <code>/etc/lng-client-agent/env</code> on every affected client and restarting <code>lng-client-agent</code>. Until you do, the client keeps the last routes it learned; once the old nodes are gone it has no working default route, and it can no longer be reached over its public or VPC address (only over the VLAN, for example through a NAT node on the same VLAN).</p>
       </section>
 
       <section class="chapter" id="c9-5">
@@ -2705,6 +2710,7 @@ natctl-cli --config /etc/natctl/config.yaml set-ipsec-routes --pool shared --cle
           <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead>
           <tbody>
             <tr><td><code>reconcile_interval_seconds</code></td><td>int</td><td><code>15</code></td><td>How often the background loop runs: discover nodes, health-check, pair buddies, evaluate autoscale (Part II, 2.1). Lower = faster reaction, more Linode API calls.</td></tr>
+            <tr><td><code>health_check_interval_seconds</code></td><td>float</td><td><code>5</code></td><td>How often every node's health is re-probed between reconcile passes, with any change published to the roster immediately. Clients learn that a node died only through the roster, so this bounds how long traffic hashed to a dead node is lost, independent of how long a reconcile pass takes. <code>0</code> disables it (health then updates only once per reconcile pass).</td></tr>
             <tr><td><code>pools_registry</code></td><td>mapping</td><td><em>(unset)</em></td><td>Keeps the pool list out of this file. <code>bucket</code>, <code>s3_region</code> and <code>key</code> name a private Object Storage object holding <code>{"version": 1, "pools": {...}}</code>; natctl reads it at startup, saves a last-known-good copy (<code>cache_path</code>, default <code>/var/lib/natctl/pools-registry.cache.json</code>), and restarts after a jittered delay (<code>jitter_max_seconds</code>, default 10) when it changes, checked every <code>check_interval_seconds</code> (default 30). A registry that is empty, malformed, a different version, invalid, or shares no pool with the running set is ignored. When set, <code>pools:</code> in this file is used only if the registry and its cached copy are both unavailable. Written by Terraform.</td></tr>
             <tr><td><code>root_pass</code></td><td>string</td><td><em>(unset)</em></td><td>The root password given to nodes natctl provisions, for any pool that does not set its own. Needed when the pools come from the registry, which carries no secrets. Written by Terraform.</td></tr>
             <tr><td><code>prometheus_url</code></td><td>string</td><td><em>(required)</em></td><td>Where natctl queries Prometheus for the real per-node conntrack/port/throughput metrics autoscaling depends on (Part VII, 7.1).</td></tr>

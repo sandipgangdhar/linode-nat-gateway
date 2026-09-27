@@ -52,7 +52,7 @@ variable "region" {
 }
 
 variable "label" {
-  description = "Prefix for every resource this environment creates whose name is otherwise fixed (currently module.vpc's three Cloud Firewalls: '<label>-nat-node-fw'/'<label>-control-plane-fw'/'<label>-client-fw'). Change this to run a second, clearly-distinguishable copy of this environment in the same account/region without any naming collision with an existing 'lng-example' deployment -- e.g. a live-testing/verification environment alongside a real one."
+  description = "Prefix for every resource this environment creates whose name is otherwise fixed (module.vpc's three Cloud Firewalls: '<label>-nat-node-fw'/'<label>-control-plane-fw'/'<label>-client-fw', and the observability host: '<label>-observability'). Change this to run a second, clearly-distinguishable copy of this environment in the same account/region without any naming collision with an existing 'lng-example' deployment -- e.g. a live-testing/verification environment alongside a real one."
   type        = string
   default     = "lng-example"
 }

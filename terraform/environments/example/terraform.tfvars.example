@@ -48,7 +48,8 @@
 region        = "us-east"
 
 # Prefix for every resource this environment creates whose name is
-# otherwise fixed (module.vpc's three Cloud Firewalls). Change this to
+# otherwise fixed (module.vpc's three Cloud Firewalls and the observability
+# host, named "<label>-observability"). Change this to
 # run a second, clearly-distinguishable copy of this environment in the
 # same account/region with no naming collision. Defaults to "lng-example"
 # -- uncomment only if you need a different value.

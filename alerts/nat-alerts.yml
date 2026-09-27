@@ -76,7 +76,7 @@ groups:
           severity: critical
         annotations:
           summary: "nat_exporter on {{ $labels.instance }} is not reachable"
-          description: "client-agent instances routing through this node should already be excluding it (they probe /healthz directly, independent of Prometheus) — this alert is about the node itself needing attention, not about client impact."
+          description: "Clients drop a node from their routes as soon as natctl marks it unhealthy and publishes that to the roster (within seconds, see health_check_interval_seconds), so this alert is about the node itself needing attention, not about client impact. If natctl fenced the node (see the leader-election section of the runbook), it stays powered off until an operator boots it."
 
       - alert: NATNodeUnhealthy
         expr: nat_node_healthy == 0

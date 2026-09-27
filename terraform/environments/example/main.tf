@@ -1254,6 +1254,9 @@ module "observability" {
   # natctl on this host reads the pools registry when it starts.
   depends_on = [linode_object_storage_object.pools_registry]
 
+  # Instance labels are unique per Linode account, so the host is named from
+  # this environment's own label rather than the module's fixed default.
+  label           = "${var.label}-observability"
   region          = var.region
   vpc_id          = module.vpc.vpc_id
   subnet_id       = module.vpc.public_subnet_id
