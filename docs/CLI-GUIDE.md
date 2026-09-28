@@ -142,6 +142,9 @@ here regardless.
 | [`rotate-linode-token`](#rotate-linode-token) | A running natctl's API | Yes — live fleet-wide credential |
 | [`rolling-restart`](#rolling-restart) | A running natctl's API | Yes — restarts nodes one at a time |
 | [`set-vpc-sibling-subnets`](#set-vpc-sibling-subnets) | A running natctl's API | Yes — live fleet-wide setting |
+| [`fenced-nodes`](#fenced-nodes--hold--release--pause--resume) | A running natctl's API | No |
+| [`hold-fenced-node`/`release-fenced-node`](#fenced-nodes--hold--release--pause--resume) | A running natctl's API | Yes — live per-node setting |
+| [`pause-fenced-restore`/`resume-fenced-restore`](#fenced-nodes--hold--release--pause--resume) | A running natctl's API | Yes — live per-pool setting |
 | [`list-ipsec-routes`](#list--add--remove--set-ipsec-routes) | A running natctl's API | No |
 | [`add`/`remove`/`set-ipsec-routes`](#list--add--remove--set-ipsec-routes) | A running natctl's API | Yes — live per-pool setting |
 
@@ -430,6 +433,20 @@ currently-connected client in that pool at once — without touching
 whatever the pool's own static configuration says. Every connected
 client picks up the change within one long-poll round-trip — seconds,
 not a deploy cycle.
+
+### `fenced-nodes` / `hold` / `release` / `pause` / `resume`
+
+Inspect, and temporarily override, the automatic restore of nodes natctl powered off.
+
+```bash
+natctl-cli --config /etc/natctl/config.yaml fenced-nodes --pool shared
+natctl-cli --config /etc/natctl/config.yaml hold-fenced-node --pool shared --node-id shared-2 --for 2h --reason "disk check"
+natctl-cli --config /etc/natctl/config.yaml release-fenced-node --pool shared --node-id shared-2
+natctl-cli --config /etc/natctl/config.yaml pause-fenced-restore --pool shared --for 1h
+natctl-cli --config /etc/natctl/config.yaml resume-fenced-restore --pool shared
+```
+
+**Why**: after a node is fenced, the leader boots it back on by itself. **When**: you want to examine a fenced node first. A hold keeps one node off, a pause keeps every fenced node in the pool off; both take effect within one reconcile pass, expire by themselves (default 4 hours, at most 24), never use restore budget, and make the pool add replacement capacity at once instead of waiting for the node. `fenced-nodes` is read-only and shows pending fences, restore attempts used, and holds; `waiting_for` and `budget_exhausted` are only filled in on the leader, so point `--natctl-url` at it for those.
 
 ### `set-pool-scaling`
 

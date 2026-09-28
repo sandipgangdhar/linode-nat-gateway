@@ -118,6 +118,14 @@ default) — there's nothing to elect with one instance.
 | `fence_confirm_timeout_seconds` | float | `60.0` | How long a new leader waits for confirmation that the previous leader was actually powered off before proceeding. |
 | `renewal_retry_attempts` / `renewal_retry_backoff_seconds` | int / float | `2` / `1.0` | Bounded retry on the lease-store read/renewal path. |
 | `liveness_probe_timeout_seconds` | float | `3.0` | Timeout for the pre-fence check of whether the previous leader's own roster API still answers. |
+| `fenced_node_auto_restore` | bool | `true` | Whether the leader powers a node it fenced back on once it is safe to. `false` leaves every fenced node off until you boot it (`linode-cli linodes boot <id>`). |
+| `fenced_node_restore_cooldown_seconds` | float | `60.0` | Minimum time after a fence, and between two restore attempts on one node, before a boot is issued. |
+| `fenced_node_restore_max_attempts` / `fenced_node_restore_window_seconds` | int / float | `2` / `3600.0` | Boot attempts allowed per node per rolling window; failed boot calls count. When used up the node stays off and the `NATFencedNodeRestoreBudgetExhausted` alert fires — find out why it keeps failing, then boot it by hand. `0` attempts disables restoring while still recording fences. |
+| `fenced_node_restore_stable_seconds` | float | `300.0` | How long a restored node must stay running and NAT-healthy before its pending record is cleared. |
+| `fenced_node_restore_compensation_grace_seconds` | float | `240.0` | How long after a fence natctl waits for the node to be restored before it adds an elastic node for it. Load-driven scale-out is never delayed. |
+| `fenced_node_hold_default_seconds` / `fenced_node_hold_max_seconds` | float | `14400.0` / `86400.0` | Length of an operator hold (`natctl-cli hold-fenced-node`) when none is given, and the longest accepted. |
+
+Only nodes natctl itself powered off are ever restored (never one you powered off yourself), only baseline nodes, and never in a bare 2-node pool without a witness. See the definitive guide's "Automatic restore of a fenced node".
 
 ### Per-pool: placement and identity (`pools.<name>.*`)
 

@@ -181,6 +181,33 @@ groups:
           summary: "Pool {{ $labels.pool }} (natctl_on_node_enabled) has {{ $value }} confirmed leaders, not exactly 1"
           description: "0 means every node's leader-election is stuck (check Object Storage lease-store reachability and each node's own natctl logs); more than 1 means a genuine split-brain in the fencing/election path, which STONITH fencing is designed to make effectively impossible — either result needs investigation, not just waiting for the next reconcile pass. A couple of reconcile passes' grace (natctl_leader_election_is_leader is only ever scraped every 30s via natctl_sd) already absorbs the handful of seconds a real, healthy re-election normally takes — this alert firing means it did not resolve on its own. Absent entirely for pools with leader_election disabled (single-dedicated-host mode has no is_leader gauge to sum)."
 
+      - alert: NATFencedNodeRestoreBudgetExhausted
+        expr: max by (pool, fenced_node) (natctl_fenced_node_restore_budget_exhausted) == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fenced node {{ $labels.fenced_node }} in pool {{ $labels.pool }} was restored automatically as often as allowed and is being left powered off"
+          description: "natctl powered this node off (fencing) and has already booted it back the maximum number of times inside its restore window (fenced_node_restore_max_attempts per fenced_node_restore_window_seconds), and it keeps ending up fenced again or never turning healthy. It stays off until an operator investigates why it keeps failing (check the fencing candidate's journal: `journalctl -u natctl | grep -i 'fencing previous leader'`, and the node's own natctl/nat-exporter logs) and boots it by hand with `linode-cli linodes boot <id>`. The pool is running one baseline node short until then; natctl compensates with elastic capacity while under max_nodes."
+
+      - alert: NATFencedNodePendingRestore
+        expr: max by (pool) (natctl_fenced_nodes_pending) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pool {{ $labels.pool }} has had a fenced node awaiting restore for over 15 minutes"
+          description: "A node natctl powered off has not been restored and confirmed healthy within 15 minutes. Normally the leader boots it after fenced_node_restore_cooldown_seconds and clears the record once it has been healthy for fenced_node_restore_stable_seconds, so this means the restore is not happening: automatic restore is disabled, an operator hold or pause is in effect (see NATFencedRestoreHeldLong and `natctl_cli fenced-nodes`), the pool is a bare 2-node pool without a witness, the node keeps failing (see NATFencedNodeRestoreBudgetExhausted), or there is no confirmed leader (see NATLeaderElectionSplitBrainOrNoLeader). Check `natctl_fenced_node_restore_attempts` and the leader's journal for `restoring fenced node`."
+
+      - alert: NATFencedRestoreHeldLong
+        expr: max by (pool) (natctl_fenced_node_held) == 1 or max by (pool) (natctl_fenced_restore_paused) == 1
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pool {{ $labels.pool }} has had a fenced node held off (or its automatic restore paused) by an operator for over an hour"
+          description: "An operator ran `natctl_cli hold-fenced-node` or `pause-fenced-restore` and the hold has now lasted more than an hour. While it lasts the leader does not boot the node and the pool adds elastic capacity for it (if it has room under max_nodes), so this is a cost and a capacity risk that is easy to forget. Release it with `natctl_cli release-fenced-node` / `resume-fenced-restore` once the investigation is done, or let it expire (default 4 h, at most 24 h)."
+
       - alert: NATLinodeAPICircuitBreakerOpen
         expr: natctl_linode_api_circuit_open == 1
         for: 1m
