@@ -156,6 +156,9 @@ write_files:
       #!/bin/sh
       # Usage: lng-fetch-verified.sh <manifest_url> <fetch_url> <dest_path>
       set -eu
+      # See nat-node.yaml.tftpl's identical script for why: cloud-init's runcmd continues past a failed
+      # step, so without this a verification failure here would silently boot into a half-fetched state.
+      trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "lng-fetch-verified: fatal error (exit $rc) -- powering off rather than booting into a half-fetched state" >&2; poweroff; fi' EXIT
       MANIFEST_URL="$1"
       FETCH_URL="$2"
       DEST_PATH="$3"

@@ -496,6 +496,16 @@ write_files:
       #!/bin/sh
       # Usage: lng-fetch-verified.sh <manifest_url> <fetch_url> <dest_path>
       set -eu
+      # cloud-init's own runcmd module runs every command in this file's list from ONE generated script
+      # without stopping on a failed step, so a verification failure here used to be silently swallowed:
+      # the boot continued into a half-fetched state where the failed file was simply missing, and every
+      # later runcmd step (starting services, etc.) ran anyway. This let a corrupted or truncated Object
+      # Storage upload -- something no automated check on the Terraform side catches today -- produce a
+      # node that comes up "running" at the Linode API level but is never actually NAT-healthy, and, if
+      # it's an elastic node, gets replaced by natctl with another instance that fetches the exact same bad
+      # object and fails identically, spiraling elastic-node creation without ever converging. Powering off
+      # on any failure here instead makes the instance's own status immediately reflect the real problem.
+      trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "lng-fetch-verified: fatal error (exit $rc) -- powering off rather than booting into a half-fetched state" >&2; poweroff; fi' EXIT
       MANIFEST_URL="$1"
       FETCH_URL="$2"
       DEST_PATH="$3"

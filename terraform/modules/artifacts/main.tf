@@ -273,3 +273,59 @@ resource "linode_object_storage_object" "manifest" {
   acl          = "public-read"
   etag         = md5(jsonencode(local.manifest))
 }
+
+# ---------------------------------------------------------------------------
+# Upload-integrity verification -- see the dev repo's identical block in its
+# own terraform/modules/artifacts/main.tf for the full "why" (a corrupted or
+# truncated PUT succeeding at the API level, undetected until a node boots
+# into it). Same mechanism here: an ETag read back over HTTP after every
+# upload above, compared against the MD5 this apply already computed from
+# its own local checkout. Covers nat-overview.json and the manifest object
+# too, alongside every binary/unit file, since upload corruption isn't a
+# code-execution concern specific to the manifest's own threat model.
+locals {
+  upload_verification = {
+    "bin/natctl"             = filemd5(local.natctl_bin_path)
+    "bin/nat-exporter"       = filemd5(local.nat_exporter_bin_path)
+    "bin/buddy-sync"         = filemd5(local.buddy_sync_bin_path)
+    "bin/client-agent"       = filemd5(local.client_agent_bin_path)
+    "bin/natctl-cli"         = filemd5(local.natctl_cli_bin_path)
+    "natctl.service"         = filemd5(local.natctl_service_path)
+    "nat-exporter.service"   = filemd5(local.nat_exporter_service_path)
+    "lng-buddy-sync.service" = filemd5(local.lng_buddy_sync_service_path)
+    "conntrackd@.service"    = filemd5(local.conntrackd_peer_service_path)
+    "install-nat-client.sh"  = filemd5(local.install_nat_client_script_path)
+    "nat-overview.json"      = filemd5(local.nat_overview_json_path)
+    "manifest.sha256.json"   = md5(jsonencode(local.manifest))
+  }
+}
+
+resource "null_resource" "verify_artifact_uploads" {
+  triggers = {
+    verification_map = jsonencode(local.upload_verification)
+  }
+
+  depends_on = [
+    linode_object_storage_object.natctl_bin,
+    linode_object_storage_object.nat_exporter_bin,
+    linode_object_storage_object.buddy_sync_bin,
+    linode_object_storage_object.client_agent_bin,
+    linode_object_storage_object.natctl_cli_bin,
+    linode_object_storage_object.natctl_service,
+    linode_object_storage_object.nat_exporter_service,
+    linode_object_storage_object.lng_buddy_sync_service,
+    linode_object_storage_object.conntrackd_peer_service,
+    linode_object_storage_object.nat_overview_json,
+    linode_object_storage_object.install_nat_client_script,
+    linode_object_storage_object.manifest,
+  ]
+
+  provisioner "local-exec" {
+    command = "\"${path.module}/verify_uploads.sh\""
+    environment = {
+      BASE_URL          = local.base_url
+      PREFIX            = local.prefix
+      VERIFICATION_JSON = jsonencode(local.upload_verification)
+    }
+  }
+}
