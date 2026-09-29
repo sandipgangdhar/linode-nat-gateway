@@ -244,6 +244,18 @@ clearing a stuck flag carries none of `drain`'s own floor-node
 restriction, since nothing here deletes anything. The node rejoins the
 roster on its next health check; no restart is needed anywhere.
 
+`undrain` always clears the drain regardless of what started it. That's
+a deliberate override of a guard the daemon otherwise applies everywhere
+else a drain gets cleared: normally, if a node is draining for a reason
+other than the one the caller itself started, the daemon leaves it
+alone, on the assumption that something else — most often a legitimate
+autoscale scale-in decision racing the same node — now owns that drain.
+`undrain` is the one caller that knows better: an operator running it
+has already confirmed the node is genuinely stuck, not legitimately
+mid-scale-in, so it explicitly asks the daemon to clear the flag
+regardless. Confirm that first with `fenced-nodes` or `check-orphans`
+before reaching for it.
+
 **Never needed after a normal `rotate-root-pass` run against a pool that
 doesn't include the node you're running it from** — see that command's
 own self-targeting note below for the one case it exists to recover
