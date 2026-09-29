@@ -74,7 +74,7 @@ that file (and the credentials it references).
 command**: `status`, `nodes`, and `check-orphans` use it to talk to the
 **Linode API directly** — they build their own live view of the fleet
 from Linode's own state, and never touch a running `natctl` process at
-all. Every other command (`drain`, `resize`, `rotate-root-pass`,
+all. Every other command (`drain`, `undrain`, `resize`, `rotate-root-pass`,
 `rotate-linode-token`, `rolling-restart`, and the `set-*` commands) uses
 it only to find the pool/API defaults, then sends a real HTTP request to
 a **running `natctl` process's own API** — see each command's own
@@ -134,6 +134,7 @@ here regardless.
 | [`status`](#status) | Linode API | No |
 | [`nodes`](#nodes) | Linode API | No |
 | [`drain`](#drain) | Linode API + a running natctl's API | Yes — deletes one elastic node |
+| [`undrain`](#undrain) | Linode API + a running natctl's API | Yes — clears a stuck drain flag |
 | [`resize`](#resize) | Linode API + a running natctl's API | Yes — resizes one node in place |
 | [`rotate-root-pass`](#rotate-root-pass) | Linode API + a running natctl's API | Yes — resets root_pass on one or more nodes |
 | [`check-orphans`](#check-orphans) | Linode API | No |
@@ -216,6 +217,38 @@ a running `natctl` process's own API, not just a Linode API call — pass
 to that process (see "Two different things `--config` is used for"
 above).
 
+### `undrain`
+
+Manually clear a node's drain flag — a recovery tool, not a routine
+command.
+
+```bash
+natctl-cli --config /etc/natctl/config.yaml undrain --pool shared --node-id shared-1
+```
+
+**Why**: drain state is stored durably, not just in the memory of
+whichever process set it. If `resize` or `rotate-root-pass` is
+interrupted before it reaches its own cleanup step — a dropped
+connection, a closed terminal, anything that ends a foreground command
+early — the node it was mid-operation on is left marked draining, and
+nothing clears that on its own: it has no timeout, and restarting
+`natctl` does not help either, since the daemon simply recovers the same
+durable value the next time it starts. A node stuck this way reports
+itself unhealthy indefinitely and is left out of client-side routing.
+**When**: a node stays unhealthy well past when its own metrics say it
+should have recovered, and nothing else (a genuine hardware/network
+problem) explains it.
+
+Unlike `drain`, this works on a floor node as well as an elastic one —
+clearing a stuck flag carries none of `drain`'s own floor-node
+restriction, since nothing here deletes anything. The node rejoins the
+roster on its next health check; no restart is needed anywhere.
+
+**Never needed after a normal `rotate-root-pass` run against a pool that
+doesn't include the node you're running it from** — see that command's
+own self-targeting note below for the one case it exists to recover
+from.
+
 ### `resize`
 
 Change a node's instance plan in place.
@@ -278,8 +311,9 @@ running two in parallel); pass it (repeatable) to target specific nodes
 instead. Each node is drained before the reset, then genuinely powered
 off, reset, and powered back on — Linode's password-reset API rejects a
 running instance outright, so there is no lower-downtime path for this
-specific operation, unlike `resize`'s optional warm attempt — and
-un-drained after, whether the reset succeeded or not.
+specific operation, unlike `resize`'s optional warm attempt — then
+un-drained, reliably so as long as this command's own process survives
+long enough to reach that step.
 
 Once the live rotation succeeds, the new value is also stored durably
 (the same live-override mechanism `set-pool-scaling` uses) so every
@@ -288,6 +322,19 @@ pass, and any future elastic-node provision uses it immediately. **A
 later `terraform apply` will overwrite this back to whatever
 `terraform.tfvars` says for this pool's `root_pass`** — update that
 value too if you want the rotation to stick long-term.
+
+**Never run this against a pool that includes the node you're running it
+from.** The reset is a real, synchronous power-off/reset/boot cycle
+running inside this command's own process — if that process is on one of
+the pool's own nodes and reaches that node in its rotation loop, Linode
+powers off the very machine running the command, ending it mid-operation
+before it can un-drain or reboot that node back up. The command checks
+for this automatically and skips the local node with a clear message,
+rotating everything else in the same run — rotate the skipped node
+separately, from a different host. If this command is ever interrupted
+before its own cleanup step for some other reason (a dropped connection,
+a closed terminal), see `undrain` above to recover the node it was
+mid-rotation on.
 
 ### `rotate-linode-token`
 
