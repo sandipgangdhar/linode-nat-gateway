@@ -347,6 +347,15 @@ resource "linode_instance" "node" {
   root_pass       = var.root_pass
   firewall_id     = var.firewall_id
   tags            = concat(var.tags, ["lng", "lng-fleet", "lng-pool-${var.pool_name}"])
+  # Linode's own Lassie watchdog defaults to enabled and power-cycles an
+  # instance it judges unresponsive, including during ordinary, non-fatal
+  # natctl activity on the node -- which then triggers a real STONITH
+  # fencing dispute between its peers over a node that was never actually
+  # down. A NAT node's own leader-election/fencing already handles a
+  # genuinely dead peer; an external watchdog second-guessing that on the
+  # same node is redundant at best and actively harmful when it fires on
+  # a node that was fine.
+  watchdog_enabled = false
   # Assigns this node's reserved address (operator-supplied via M17's
   # reserved_ip_pool, or freshly created above -- see node_reserved_ips)
   # as its public IPv4 on creation, instead of Linode's usual
@@ -672,6 +681,10 @@ resource "linode_instance" "witness" {
   root_pass       = var.root_pass
   firewall_id     = var.firewall_id
   tags            = concat(var.tags, ["lng", "lng-witness", "lng-pool-${var.pool_name}-witness"])
+  # See linode_instance.node's own watchdog_enabled comment above -- the
+  # witness runs its own leader-election corroboration logic and doesn't
+  # need Linode's watchdog second-guessing it either.
+  watchdog_enabled = false
 
   interface {
     purpose = "public"

@@ -169,6 +169,11 @@ resource "linode_instance" "observability" {
   root_pass       = var.root_pass
   firewall_id     = var.firewall_id
   tags            = ["lng", "observability"]
+  # See nat-fleet's linode_instance.node's own watchdog_enabled comment --
+  # this host runs natctl too (when natctl_on_node_enabled is false, it's
+  # the ONLY place natctl runs), and an unprompted watchdog reboot here is
+  # just as disruptive as on a NAT node.
+  watchdog_enabled = false
 
   interface {
     purpose = "public"

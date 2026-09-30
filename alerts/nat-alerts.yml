@@ -208,6 +208,15 @@ groups:
           summary: "Pool {{ $labels.pool }} has had a fenced node held off (or its automatic restore paused) by an operator for over an hour"
           description: "An operator ran `natctl_cli hold-fenced-node` or `pause-fenced-restore` and the hold has now lasted more than an hour. While it lasts the leader does not boot the node and the pool adds elastic capacity for it (if it has room under max_nodes), so this is a cost and a capacity risk that is easy to forget. Release it with `natctl_cli release-fenced-node` / `resume-fenced-restore` once the investigation is done, or let it expire (default 4 h, at most 24 h)."
 
+      - alert: NATSelfPeerHealthDisagreementSustained
+        expr: max by (pool) (natctl_self_peer_disagree_streak) > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A node in pool {{ $labels.pool }} has had every reachable peer disagree with its own healthy self-check for a sustained period"
+          description: "This node's own self-check keeps reporting healthy while every reachable peer's independent check of it disagrees -- the roster already correctly excludes it once this streak crosses SELF_HEALTH_PEER_DISAGREE_SUSTAIN_PASSES, but a streak still climbing this long after that means the underlying condition peers are seeing hasn't cleared. Check that node's own exporter/NAT data-plane health directly rather than trusting its self-check, and check whether client-side roster propagation (client-agent's own roster-URL failover) is keeping up -- a stuck failover there can make client-facing impact outlast the underlying condition."
+
       - alert: NATLinodeAPICircuitBreakerOpen
         expr: natctl_linode_api_circuit_open == 1
         for: 1m
