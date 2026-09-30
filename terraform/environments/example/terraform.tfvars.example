@@ -423,8 +423,9 @@ natctl_object_storage_bucket     = "lng-artifacts"
 # Let already-running natctl processes pick up a fresh publish without a
 # node rebuild -- an operator-triggered rolling-restart (natctl_cli's
 # rolling-restart command) and a fully automatic, jittered live-reload.
-# Off by default; uncomment to opt in.
-# auto_update_enabled = true
+# On by default; uncomment to opt back out if your deployment needs
+# tighter manual control over when the control plane restarts.
+# auto_update_enabled = false
 
 # Optional runtime secrets bundle (Layer 2 of this project's SOPS+age
 # secrets design -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part VIII

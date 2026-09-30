@@ -132,16 +132,18 @@ locals {
   # "observability" below, whose own private_ip variable is given this
   # exact same value.
   #
-  # var.observability_private_ip_offset (default 5), not a bare literal --
-  # a hardcoded 5 would collide with a SECOND, entirely separate LNG
+  # local.observability_private_ip_offset (pool_addressing.tf) -- an
+  # explicit var.observability_private_ip_offset override if set, else
+  # computed safely below pool_vpc_base_offset. Not a bare literal: a
+  # hardcoded value would collide with a SECOND, entirely separate LNG
   # deployment sharing this same public_subnet_id (Linode returns [400]
   # "The provided IP is already in use in the subnet" at apply time) if
   # that other deployment's own observability host used the same
-  # hardcoded offset. See that variable's own description for the full
-  # story and pool_addressing.tf's observability-offset precondition for what
-  # IS checked (this deployment's own pools) vs. what can't be (a second
+  # value -- see that variable's own description for the full story and
+  # pool_addressing.tf's observability-offset precondition for what IS
+  # checked (this deployment's own pools) vs. what can't be (a second
   # deployment's state, invisible to this one).
-  natctl_private_ip = cidrhost(module.vpc.public_subnet_cidr, var.observability_private_ip_offset)
+  natctl_private_ip = cidrhost(module.vpc.public_subnet_cidr, local.observability_private_ip_offset)
 
   # Once natctl runs on every NAT node instead of the dedicated
   # observability host (natctl_on_node_enabled), buddy-sync's roster poll
@@ -304,7 +306,7 @@ locals {
   # collision is already impossible by construction of the smart default
   # above, but an operator-supplied explicit offset isn't guaranteed
   # that), any OTHER pool's floor or elastic range, or
-  # observability_private_ip_offset. Unlike overlapping_vpc_offset_pool_pairs
+  # local.observability_private_ip_offset. Unlike overlapping_vpc_offset_pool_pairs
   # / overlapping_elastic_vpc_pool_pairs above, a witness offset is exactly
   # one address, not a [start, start+count) range, so this is a
   # point-in-range test rather than a pairwise interval-overlap test.
@@ -313,7 +315,7 @@ locals {
     if local.pool_effective_witness_enabled[k] && (
       (local.pool_effective_witness_private_ip_offset[k] >= local.pool_vpc_elastic_start[k] &&
       local.pool_effective_witness_private_ip_offset[k] < local.pool_vpc_elastic_start[k] + (p.max_nodes - p.floor_nodes)) ||
-      local.pool_effective_witness_private_ip_offset[k] == var.observability_private_ip_offset ||
+      local.pool_effective_witness_private_ip_offset[k] == local.observability_private_ip_offset ||
       length([
         for k2, p2 in local.pools : k2
         if k2 != k && (
@@ -327,7 +329,7 @@ locals {
   ]
 
   # Every pool whose own private_ip_offset range contains
-  # var.observability_private_ip_offset -- the observability host has
+  # local.observability_private_ip_offset -- the observability host has
   # only a single fixed VPC address (not a range), so this is a simpler
   # single-point-in-range check than overlapping_vpc_offset_pool_pairs
   # above, not a second copy of the same pairwise logic. Only catches a
@@ -337,7 +339,7 @@ locals {
   # invisible to this check.
   pools_overlapping_observability_offset = [
     for k, p in local.pools : k
-    if var.observability_private_ip_offset >= p.private_ip_offset && var.observability_private_ip_offset < p.private_ip_offset + p.floor_nodes
+    if local.observability_private_ip_offset >= p.private_ip_offset && local.observability_private_ip_offset < p.private_ip_offset + p.floor_nodes
   ]
 
   # Same idea as pools_overlapping_observability_offset above, but against
@@ -346,7 +348,7 @@ locals {
   # needs its own collision checks at all.
   pools_with_elastic_range_overlapping_observability_offset = [
     for k, p in local.pools : k
-    if var.observability_private_ip_offset >= local.pool_vpc_elastic_start[k] && var.observability_private_ip_offset < local.pool_vpc_elastic_start[k] + (p.max_nodes - p.floor_nodes)
+    if local.observability_private_ip_offset >= local.pool_vpc_elastic_start[k] && local.observability_private_ip_offset < local.pool_vpc_elastic_start[k] + (p.max_nodes - p.floor_nodes)
   ]
 
   # Every pool whose own floor range reaches its own elastic_ip_offset_start
@@ -1264,13 +1266,14 @@ module "observability" {
   authorized_keys = var.authorized_keys
   root_pass       = local.root_pass
 
-  # var.observability_private_ip_offset (default 5) in the public/
-  # NAT-node subnet — clear of every pool's own floor and elastic ranges
-  # by default (see variables.tf's pools description), and checked
-  # against them at plan time (pool_addressing.tf's observability-offset precondition)
-  # . Same value as local.natctl_private_ip above, kept as one
-  # local so it's impossible for this and the buddy-sync/client-agent
-  # roster URL to drift apart. Only actually reachable/meaningful when
+  # local.observability_private_ip_offset in the public/NAT-node subnet —
+  # an explicit override if set, else computed clear of every pool's own
+  # floor and elastic ranges (see pool_addressing.tf), and checked
+  # against them at plan time either way (pool_addressing.tf's
+  # observability-offset precondition). Same value as
+  # local.natctl_private_ip above, kept as one local so it's impossible
+  # for this and the buddy-sync/client-agent roster URL to drift apart.
+  # Only actually reachable/meaningful when
   # create_observability_instance is true, of course.
   private_ip = local.natctl_private_ip
   vpc_prefix = split("/", module.vpc.public_subnet_cidr)[1]

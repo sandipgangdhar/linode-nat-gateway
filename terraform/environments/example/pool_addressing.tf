@@ -132,6 +132,20 @@ locals {
   auto_vpc_elastic_offset = { for k, p in var.pools : k => local.auto_vpc_floor_offset[k] + local.auto_vpc_half }
   auto_vpc_witness_offset = { for k, p in var.pools : k => local.auto_vpc_floor_offset[k] + var.pool_vpc_block_size - 1 }
 
+  # ----- observability --------------------------------------------------------
+  # var.observability_private_ip_offset's own explicit override wins when set;
+  # otherwise computed as a small offset safely below pool_vpc_base_offset --
+  # the same reserved region this value has always needed to sit in (see that
+  # variable's own base-offset description) -- clamped to never go below host
+  # offset 2 even if pool_vpc_base_offset itself is set very low. Moves
+  # automatically if pool_vpc_base_offset changes, instead of needing separate
+  # manual re-coordination the way a bare literal default would.
+  observability_private_ip_offset = (
+    var.observability_private_ip_offset != null
+    ? var.observability_private_ip_offset
+    : max(2, min(5, var.pool_vpc_base_offset - 1))
+  )
+
   # ----- VLAN side -----------------------------------------------------------
   auto_vlan_block_size     = pow(2, 32 - var.pool_vlan_reserved_prefix)
   auto_vlan_floor_offset   = 8
@@ -428,7 +442,7 @@ output "pool_address_plan" {
 
   precondition {
     condition     = length(local.pools_overlapping_observability_offset) == 0
-    error_message = "observability_private_ip_offset (${var.observability_private_ip_offset}) falls inside the floor-node range of: ${join(", ", local.pools_overlapping_observability_offset)}. The observability host and one of that pool's floor nodes would get the same VPC (eth1) address. Move observability_private_ip_offset below pool_vpc_base_offset (${var.pool_vpc_base_offset}), or move the pool."
+    error_message = "observability_private_ip_offset (${local.observability_private_ip_offset}${var.observability_private_ip_offset == null ? ", computed" : ""}) falls inside the floor-node range of: ${join(", ", local.pools_overlapping_observability_offset)}. The observability host and one of that pool's floor nodes would get the same VPC (eth1) address. Set observability_private_ip_offset explicitly to an address below pool_vpc_base_offset (${var.pool_vpc_base_offset}), or move the pool."
   }
 
   precondition {
@@ -438,7 +452,7 @@ output "pool_address_plan" {
 
   precondition {
     condition     = length(local.pools_with_elastic_range_overlapping_observability_offset) == 0
-    error_message = "observability_private_ip_offset (${var.observability_private_ip_offset}) falls inside the VPC-side elastic range of: ${join(", ", local.pools_with_elastic_range_overlapping_observability_offset)}. The observability host and one of that pool's elastic nodes would get the same VPC (eth1) address. Move observability_private_ip_offset below pool_vpc_base_offset (${var.pool_vpc_base_offset})."
+    error_message = "observability_private_ip_offset (${local.observability_private_ip_offset}${var.observability_private_ip_offset == null ? ", computed" : ""}) falls inside the VPC-side elastic range of: ${join(", ", local.pools_with_elastic_range_overlapping_observability_offset)}. The observability host and one of that pool's elastic nodes would get the same VPC (eth1) address. Set observability_private_ip_offset explicitly to an address below pool_vpc_base_offset (${var.pool_vpc_base_offset})."
   }
 
   precondition {

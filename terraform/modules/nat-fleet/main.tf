@@ -336,8 +336,51 @@ resource "linode_placement_group" "nodes" {
   placement_group_policy = var.placement_group_policy
 }
 
+# Every currently-existing instance this pool already manages, read independently of
+# linode_instance.node's own planned changes (a data source reflects live state at plan
+# time, not what the resource block below is about to DO) -- this is what lets the disk-fit
+# check below see a node's REAL, pre-apply id without creating a dependency on the very
+# resize it exists to check before.
+data "linode_instances" "existing_nodes" {
+  filter {
+    name   = "tags"
+    values = ["lng-pool-${var.pool_name}"]
+  }
+}
+
+# Pre-checks every node_instance_type_overrides entry against that node's REAL current
+# disk allocation before linode_instance.node below is ever allowed to attempt the resize --
+# see check_resize_disk_fit.sh's own header for the full rationale (this is fleet.py's
+# resize_node()/DiskFitError check, reused here so a plain `terraform apply` gets the same
+# protection the natctl_cli resize command already has). A no-op, zero-cost resource when
+# there are no overrides at all (the common case) or when this module wasn't given a token
+# to check with -- in that second case the apply proceeds unchecked, same as before this
+# existed, rather than blocking every deployment that doesn't wire linode_token into this
+# module.
+resource "null_resource" "check_resize_disk_fit" {
+  count = length(var.node_instance_type_overrides) > 0 && var.linode_token != "" ? 1 : 0
+
+  triggers = {
+    overrides = jsonencode(var.node_instance_type_overrides)
+  }
+
+  provisioner "local-exec" {
+    command = "\"${path.module}/check_resize_disk_fit.sh\""
+    environment = {
+      LINODE_TOKEN   = var.linode_token
+      OVERRIDES_JSON = jsonencode(var.node_instance_type_overrides)
+      NODE_IDS_JSON = jsonencode({
+        for inst in data.linode_instances.existing_nodes.instances :
+        inst.label => inst.id
+      })
+    }
+  }
+}
+
 resource "linode_instance" "node" {
   for_each = toset(local.node_ids)
+
+  depends_on = [null_resource.check_resize_disk_fit]
 
   label           = each.key
   region          = var.region
