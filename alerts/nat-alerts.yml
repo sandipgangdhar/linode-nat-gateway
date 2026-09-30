@@ -208,6 +208,15 @@ groups:
           summary: "Pool {{ $labels.pool }} has had a fenced node held off (or its automatic restore paused) by an operator for over an hour"
           description: "An operator ran `natctl_cli hold-fenced-node` or `pause-fenced-restore` and the hold has now lasted more than an hour. While it lasts the leader does not boot the node and the pool adds elastic capacity for it (if it has room under max_nodes), so this is a cost and a capacity risk that is easy to forget. Release it with `natctl_cli release-fenced-node` / `resume-fenced-restore` once the investigation is done, or let it expire (default 4 h, at most 24 h)."
 
+      - alert: NATFencedHoldWithoutFence
+        expr: max by (pool) (natctl_fenced_hold_without_fence) == 1 or max by (pool) (natctl_fenced_restore_paused_without_fence) == 1
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pool {{ $labels.pool }} has an operator hold or pause in effect on a node that is not currently fenced"
+          description: "A `natctl_cli hold-fenced-node` or `pause-fenced-restore` is still active but nothing is fenced right now, so it has no capacity impact today -- NATFencedRestoreHeldLong stays silent in this state, since that alert only fires once a hold is actually blocking a real restore. This is the case a hold gets forgotten in: it sits invisible until the node it covers is next fenced for any reason, at which point it silently blocks that restore too. Check `natctl_cli fenced-nodes --pool {{ $labels.pool }}`'s `holds` field and release it with `natctl_cli release-fenced-node` / `resume-fenced-restore` if it is no longer needed."
+
       - alert: NATSelfPeerHealthDisagreementSustained
         expr: max by (pool) (natctl_self_peer_disagree_streak) > 30
         for: 10m
