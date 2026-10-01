@@ -298,11 +298,23 @@ resource "linode_firewall" "nat_node" {
   # to observe a live failover and found it silently blocked. A genuine
   # operational need (diagnosing exactly this kind of failover), scoped the
   # same way as SSH -- not opened to the whole internet.
+  #
+  # Also includes every subnet in this VPC (not just admin_cidrs): the Cloud
+  # Firewall filters at the hypervisor, before a packet ever reaches this
+  # node's own guest-level nftables (which already accepts ICMP from
+  # anywhere) -- so a client on a VPC-sibling subnet using the documented
+  # vpc_sibling_subnet_cidrs/--vpc-iface mechanism has no way to diagnose
+  # reachability with a plain ping otherwise, regardless of its own on-link
+  # route being correctly configured; this Cloud Firewall rule is the actual
+  # gate, not this node's own nftables. Scoped to ICMP only (diagnostic,
+  # low-risk) -- natctl-api/nat-exporter/conntrackd-sync below stay scoped
+  # to this pool's own subnet, since nothing legitimate outside it needs
+  # those control-plane ports today.
   inbound {
     label    = "icmp"
     action   = "ACCEPT"
     protocol = "ICMP"
-    ipv4     = var.admin_cidrs
+    ipv4     = concat(var.admin_cidrs, [for s in data.linode_vpc_subnets.all.vpc_subnets : s.ipv4])
   }
 }
 
