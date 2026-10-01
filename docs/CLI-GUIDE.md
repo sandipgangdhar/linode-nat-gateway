@@ -131,7 +131,7 @@ here regardless.
 
 | Command | Talks to | Mutates anything? |
 |---|---|---|
-| [`status`](#status) | Linode API | No |
+| [`status`](#status) / [`status --deep`](#status) | Linode API (+ a running natctl's API for `--deep`) | No |
 | [`nodes`](#nodes) | Linode API | No |
 | [`drain`](#drain) | Linode API + a running natctl's API | Yes — deletes one elastic node |
 | [`undrain`](#undrain) | Linode API + a running natctl's API | Yes — clears a stuck drain flag |
@@ -166,6 +166,34 @@ dedicated-acme-corp: 3 node(s), 3 healthy
 with nothing to open, load, or log into. **When**: first, before
 anything more specific — the natural opening move of any troubleshooting
 session, or a quick sanity check before/after a change.
+
+**`status --deep`** adds a self-health cross-check that would otherwise
+mean checking several separate places by hand — a unit's current state
+(`systemctl is-active`, or a single `status` snapshot) only reports the
+instant you happen to look, and a crash-looping process can look exactly
+as healthy as a stable one at that moment:
+
+```bash
+natctl-cli --config /etc/natctl/config.yaml status --deep
+```
+
+```
+shared: 3 node(s), 3 healthy
+
+--- deep health check (http://localhost:8099) ---
+process: restart_count=2, up 14320s
+prometheus: OK (last success 4s ago)
+autoscale signal: present
+```
+
+Three checks, each read from that one instance's own live metrics: its
+own restart count (persisted locally across restarts, so one node's
+count climbing far faster than its peers' is the real crash-loop
+signal); whether Prometheus is actually reachable from inside `natctl`
+itself, not merely configured; and whether an autoscale reading is
+being published for any pool at all. Reads from whichever instance
+`--natctl-url` points at (same connectivity rules as `drain`/`resize`
+below — the underlying API never listens on a public interface).
 
 ### `nodes`
 

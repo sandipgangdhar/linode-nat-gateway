@@ -2516,6 +2516,17 @@ natctl-cli --config config.yaml drain --pool shared --node-id shared-elastic-3</
         <pre class="code">shared: 3 node(s), 3 healthy
 dedicated-acme-corp: 3 node(s), 3 healthy</pre>
 
+        <h3><code>status --deep</code> — the self-health cross-check</h3>
+        <pre class="code">natctl-cli --config /etc/natctl/config.yaml status --deep</pre>
+        <p><strong>Why:</strong> a unit's current state (<code>systemctl is-active</code>, or a single <code>status</code> snapshot) only reports the instant you happen to look — a crash-looping process can look exactly as healthy as a stable one at that moment. <code>--deep</code> runs the same cross-check across several different signals that would otherwise mean checking a handful of separate places by hand. <strong>When:</strong> right after <code>status</code> itself, whenever something looks off but every node still reports healthy — or routinely, as the first step of any investigation.</p>
+        <pre class="code">shared: 3 node(s), 3 healthy
+
+--- deep health check (http://localhost:8099) ---
+process: restart_count=2, up 14320s
+prometheus: OK (last success 4s ago)
+autoscale signal: present</pre>
+        <p>Three checks, each read from that one instance's own live metrics: its own restart count (persisted locally across restarts, so one node's count climbing far faster than its peers' is the real crash-loop signal — not just "is it up right now"); whether Prometheus is actually reachable from inside <code>natctl</code> itself, not merely configured (a stuck or misconfigured Prometheus URL otherwise degrades autoscaling silently); and whether an autoscale reading is being published for any pool at all. Reads from whichever instance <code>--natctl-url</code> points at (defaulting the same way every other command here does) — the connectivity rules are identical to <code>drain</code>/<code>resize</code> below, since the underlying API never listens on a public interface.</p>
+
         <h3><code>nodes</code> — every node in one pool, in detail</h3>
         <pre class="code">natctl-cli --config /etc/natctl/config.yaml nodes --pool shared</pre>
         <p><strong>Why:</strong> where <code>status</code> gives a count, <code>nodes</code> gives the roster itself — every node's ID, private IP, health, and public IP(s). <strong>When:</strong> the moment <code>status</code> shows fewer healthy nodes than expected, to see exactly which node it is and what its current public-facing address is — the natural next step, not a replacement for <code>status</code>.</p>
