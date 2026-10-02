@@ -2187,7 +2187,7 @@ chmod 600 ~/.config/sops/age/keys.txt
 export SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt</pre>
             <code>SOPS_AGE_KEY_FILE</code> isn't optional if your key lives anywhere other than <code>sops</code>'s own platform default (macOS: <code>~/Library/Application Support/sops/age/keys.txt</code>; Linux: this XDG path) — which any path you choose yourself, including the example above, always is. Export it in <strong>every new shell session</strong> before running <code>sops</code> or <code>terraform apply</code> (both read it) — it does not persist once the terminal closes unless you add it to your shell profile (<code>~/.zshrc</code>/<code>~/.bashrc</code>) yourself. Needed again for every later step below that touches <code>secrets.enc.json</code>. It is <strong>not</strong> needed for <code>age-keygen</code> itself (a fresh keypair needs no existing key to generate) — only for steps that decrypt or encrypt with it.
           </li>
-          <li>Copy the SOPS config and swap in your new public key (printed by <code>age-keygen</code>, also saved inside <code>keys.txt</code>):
+          <li>Copy the SOPS config and swap in your new public key (printed by <code>age-keygen</code>, also saved inside <code>keys.txt</code>) — run this from the <strong>root of this project</strong> (wherever you cloned this repository; <code>.sops.yaml.example</code> lives there, not under <code>terraform/</code>):
             <pre class="code">cp .sops.yaml.example .sops.yaml
 <span class="m"># edit .sops.yaml: replace the placeholder age public key with yours</span></pre>
           </li>
@@ -2196,21 +2196,23 @@ export SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt</pre>
 cp secrets.enc.json.example secrets.enc.json
 <span class="m"># edit secrets.enc.json with real values (still plaintext at this point)</span></pre>
           </li>
+          <li>Encrypt it in place now — before deciding on Layer 2 below, not after. <code>secrets.enc.json</code> stays at this same path (<code>terraform/environments/example/</code>) for every command in this step:
+            <pre class="code">sops --encrypt --in-place secrets.enc.json</pre>
+            From here on, <code>secrets.enc.json</code> is safe to commit — it's ciphertext. Never commit <code>~/.config/sops/age/keys.txt</code> or a plaintext <code>terraform.tfvars</code>; both are gitignored already.
+            <p><strong>If you don't want the Layer 2 runtime secrets bundle, you're done with this step</strong> — skip straight to Step 2 — Terraform configuration below. The rest of this step only applies if you're setting up Layer 2; continue below to do that.</p>
+          </li>
         </ol>
 
-        <h4>Optional (step 3.1): the runtime secrets bundle (Layer 2)</h4>
-        <p>Separate, opt-in mechanism (9.2's <code>secrets_bundle_url</code>; full reasoning in Part VIII, 8.3) — skip this on a first deployment and come back to it later if you want it. It closes a different gap: without it, natctl writes your real credentials to <code>/etc/natctl/env</code> in plaintext on every node at boot. With it, only a small, single-purpose decryption key sits on the node — the real credentials stay encrypted until natctl decrypts them in memory at its own startup. Do this now, before the encrypt step below — it's still the same one-time encryption pass either way, whether or not you set this up.</p>
+        <h4>Optional: the runtime secrets bundle (Layer 2)</h4>
+        <p>Separate, opt-in mechanism (9.2's <code>secrets_bundle_url</code>; full reasoning in Part VIII, 8.3) — skip this on a first deployment and come back to it later if you want it. It closes a different gap: without it, natctl writes your real credentials to <code>/etc/natctl/env</code> in plaintext on every node at boot. With it, only a small, single-purpose decryption key sits on the node — the real credentials stay encrypted until natctl decrypts them in memory at its own startup. <code>secrets.enc.json</code> is already ciphertext by this point (the step above) — every command below operates on it as ciphertext, not plaintext.</p>
         <ol>
           <li>Generate a <strong>new, separate</strong> keypair — not your operator SOPS key, not reused anywhere else:
             <pre class="code">age-keygen -o /tmp/bundle-key.txt   <span class="m"># prints "Public key: age1..."</span></pre>
           </li>
-          <li><strong>Don't hand-paste the key into a text editor.</strong> A literal paste inserts real line breaks, and a JSON string can't contain a literal, unescaped newline — this breaks the file silently: it still looks fine in an editor, but fails to parse. Use <code>jq</code> to inject the file's contents as a correctly-escaped string instead:
-            <pre class="code">jq --rawfile key /tmp/bundle-key.txt \
-  '.secrets_bundle_age_private_key = $key' \
-  secrets.enc.json &gt; /tmp/secrets.enc.json.new
-mv /tmp/secrets.enc.json.new secrets.enc.json</pre>
-            Confirm it's still valid JSON (no output = valid) — leave it as plaintext for now, you'll encrypt the whole file, base secrets and this together, in one pass at the end of this step:
-            <pre class="code">python3 -m json.tool secrets.enc.json &gt; /dev/null</pre>
+          <li>Inject it into the already-encrypted <code>secrets.enc.json</code> with <code>sops set</code> — not a hand-paste or a plain <code>jq</code> edit: the file is ciphertext now, so only <code>sops</code> itself can safely decrypt, add the field, and re-encrypt it in one atomic step (it also needs your <strong>operator</strong> <code>SOPS_AGE_KEY_FILE</code> from Step 1 still exported in this shell to do that decrypt). <code>jq -Rs .</code> reads the key file as one JSON-escaped string, preserving its real line breaks correctly — a literal paste into an editor instead inserts unescaped newlines, which breaks the surrounding JSON silently:
+            <pre class="code">sops set secrets.enc.json '["secrets_bundle_age_private_key"]' "$(jq -Rs . /tmp/bundle-key.txt)"</pre>
+            Confirm it landed (prints the key back out, decrypted — proves both the set and your own decrypt access work):
+            <pre class="code">sops --decrypt secrets.enc.json | jq -r .secrets_bundle_age_private_key</pre>
           </li>
           <li>In <code>terraform.tfvars</code>, set <code>secrets_bundle_url</code> to wherever you'll publish the bundle (your Object Storage bucket, public-read — the published file is ciphertext, so public-read is fine). Two address forms both work, but <strong>never mix pieces of the two</strong> — the single most common mistake here, confirmed live: reusing the bucket-specific hostname (below) while also keeping <code>&lt;bucket&gt;/</code> in the path repeats the bucket name twice, and 403s at fetch time with no relation to any other setting.
             <p><strong>Form A — cluster-generic host + bucket in the path</strong> (recommended: reuses <code>natctl_object_storage_endpoint</code>'s own value exactly, no separate hostname to get right):</p>
@@ -2221,8 +2223,9 @@ mv /tmp/secrets.enc.json.new secrets.enc.json</pre>
           </li>
           <li>Build and publish the actual bundle, encrypted to the <strong>same public key</strong> <code>age-keygen</code> printed back in step 1 — <strong>not a newly generated one</strong>. Get it back with:
             <pre class="code">grep "^# public key:" /tmp/bundle-key.txt</pre>
-            Use that exact value as the recipient argument. This script internally runs <code>sops --decrypt</code> on <code>secrets.enc.json</code>, so it needs your <strong>operator</strong> <code>SOPS_AGE_KEY_FILE</code> from Step 1 still exported in this shell — not the bundle keypair from step 1 above, a different key entirely:
-            <pre class="code">./scripts/build-secrets-bundle.sh age1&lt;bundle-public-key&gt; /tmp/secrets-bundle.json.age</pre>
+            Use that exact value as the recipient argument. This script internally runs <code>sops --decrypt</code> on <code>secrets.enc.json</code> (which only works now that it's actually encrypted — see the step above), so it needs your <strong>operator</strong> <code>SOPS_AGE_KEY_FILE</code> from Step 1 still exported in this shell — not the bundle keypair above, a different key entirely. The script itself lives at the <strong>root of this project</strong>, not under <code>terraform/</code> — go back there first:
+            <pre class="code">cd ../../..
+./scripts/build-secrets-bundle.sh age1&lt;bundle-public-key&gt; /tmp/secrets-bundle.json.age</pre>
             Then upload it to your Object Storage bucket, at the exact path <code>secrets_bundle_url</code> points to. <strong>Pick one</strong> of the two commands below, whichever tool you already have configured — running both just uploads the same file twice, harmless but pointless:
             <p><strong>Option A — AWS CLI</strong> (needs <code>aws configure</code> set up against your Object Storage keys; Linode's Object Storage is S3-compatible, so it needs an explicit <code>--endpoint-url</code>, or it defaults to real AWS S3):</p>
             <pre class="code">aws s3 cp /tmp/secrets-bundle.json.age \
@@ -2247,14 +2250,7 @@ curl -I "$secrets_bundle_url"</pre>
             <pre class="code">rm /tmp/secrets-bundle.json.age /tmp/bundle-key.txt</pre>
           </li>
         </ol>
-
-        <ol start="4">
-          <li>Encrypt it in place — one pass covers everything currently in the file, whether or not you did the optional step 3.1 above:
-            <pre class="code">sops --encrypt --in-place secrets.enc.json</pre>
-          </li>
-        </ol>
-        <p>From here on, <code>secrets.enc.json</code> is safe to commit — it's ciphertext. Never commit <code>~/.config/sops/age/keys.txt</code> or a plaintext <code>terraform.tfvars</code>; both are gitignored already.</p>
-        <p>Rotating a Layer 2 value later means rebuilding and re-uploading the bundle, then restarting natctl fleet-wide (<code>rolling-restart</code>, Part X 10.2) — an already-running node keeps whatever it read at its own last startup.</p>
+        <p><strong>Rotating a Layer 2 value later</strong> means rebuilding and re-uploading the bundle, then restarting natctl fleet-wide (<code>rolling-restart</code>, Part X 10.2) — an already-running node keeps whatever it read at its own last startup.</p>
 
         <h3>Step 2 — Terraform configuration</h3>
         <pre class="code">cd terraform/environments/example
