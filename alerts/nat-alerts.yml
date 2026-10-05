@@ -88,7 +88,7 @@ groups:
           description: "Check nat_node_health_check{node=\"{{ $labels.node }}\"} to see which specific check failed (ip_forward, nftables_loaded, egress_reachable)."
 
       - alert: NATPoolBelowFloor
-        expr: count by (pool) (nat_node_healthy == 1) < on(pool) group_left() natctl_pool_min_nodes
+        expr: count by (pool) (nat_node_healthy == 1) < on(pool) group_left() max by (pool) (natctl_pool_min_nodes)
         for: 2m
         labels:
           severity: critical
@@ -164,7 +164,7 @@ groups:
           description: "A harder resource-exhaustion signal than nat_conntrack_utilization_ratio alone (kernel actually rejected new connections) — parity with AWS NAT Gateway's ErrorPortAllocation. Check nf_conntrack_max headroom and whether the pool should scale out."
 
       - alert: NATAutoscaleCeilingReached
-        expr: natctl_pool_autoscale_breach_streak > 0 and on(pool) (natctl_pool_floor_nodes + natctl_pool_elastic_nodes) >= on(pool) natctl_pool_max_nodes
+        expr: max by (pool, metric) (natctl_pool_autoscale_breach_streak) > 0 and on(pool) (max by (pool) (natctl_pool_floor_nodes) + max by (pool) (natctl_pool_elastic_nodes)) >= on(pool) max by (pool) (natctl_pool_max_nodes)
         for: 5m
         labels:
           severity: warning
@@ -236,7 +236,7 @@ groups:
           description: "A run of consecutive network errors or 5xx responses opened the circuit breaker — evidence of a provider-side incident, not a bad request on this project's own side (a 4xx never opens it). Fencing, elastic provisioning, and IP-sharing changes are all paused until it closes again; read-only work (discover, health checks) is unaffected, so the roster keeps serving current state. Check Linode's own status page before assuming this project's code is at fault — this closes on its own once the API recovers and a trial call succeeds, no operator action needed unless the underlying incident is prolonged."
 
       - alert: NATPoolCostCeilingExceeded
-        expr: natctl_pool_hourly_cost_dollars > on(pool) natctl_pool_cost_ceiling_dollars
+        expr: max by (pool) (natctl_pool_hourly_cost_dollars) > on(pool) max by (pool) (natctl_pool_cost_ceiling_dollars)
         for: 5m
         labels:
           severity: warning
@@ -245,7 +245,7 @@ groups:
           description: "natctl_pool_cost_ceiling_dollars is max_nodes times this pool's own base instance type's real price -- what this pool should never cost more than per hour if it's staying within its own configured capacity limit. A sustained breach means the fleet actually grew past that limit, a genuine bug signal (this project has hit exactly this class of bug before, in elastic-fleet ceiling enforcement), not a budget guess to second-guess. Alert-only: this never blocks or reverses scaling on its own, so investigate rather than assume it will self-resolve."
 
       - alert: NATPoolCostVelocityHigh
-        expr: natctl_pool_cost_velocity_percent > on(pool) natctl_pool_cost_velocity_threshold_percent
+        expr: max by (pool) (natctl_pool_cost_velocity_percent) > on(pool) max by (pool) (natctl_pool_cost_velocity_threshold_percent)
         for: 5m
         labels:
           severity: warning

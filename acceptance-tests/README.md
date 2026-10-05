@@ -13,7 +13,7 @@ Author: Sandip Gangdhar (https://github.com/sandipgangdhar)
 
 # LNG acceptance-test suite
 
-Automated, post-deploy validation of a real LNG deployment — the six checks below are what turns "Terraform apply succeeded" into "this fleet actually does what the README claims it does," end to end: roster/health, real NAT egress, buddy/conntrack failover, live BGP IP failover with a zero-packet-loss bar, autoscaling, and full NAT observability. This is a genuine test harness, not a mock — every check makes real network calls against a real deployment (SSH, HTTP, ICMP). It does nothing on its own; you point it at a deployment via `config.yaml` and run it.
+Automated, post-deploy validation of a real LNG deployment — the seven checks below are what turns "Terraform apply succeeded" into "this fleet actually does what the README claims it does," end to end: roster/health, real NAT egress, buddy/conntrack failover, live BGP IP failover with a zero-packet-loss bar, autoscaling, full NAT observability, and white-box observability correctness. This is a genuine test harness, not a mock — every check makes real network calls against a real deployment (SSH, HTTP, ICMP). It does nothing on its own; you point it at a deployment via `config.yaml` and run it.
 
 ## Prerequisites
 
@@ -38,7 +38,7 @@ python run_acceptance_tests.py --only 01-roster-and-health --only 06-observabili
 
 Exit code is 0 only if every check that ran passed (SKIPs don't count against you — see "What SKIP means" below). A summary table prints at the end either way.
 
-## The six checks, in the order they run
+## The seven checks, in the order they run
 
 | # | Check ID | What it proves | Disruption / cost |
 |---|---|---|---|
@@ -48,6 +48,7 @@ Exit code is 0 only if every check that ran passed (SKIPs don't count against yo
 | 4 | `04-ip-failover-bgp` | Killing FRR on a buddy-paired node produces **zero** ping loss to its public IP, both directions | Real — stops `frr` (and this node's BGP-advertised IP) on a real node |
 | 5 | `05-autoscale` | A real load spike causes natctl to provision an additional elastic node | Expensive — provisions a real billable Linode |
 | 6 | `06-observability` | Prometheus/Grafana/Alertmanager are up, with real NAT data | None — read-only |
+| 7 | `07-observability-correctness` | Every dashboard panel has real data (not "No data"), and a sample of exported metrics match real kernel/FRR ground truth on a live node | None — read-only |
 
 Each check's own file header (`checks/check_NN_*.py`) has the full detail on exactly what it does and why.
 
@@ -55,8 +56,10 @@ Each check's own file header (`checks/check_NN_*.py`) has the full detail on exa
 
 A check SKIPs a pool (rather than failing it) when that pool's `config.yaml` block is missing the specific keys that check needs — most commonly because you deliberately left out a `node_failure_drill` / `ip_failover_drill` / `autoscale_drill` block for a pool you don't want that particular drill run against right now. SKIP is not a warning sign by itself; it's this suite respecting that not every check makes sense for every pool, every time.
 
+Check 07's ground-truth half (not its dashboard-panel sweep, which needs only Prometheus) is a narrower case: it silently skips just that pool, with a one-line note in the PASS/FAIL message, when no `node_failure_drill.node_ssh_host` is configured for it — reusing that same block rather than adding a dedicated config key, since any SSH-reachable real node works for this.
+
 ## Honest guidance on which checks to run when
 
-Checks 01, 02, and 06 are read-only and safe to run on every deploy, or even wire into a recurring health check. Checks 03 and 04 are real drills against real infrastructure — brief but genuinely disruptive; run them in a scheduled maintenance window, not as a routine gate. Check 05 provisions a real, billable Linode — it's opt-in by design (leave `autoscale_drill` out of a pool's config to skip it entirely) and should be run deliberately, not by accident.
+Checks 01, 02, 06, and 07 are read-only and safe to run on every deploy, or even wire into a recurring health check. Checks 03 and 04 are real drills against real infrastructure — brief but genuinely disruptive; run them in a scheduled maintenance window, not as a routine gate. Check 05 provisions a real, billable Linode — it's opt-in by design (leave `autoscale_drill` out of a pool's config to skip it entirely) and should be run deliberately, not by accident.
 
-None of these checks were run as part of preparing this suite — see `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html`'s §9.2 "Deployment Sequence" for the sequence this suite is meant to run after, not before.
+Checks 01–06 were not run as part of preparing this suite — see `docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html`'s §9.2 "Deployment Sequence" for the sequence this suite is meant to run after, not before. Check 07 is the exception: it was built and live-verified against a real deployment (both a clean pass and, during development, real detected failures — a dashboard panel query that genuinely returned nothing, and a monotonic-counter/node-identity mismatch) before being added here.

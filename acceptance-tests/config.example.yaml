@@ -85,6 +85,10 @@ pools:
     egress_sample_count: 5
 
     # Used by check 03 -- a thin wrapper around
+    # (also reused, read-only, by check 07's ground-truth cross-check --
+    # node_ssh_host alone is enough for that one; omit this whole block
+    # and check 07 just skips its ground-truth half for this pool, still
+    # running its dashboard-panel sweep)
     # scripts/node-failure-drill.sh. node_host is the NAT node's address
     # AS IT APPEARS IN THE CLIENT'S ROUTE TABLE -- on pure-nat-gateway
     # this is the node's VLAN address (client-agent's ECMP nexthops are

@@ -1,0 +1,161 @@
+# nat-alerts_rules_test.yml (alerts)
+#
+# promtool unit tests for nat-alerts.yml -- run via:
+#   promtool test rules alerts/nat-alerts_rules_test.yml
+#
+# Guards against a real bug class: several
+# natctl_pool_* config/ceiling metrics (min_nodes, max_nodes,
+# cost_ceiling_dollars, cost_velocity_threshold_percent, and the
+# autoscale breach-streak gauge) are published by EVERY natctl instance
+# that manages a pool -- in natctl_on_node_enabled mode that is every
+# node in the fleet, not one. An alert expression that joins against one
+# of these metrics with on(pool) but without first collapsing the
+# per-instance duplicates (max by (pool) (...)) fails outright at
+# evaluation time with "many-to-many matching not allowed" the moment a
+# pool has more than one node -- which is the normal case, not an edge
+# case. `promtool check rules` (syntax only) cannot catch this: the
+# expression is syntactically valid PromQL, it only errors against real,
+# multi-instance label data. Every input_series below deliberately
+# publishes two different `instance` labels for the same pool, mirroring
+# that real shape, specifically so a future alert added without the
+# max by (pool) (...) wrapping fails THIS test immediately instead of
+# shipping silently broken.
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+rule_files:
+  - nat-alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ---- NATPoolBelowFloor ------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'nat_node_healthy{pool="acme",node="lng-acme-1"}'
+        values: "1x10"
+      - series: 'nat_node_healthy{pool="acme",node="lng-acme-2"}'
+        values: "1x10"
+      - series: 'natctl_pool_min_nodes{pool="acme",instance="10.20.0.32:8099"}'
+        values: "2x10"
+      - series: 'natctl_pool_min_nodes{pool="acme",instance="10.20.0.96:8099"}'
+        values: "2x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: NATPoolBelowFloor
+        exp_alerts: [] # 2 healthy >= min_nodes=2 -- must not fire, and must not error
+
+  - interval: 1m
+    input_series:
+      - series: 'nat_node_healthy{pool="acme",node="lng-acme-1"}'
+        values: "1x10"
+      - series: 'natctl_pool_min_nodes{pool="acme",instance="10.20.0.32:8099"}'
+        values: "2x10"
+      - series: 'natctl_pool_min_nodes{pool="acme",instance="10.20.0.96:8099"}'
+        values: "2x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: NATPoolBelowFloor
+        exp_alerts:
+          - exp_labels:
+              pool: acme
+              severity: critical
+            exp_annotations:
+              summary: "Pool acme has fewer healthy nodes than its configured min_nodes"
+              description: "natctl should be provisioning elastic capacity to restore the floor automatically — check natctl logs if this persists. Cross-check natctl_pool_last_scale_event_info and natctl_pool_autoscale_breach_streak (see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §7.2 'Every Metric, Explained') for why it hasn't."
+
+  # ---- NATAutoscaleCeilingReached ----------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'natctl_pool_autoscale_breach_streak{pool="common",metric="conntrack",instance="10.20.0.96:8099"}'
+        values: "3x10"
+      - series: 'natctl_pool_autoscale_breach_streak{pool="common",metric="conntrack",instance="10.20.0.97:8099"}'
+        values: "3x10"
+      - series: 'natctl_pool_floor_nodes{pool="common",instance="10.20.0.96:8099"}'
+        values: "3x10"
+      - series: 'natctl_pool_floor_nodes{pool="common",instance="10.20.0.97:8099"}'
+        values: "3x10"
+      - series: 'natctl_pool_elastic_nodes{pool="common",instance="10.20.0.96:8099"}'
+        values: "6x10"
+      - series: 'natctl_pool_elastic_nodes{pool="common",instance="10.20.0.97:8099"}'
+        values: "6x10"
+      - series: 'natctl_pool_max_nodes{pool="common",instance="10.20.0.96:8099"}'
+        values: "9x10"
+      - series: 'natctl_pool_max_nodes{pool="common",instance="10.20.0.97:8099"}'
+        values: "9x10"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: NATAutoscaleCeilingReached
+        exp_alerts:
+          - exp_labels:
+              pool: common
+              severity: warning
+              metric: conntrack
+            exp_annotations:
+              summary: "Pool common is breaching a scale-out watermark (conntrack) but is already at max_nodes"
+              description: "natctl cannot add more capacity — this alert exists because natctl won't fire NATConntrackTableCritical-style urgency on its own once it's out of room. Raise max_nodes for this pool or investigate the sustained demand."
+
+  # ---- NATPoolCostCeilingExceeded ----------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'natctl_pool_hourly_cost_dollars{pool="common",instance="10.20.0.96:8099"}'
+        values: "0.5x10"
+      - series: 'natctl_pool_hourly_cost_dollars{pool="common",instance="10.20.0.97:8099"}'
+        values: "0.5x10"
+      - series: 'natctl_pool_cost_ceiling_dollars{pool="common",instance="10.20.0.96:8099"}'
+        values: "1.0x10"
+      - series: 'natctl_pool_cost_ceiling_dollars{pool="common",instance="10.20.0.97:8099"}'
+        values: "1.0x10"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: NATPoolCostCeilingExceeded
+        exp_alerts: [] # 0.5 <= 1.0 ceiling -- must not fire, and must not error
+
+  - interval: 1m
+    input_series:
+      - series: 'natctl_pool_hourly_cost_dollars{pool="common",instance="10.20.0.96:8099"}'
+        values: "2.0x10"
+      - series: 'natctl_pool_hourly_cost_dollars{pool="common",instance="10.20.0.97:8099"}'
+        values: "2.0x10"
+      - series: 'natctl_pool_cost_ceiling_dollars{pool="common",instance="10.20.0.96:8099"}'
+        values: "1.0x10"
+      - series: 'natctl_pool_cost_ceiling_dollars{pool="common",instance="10.20.0.97:8099"}'
+        values: "1.0x10"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: NATPoolCostCeilingExceeded
+        exp_alerts:
+          - exp_labels:
+              pool: common
+              severity: warning
+            exp_annotations:
+              summary: "Pool common's actual hourly cost exceeds its own max_nodes-derived ceiling"
+              description: "natctl_pool_cost_ceiling_dollars is max_nodes times this pool's own base instance type's real price -- what this pool should never cost more than per hour if it's staying within its own configured capacity limit. A sustained breach means the fleet actually grew past that limit, a genuine bug signal (this project has hit exactly this class of bug before, in elastic-fleet ceiling enforcement), not a budget guess to second-guess. Alert-only: this never blocks or reverses scaling on its own, so investigate rather than assume it will self-resolve."
+
+  # ---- NATPoolCostVelocityHigh -------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'natctl_pool_cost_velocity_percent{pool="acme",instance="10.20.0.32:8099"}'
+        values: "50x10"
+      - series: 'natctl_pool_cost_velocity_percent{pool="acme",instance="10.20.0.33:8099"}'
+        values: "50x10"
+      - series: 'natctl_pool_cost_velocity_threshold_percent{pool="acme",instance="10.20.0.32:8099"}'
+        values: "25x10"
+      - series: 'natctl_pool_cost_velocity_threshold_percent{pool="acme",instance="10.20.0.33:8099"}'
+        values: "25x10"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: NATPoolCostVelocityHigh
+        exp_alerts:
+          - exp_labels:
+              pool: acme
+              severity: warning
+            exp_annotations:
+              summary: "Pool acme's hourly cost is rising faster than its own configured threshold"
+              description: "natctl_pool_cost_velocity_percent is the percent change in natctl_pool_hourly_cost_dollars over this pool's own configured cost_velocity_window_seconds, compared against its own cost_velocity_threshold_percent -- both absent entirely for a pool that never opted in. Catches a cost climbing suspiciously fast even while still comfortably under any ceiling. A legitimate, healthy scale-out under real load can look identical to a runaway one from cost alone -- check natctl's own autoscale-explainability panels (why the last scale event fired) before assuming this is a bug rather than genuine, wanted traffic."
