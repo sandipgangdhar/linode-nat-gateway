@@ -1133,6 +1133,14 @@ locals {
       manifest_url           = module.artifacts.manifest_url
       bin_url                = module.artifacts.natctl_bin_url
     }
+    # Whole-environment property (one observability host monitors every
+    # pool, not per-pool). var.observability_instance_type directly, NOT
+    # module.observability[0].instance_type -- this whole yamlencode()
+    # feeds INTO module.observability's own natctl_config_yaml argument
+    # below, so reading an output back off that same module instance here
+    # would be a dependency cycle. local.create_observability_instance
+    # gates it to null when no observability host is actually created.
+    observability_instance_type = local.create_observability_instance ? var.observability_instance_type : null
   })
 
   # Whether this environment needs the observability instance AT ALL.
@@ -1260,6 +1268,7 @@ module "observability" {
   # this environment's own label rather than the module's fixed default.
   label           = "${var.label}-observability"
   region          = var.region
+  instance_type   = var.observability_instance_type
   vpc_id          = module.vpc.vpc_id
   subnet_id       = module.vpc.public_subnet_id
   firewall_id     = module.vpc.control_plane_firewall_id

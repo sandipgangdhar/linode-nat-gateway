@@ -488,6 +488,12 @@ variable "run_monitoring_stack" {
   default     = true
 }
 
+variable "observability_instance_type" {
+  description = "Instance type for the observability host (module.observability), when create_observability_instance is true. Default matches that module's own prior hardcoded default (g6-standard-2), so an existing deployment's plan is unaffected unless this is explicitly overridden. Also threaded into natctl_config_yaml's top-level observability_instance_type field so natctl can report this host's own real, live cost (Config.observability_instance_type -> api.py's render_natctl_metrics()'s natctl_shared_infra_hourly_cost_dollars) as a shared-infrastructure line item, never attributed to any one pool."
+  type        = string
+  default     = "g6-standard-2"
+}
+
 variable "customer_prometheus_remote_write_url" {
   description = "If set (and run_monitoring_stack is true), the local Prometheus this environment provisions also pushes every scraped sample here via remote_write — e.g. your Grafana Cloud / Mimir / Thanos Receive / VictoriaMetrics endpoint. Leave empty for the original local-only behavior."
   type        = string

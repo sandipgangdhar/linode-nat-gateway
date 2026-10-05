@@ -46,3 +46,8 @@ output "grafana_url" {
 output "prometheus_url" {
   value = "http://${local.public_ip}:9090"
 }
+
+output "instance_type" {
+  description = "This host's own Linode instance type, echoed back so the caller can report its real, live cost as a shared-infrastructure line item (natctl_config_yaml's observability_instance_type -> Config.observability_instance_type -> api.py's render_natctl_metrics()) without hand-duplicating var.instance_type's value."
+  value       = var.instance_type
+}

@@ -1248,7 +1248,7 @@
         "x": 0,
         "y": 126
       },
-      "description": "This pool's real-time run-rate, summed from each of its nodes' own live Linode plan price (floor and elastic counted together). Recomputed fresh on every scrape -- rises and falls as the pool autoscales or a node is resized, never needs resetting.",
+      "description": "This pool's real-time run-rate, summed from each of its nodes' own live Linode plan price (floor, elastic, and this pool's own witness if it has one, all counted together). Recomputed fresh on every scrape -- rises and falls as the pool autoscales or a node is resized, never needs resetting. Never includes the observability host's own cost -- see the Shared Infrastructure Cost panel below.",
       "options": {
         "displayMode": "lcd",
         "orientation": "horizontal"
@@ -1276,7 +1276,7 @@
         "x": 8,
         "y": 126
       },
-      "description": "Current hourly rate x 730 (average hours/month) -- a projection assuming this pool stays exactly this size for the rest of the month, computed here in PromQL rather than as a second natctl-emitted metric, so it can never drift out of sync with the live hourly figure. For a pool whose size actually changes over the month, the trailing-average panel alongside this one is the more accurate figure.",
+      "description": "This pool's real projected monthly cost if its current nodes ran the whole month, read directly from natctl_pool_monthly_cost_cap_dollars -- each node's own real, live Linode MONTHLY plan price, summed. Deliberately NOT hourly-cost x 730: Linode caps a month's real bill at the plan's own monthly price, which is reliably lower than that arithmetic (confirmed against a real account: Dedicated 8GB lists hourly=$0.108/monthly=$72 -- 0.108 x 730 = $78.84, 9.5% over the real cap). For a pool whose size actually changed during the trailing period, the Actual Trailing 30-Day Average panel alongside this one is the more accurate historical figure.",
       "options": {
         "displayMode": "lcd",
         "orientation": "horizontal"
@@ -1289,7 +1289,7 @@
       },
       "targets": [
         {
-          "expr": "max by (pool) (natctl_pool_hourly_cost_dollars{pool=~\"$pool\"}) * 730",
+          "expr": "max by (pool) (natctl_pool_monthly_cost_cap_dollars{pool=~\"$pool\"})",
           "legendFormat": "{{pool}}"
         }
       ]
@@ -1304,7 +1304,7 @@
         "x": 16,
         "y": 126
       },
-      "description": "avg_over_time() of the hourly-cost gauge across the last 30 days, x 24 x 30 -- the genuine average cost this pool has actually accrued, correctly weighting periods where it was a different size (e.g. before/after an autoscale event), rather than assuming today's size held for the whole month the way the projected-at-current-rate panel does. Needs at least 30 days of Prometheus retention to be meaningful -- shows a partial-period average otherwise.",
+      "description": "avg_over_time() of the hourly-cost gauge across the last 30 days, x 24 x 30 -- the genuine average cost this pool has actually accrued, correctly weighting periods where it was a different size (e.g. before/after an autoscale event), rather than assuming today's size held for the whole month the way the projected-at-current-rate panel does. Clamped (via an element-wise min against natctl_pool_monthly_cost_cap_dollars) so a pool that ran at a stable size for the whole trailing window still can't read above Linode's own real monthly billing cap -- the same hourly-times-hours overshoot the Projected Monthly Cost panel's own fix addresses, live-verified to apply here too. Needs at least 30 days of Prometheus retention to be meaningful -- shows a partial-period average otherwise.",
       "options": {
         "displayMode": "lcd",
         "orientation": "horizontal"
@@ -1317,7 +1317,7 @@
       },
       "targets": [
         {
-          "expr": "max by (pool) (avg_over_time(natctl_pool_hourly_cost_dollars{pool=~\"$pool\"}[30d])) * 24 * 30",
+          "expr": "min by (pool) (\n  label_replace(max by (pool) (avg_over_time(natctl_pool_hourly_cost_dollars{pool=~\"$pool\"}[30d])) * 24 * 30, \"cap\", \"false\", \"\", \"\")\n  or\n  label_replace(max by (pool) (natctl_pool_monthly_cost_cap_dollars{pool=~\"$pool\"}), \"cap\", \"true\", \"\", \"\")\n)",
           "legendFormat": "{{pool}}"
         }
       ]
@@ -1332,7 +1332,7 @@
         "x": 0,
         "y": 132
       },
-      "description": "Each pool's own cost history -- a step change lines up with an autoscale event or a resize, visible on the Autoscale Explainability panels above. Stacked to also show total fleet-wide spend at a glance.",
+      "description": "Each pool's own cost history -- a step change lines up with an autoscale event or a resize, visible on the Autoscale Explainability panels above. Stacked to also show total per-tenant spend at a glance. Never includes the observability host's own cost -- see the Shared Infrastructure Cost panel below.",
       "fieldConfig": {
         "defaults": {
           "unit": "currencyUSD"
@@ -1347,6 +1347,70 @@
         {
           "expr": "max by (pool) (natctl_pool_hourly_cost_dollars{pool=~\"$pool\"})",
           "legendFormat": "{{pool}}"
+        }
+      ]
+    },
+    {
+      "id": 45,
+      "title": "Shared Infrastructure Cost (Observability)",
+      "type": "bargauge",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 140
+      },
+      "description": "The observability host's own real, live Linode cost -- deliberately a separate line item, never folded into any one pool's cost above. It monitors every pool, not one tenant's own workload, so attributing it to whichever pool happens to share its VLAN would misattribute shared platform overhead to that tenant. Omitted entirely when no observability instance is configured (natctl_on_node_enabled with no local monitoring stack).",
+      "options": {
+        "displayMode": "lcd",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 3
+        }
+      },
+      "targets": [
+        {
+          "expr": "max by (component) (natctl_shared_infra_hourly_cost_dollars)",
+          "legendFormat": "hourly"
+        },
+        {
+          "expr": "max by (component) (natctl_shared_infra_monthly_cost_cap_dollars)",
+          "legendFormat": "monthly cap"
+        }
+      ]
+    },
+    {
+      "id": 46,
+      "title": "Total Deployment Cost (Every Pool + Shared Infrastructure)",
+      "type": "bargauge",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 140
+      },
+      "description": "The one true 'what am I actually paying Linode' figure for this whole deployment -- every pool's own natctl_pool_hourly_cost_dollars/..._monthly_cost_cap_dollars (max by pool first, so multiple nodes reporting the same pool's cost are never double-counted) plus the observability host's own shared cost (max by component first, same reason), summed. The $pool filter above still narrows which pools are included, same as every other panel on this row.",
+      "options": {
+        "displayMode": "lcd",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2
+        }
+      },
+      "targets": [
+        {
+          "expr": "(sum(max by (pool) (natctl_pool_hourly_cost_dollars{pool=~\"$pool\"})) or vector(0)) + (sum(max by (component) (natctl_shared_infra_hourly_cost_dollars)) or vector(0))",
+          "legendFormat": "hourly"
+        },
+        {
+          "expr": "(sum(max by (pool) (natctl_pool_monthly_cost_cap_dollars{pool=~\"$pool\"})) or vector(0)) + (sum(max by (component) (natctl_shared_infra_monthly_cost_cap_dollars)) or vector(0))",
+          "legendFormat": "monthly cap"
         }
       ]
     }
