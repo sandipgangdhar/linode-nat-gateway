@@ -70,6 +70,64 @@ tests:
               summary: "Pool acme has fewer healthy nodes than its configured min_nodes"
               description: "natctl should be provisioning elastic capacity to restore the floor automatically — check natctl logs if this persists. Cross-check natctl_pool_last_scale_event_info and natctl_pool_autoscale_breach_streak (see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §7.2 'Every Metric, Explained') for why it hasn't."
 
+  # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html "Schedule nightly power-down/up for a pool": the exact
+  # same below-floor condition as the test above, but for a pool an
+  # operator deliberately scheduled down -- must NOT fire. Two instances
+  # publish natctl_pool_scheduled_down for the same pool (this file's own
+  # documented multi-instance-duplicate bug class), proving the `unless`
+  # guard doesn't hit "many-to-many matching not allowed" the way an
+  # ungrouped arithmetic join would.
+  - interval: 1m
+    input_series:
+      - series: 'nat_node_healthy{pool="acme",node="lng-acme-1"}'
+        values: "1x10"
+      - series: 'natctl_pool_min_nodes{pool="acme",instance="10.20.0.32:8099"}'
+        values: "2x10"
+      - series: 'natctl_pool_min_nodes{pool="acme",instance="10.20.0.96:8099"}'
+        values: "2x10"
+      - series: 'natctl_pool_scheduled_down{pool="acme",instance="10.20.0.32:8099"}'
+        values: "1x10"
+      - series: 'natctl_pool_scheduled_down{pool="acme",instance="10.20.0.96:8099"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: NATPoolBelowFloor
+        exp_alerts: [] # scheduled down -- a real below-floor condition, deliberately not a fault
+
+  # ---- NATNodeDown --------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'up{job="nat_exporter",pool="acme",instance="10.20.4.5:9200"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: NATNodeDown
+        exp_alerts:
+          - exp_labels:
+              job: nat_exporter
+              pool: acme
+              instance: "10.20.4.5:9200"
+              severity: critical
+            exp_annotations:
+              summary: "nat_exporter on 10.20.4.5:9200 is not reachable"
+              description: "Clients drop a node from their routes as soon as natctl marks it unhealthy and publishes that to the roster (within seconds, see health_check_interval_seconds), so this alert is about the node itself needing attention, not about client impact. If natctl fenced the node (see the leader-election section of the runbook), it stays powered off until an operator boots it."
+
+  # Same node-down condition, but the pool is deliberately scheduled down --
+  # every node is EXPECTED to be unreachable, must not fire. Duplicate
+  # natctl_pool_scheduled_down instances again, same reasoning as above.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="nat_exporter",pool="acme",instance="10.20.4.5:9200"}'
+        values: "0x10"
+      - series: 'natctl_pool_scheduled_down{pool="acme",instance="10.20.0.32:8099"}'
+        values: "1x10"
+      - series: 'natctl_pool_scheduled_down{pool="acme",instance="10.20.0.96:8099"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: NATNodeDown
+        exp_alerts: []
+
   # ---- NATAutoscaleCeilingReached ----------------------------------------
   - interval: 1m
     input_series:

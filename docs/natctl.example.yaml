@@ -170,6 +170,7 @@ pools:
       drain_timeout_seconds: 180
       unhealthy_replace_after_seconds: 900   # see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.7 "zombie node" handling -- covers a fresh elastic node's full cloud-init time, not just steady-state failures
       auto_provision_enabled: true   # fully automatic, bounded by min/max_nodes above
+      max_power_up_batch_per_pass: 3   # only relevant to a pool scheduled nightly down/up via `natctl_cli pool-down`/`pool-up` (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html "Schedule nightly power-down/up for a pool") -- caps how many nodes are provisioned per reconcile pass while recovering from zero
 
   # Example dedicated pool for a high-value/noisy tenant that needs isolated
   # capacity instead of sharing the pool above. Point that tenant's

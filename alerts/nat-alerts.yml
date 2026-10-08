@@ -70,7 +70,15 @@ groups:
           description: "Consider raising egress_ips_per_node for this pool (an extra public IP allocated to the node, splitting the per-IP port budget across both) or scaling the pool out."
 
       - alert: NATNodeDown
-        expr: up{job="nat_exporter"} == 0
+        # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html "Schedule nightly power-down/up for a pool": the
+        # `unless` guard suppresses this for a pool an operator has
+        # deliberately scheduled down (natctl_cli pool-down) -- every node
+        # in that pool is EXPECTED to be unreachable for the duration, not
+        # a fault needing attention. up{} carries the same "pool" label as
+        # every other nat_exporter-scraped metric (natctl_pool_* included)
+        # -- both are scraped from the same file_sd target groups, whose
+        # own labels Prometheus attaches to every metric from that target.
+        expr: up{job="nat_exporter"} == 0 unless on(pool) (natctl_pool_scheduled_down == 1)
         for: 1m
         labels:
           severity: critical
@@ -88,7 +96,12 @@ groups:
           description: "Check nat_node_health_check{node=\"{{ $labels.node }}\"} to see which specific check failed (ip_forward, nftables_loaded, egress_reachable)."
 
       - alert: NATPoolBelowFloor
-        expr: count by (pool) (nat_node_healthy == 1) < on(pool) group_left() max by (pool) (natctl_pool_min_nodes)
+        # docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html "Schedule nightly power-down/up for a pool": a
+        # scheduled pool-down drives healthy_count below min_nodes by
+        # design every single night -- without this guard this alert
+        # would fire on every scheduled-down window, indistinguishable
+        # from a real outage.
+        expr: (count by (pool) (nat_node_healthy == 1) < on(pool) group_left() max by (pool) (natctl_pool_min_nodes)) unless on(pool) (natctl_pool_scheduled_down == 1)
         for: 2m
         labels:
           severity: critical

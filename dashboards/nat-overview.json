@@ -1276,7 +1276,7 @@
         "x": 8,
         "y": 126
       },
-      "description": "This pool's real projected monthly cost if its current nodes ran the whole month, read directly from natctl_pool_monthly_cost_cap_dollars -- each node's own real, live Linode MONTHLY plan price, summed. Deliberately NOT hourly-cost x 730: Linode caps a month's real bill at the plan's own monthly price, which is reliably lower than that arithmetic (confirmed against a real account: Dedicated 8GB lists hourly=$0.108/monthly=$72 -- 0.108 x 730 = $78.84, 9.5% over the real cap). For a pool whose size actually changed during the trailing period, the Actual Trailing 30-Day Average panel alongside this one is the more accurate historical figure.",
+      "description": "This pool's real projected monthly cost if its current nodes ran the whole month, read directly from natctl_pool_monthly_cost_cap_dollars -- each node's own real, live Linode MONTHLY plan price, summed. Deliberately NOT hourly-cost x 730: Linode caps a month's real bill at the plan's own monthly price, which is reliably lower than that arithmetic (confirmed against a real account: Dedicated 8GB lists hourly=$0.108/monthly=$72 -- 0.108 x 730 = $78.84, 9.5% over the real cap). For a pool whose size actually changed during the trailing period, the Actual Trailing 30-Day Average panel alongside this one is the more accurate historical figure -- this is ESPECIALLY true for a pool with scheduled power-down/up (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html): this panel reads whatever this pool's node count happens to be at the instant it's viewed, which for a scheduled pool swings between $0 (down) and its full daytime rate (up) depending purely on when you look. The Scheduled Power State panel below shows which pools are on a schedule at all.",
       "options": {
         "displayMode": "lcd",
         "orientation": "horizontal"
@@ -1392,7 +1392,7 @@
         "x": 12,
         "y": 140
       },
-      "description": "The one true 'what am I actually paying Linode' figure for this whole deployment -- every pool's own natctl_pool_hourly_cost_dollars/..._monthly_cost_cap_dollars (max by pool first, so multiple nodes reporting the same pool's cost are never double-counted) plus the observability host's own shared cost (max by component first, same reason), summed. The $pool filter above still narrows which pools are included, same as every other panel on this row.",
+      "description": "The one true 'what am I actually paying Linode' figure for this whole deployment -- every pool's own natctl_pool_hourly_cost_dollars/..._monthly_cost_cap_dollars (max by pool first, so multiple nodes reporting the same pool's cost are never double-counted) plus the observability host's own shared cost (max by component first, same reason), summed. The $pool filter above still narrows which pools are included, same as every other panel on this row. Inherits the same current-rate snapshot caveat as the Projected Monthly Cost panel above for any pool with scheduled power-down/up -- the Actual Trailing 30-Day Average panel is the steadier figure once a schedule has been running a few days.",
       "options": {
         "displayMode": "lcd",
         "orientation": "horizontal"
@@ -1411,6 +1411,39 @@
         {
           "expr": "(sum(max by (pool) (natctl_pool_monthly_cost_cap_dollars{pool=~\"$pool\"})) or vector(0)) + (sum(max by (component) (natctl_shared_infra_monthly_cost_cap_dollars)) or vector(0))",
           "legendFormat": "monthly cap"
+        }
+      ]
+    },
+    {
+      "id": 47,
+      "title": "Scheduled Power State, per Pool",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 146
+      },
+      "description": "1 when a pool's entire node population has been deliberately taken down via `natctl_cli pool-down` (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html 'Schedule nightly power-down/up for a pool'), 0 otherwise -- including for a pool that has never used this feature. Explains a pool whose cost panels above read a flat $0 as an intentional schedule, not a fault, and explains why NATPoolBelowFloor/NATNodeDown correctly stay silent during that window.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "stepAfter": true
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max by (pool) (natctl_pool_scheduled_down{pool=~\"$pool\"})",
+          "legendFormat": "{{pool}}"
         }
       ]
     }
