@@ -230,6 +230,15 @@ groups:
           summary: "Pool {{ $labels.pool }} has an operator hold or pause in effect on a node that is not currently fenced"
           description: "A `natctl_cli hold-fenced-node` or `pause-fenced-restore` is still active but nothing is fenced right now, so it has no capacity impact today -- NATFencedRestoreHeldLong stays silent in this state, since that alert only fires once a hold is actually blocking a real restore. This is the case a hold gets forgotten in: it sits invisible until the node it covers is next fenced for any reason, at which point it silently blocks that restore too. Check `natctl_cli fenced-nodes --pool {{ $labels.pool }}`'s `holds` field and release it with `natctl_cli release-fenced-node` / `resume-fenced-restore` if it is no longer needed."
 
+      - alert: NATPoolAtRiskNoWitness
+        expr: max by (pool) (natctl_pool_degraded_no_witness) == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pool {{ $labels.pool }} has 2 or fewer real nodes and no quorum witness"
+          description: "This pool is currently running with 2 or fewer real nodes (floor+elastic) and no witness configured -- leader-election fencing corroboration cannot distinguish a dead peer from a network partition in this state, same risk the floor_nodes==2 auto-witness default exists to close for a Terraform-declared floor. A pool adopted with a different declared floor_nodes never gets that default, but its LIVE min_nodes can still be scheduled down to 2 later (`natctl_cli set-pool-scaling`/`pool-up --min-nodes 2`) -- this is the proactive counterpart to NATFencedRestoreHeldLong's own passing mention of this condition, firing independent of whether a fencing event is actually happening right now. 15m filters a brief scale transition; a schedule that intentionally and sustainedly runs a pool at 2 nodes should add `witness_enabled = true` for that pool instead of silencing this alert."
+
       - alert: NATSelfPeerHealthDisagreementSustained
         expr: max by (pool) (natctl_self_peer_disagree_streak) > 30
         for: 10m

@@ -217,3 +217,35 @@ tests:
             exp_annotations:
               summary: "Pool acme's hourly cost is rising faster than its own configured threshold"
               description: "natctl_pool_cost_velocity_percent is the percent change in natctl_pool_hourly_cost_dollars over this pool's own configured cost_velocity_window_seconds, compared against its own cost_velocity_threshold_percent -- both absent entirely for a pool that never opted in. Catches a cost climbing suspiciously fast even while still comfortably under any ceiling. A legitimate, healthy scale-out under real load can look identical to a runaway one from cost alone -- check natctl's own autoscale-explainability panels (why the last scale event fired) before assuming this is a bug rather than genuine, wanted traffic."
+
+  # ---- NATPoolAtRiskNoWitness ---------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'natctl_pool_degraded_no_witness{pool="scheduled-duo",instance="10.20.0.60:8099"}'
+        values: "1x20"
+      - series: 'natctl_pool_degraded_no_witness{pool="scheduled-duo",instance="10.20.0.61:8099"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: NATPoolAtRiskNoWitness
+        exp_alerts: [] # under the 15m `for` threshold -- must not fire yet
+      - eval_time: 16m
+        alertname: NATPoolAtRiskNoWitness
+        exp_alerts:
+          - exp_labels:
+              pool: scheduled-duo
+              severity: warning
+            exp_annotations:
+              summary: "Pool scheduled-duo has 2 or fewer real nodes and no quorum witness"
+              description: "This pool is currently running with 2 or fewer real nodes (floor+elastic) and no witness configured -- leader-election fencing corroboration cannot distinguish a dead peer from a network partition in this state, same risk the floor_nodes==2 auto-witness default exists to close for a Terraform-declared floor. A pool adopted with a different declared floor_nodes never gets that default, but its LIVE min_nodes can still be scheduled down to 2 later (`natctl_cli set-pool-scaling`/`pool-up --min-nodes 2`) -- this is the proactive counterpart to NATFencedRestoreHeldLong's own passing mention of this condition, firing independent of whether a fencing event is actually happening right now. 15m filters a brief scale transition; a schedule that intentionally and sustainedly runs a pool at 2 nodes should add `witness_enabled = true` for that pool instead of silencing this alert."
+
+  - interval: 1m
+    input_series:
+      - series: 'natctl_pool_degraded_no_witness{pool="common",instance="10.20.0.32:8099"}'
+        values: "0x20"
+      - series: 'natctl_pool_degraded_no_witness{pool="common",instance="10.20.0.33:8099"}'
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: NATPoolAtRiskNoWitness
+        exp_alerts: [] # a witnessed (or >2-node) pool reads 0 -- must never fire

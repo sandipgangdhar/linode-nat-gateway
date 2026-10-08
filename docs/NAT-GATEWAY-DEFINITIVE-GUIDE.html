@@ -1508,6 +1508,7 @@ flowchart LR
           <tbody>
             <tr><td><code>pool_nodes_total</code> / <code>pool_nodes_healthy</code></td><td>Total and healthy node count per pool</td></tr>
             <tr><td><code>pool_scheduled_down</code></td><td>1 while a pool has been deliberately taken down to zero nodes via <code>pool-down</code> (10.2/10.3's "Schedule nightly power-down/up for a pool"), 0 otherwise. The <code>NATPoolBelowFloor</code> and <code>NATNodeDown</code> alerts (7.4) both suppress themselves for a pool while this reads 1 — an intentional, scheduled absence is not a fault.</td></tr>
+            <tr><td><code>pool_degraded_no_witness</code></td><td>1 while a pool currently has 2 or fewer real nodes (floor+elastic) AND no quorum witness configured, 0 otherwise — set proactively every reconcile pass, independent of whether a fencing event is actually happening. Leader-election fencing can't distinguish a dead peer from a network partition in this state (2.4). See 10.3's "Scheduled recurring resizing" for the live-scheduling shape that most often produces this without an operator noticing.</td></tr>
             <tr><td><code>pool_floor_nodes</code> / <code>pool_elastic_nodes</code></td><td>How the current node count splits between fixed floor and automatic elastic capacity</td></tr>
             <tr><td><code>pool_autoscale_current</code></td><td>The current value of each autoscale-evaluated signal, exactly as of the most recent decision pass</td></tr>
             <tr><td><code>pool_autoscale_high_watermark</code> / <code>low_watermark</code></td><td>The configured trigger threshold for each signal</td></tr>
@@ -1589,6 +1590,7 @@ flowchart LR
             <tr><td>Linode API circuit breaker open</td><td>The control plane has stopped attempting mutating cloud-provider API calls after a run of consecutive failures, for 1 minute</td><td><span class="badge crit">Critical</span></td></tr>
             <tr><td>Pool cost ceiling exceeded</td><td>A pool's actual hourly cost exceeds its own <code>max_nodes</code>-derived ceiling, for 5 minutes</td><td><span class="badge warn">Warning</span></td></tr>
             <tr><td>Pool cost velocity high</td><td>A pool's hourly cost is rising faster than its own configured threshold, for 5 minutes — only fires for a pool that opted into this check</td><td><span class="badge warn">Warning</span></td></tr>
+            <tr><td>Pool at risk, no witness</td><td>A pool has 2 or fewer real nodes and no quorum witness configured, for 15 minutes</td><td><span class="badge warn">Warning</span></td></tr>
           </tbody>
         </table></div>
         <p><strong>Node down</strong> and <strong>Pool below floor</strong> both stay silent for a pool that was deliberately taken to zero nodes via <code>pool-down</code> (10.2/10.3) — an intentional, scheduled absence of every node in that pool is not the fault either alert exists to catch. Both resume firing normally the moment the pool is scheduled back up, whether or not it has finished recovering yet.</p>
@@ -2732,6 +2734,17 @@ natctl-cli --config /etc/natctl/config.yaml set-ipsec-routes --pool shared --cle
   --pool dedicated-duo --down-cron "0 23 * * *" --up-cron "0 7 * * *"</pre>
         <p>Re-run it any time to change the schedule, rotate a credential, or add another <code>--pool</code> — safe to run repeatedly. Or wire <code>pool-down</code>/<code>pool-up</code> (10.2) into your own existing cron/CI setup directly if you'd rather not run a dedicated script.</p>
         <p>Confirm it's actually working the first few nights: the dashboard's Scheduled Power State panel (Part VII, 7.6) reads 1 during the down window, the pool's cost panels settle toward $0.00 while it does, and <code>pool-up --wait</code>'s own final line confirms the real, live node count matches the target after each morning recovery.</p>
+
+        <h3>Scheduled recurring resizing — without a full teardown</h3>
+        <p>Pool-down/pool-up isn't the only way to put a pool on a schedule. If the pool should stay up the whole time and just run smaller overnight than during the day — say, a minimum of 2 nodes at night and 5 during business hours, never actually empty — that's a narrower, simpler job: two recurring calls to <code>set-pool-scaling</code> (10.2) with different targets, one per cron entry:</p>
+        <pre class="code"># night cron
+natctl-cli --config /etc/natctl/config.yaml set-pool-scaling --pool shared --min-nodes 2 --max-nodes 5
+
+# day cron
+natctl-cli --config /etc/natctl/config.yaml set-pool-scaling --pool shared --min-nodes 5 --max-nodes 9</pre>
+        <p>Each call just moves the pool's floor and ceiling — natctl scales toward the new minimum on its own next reconcile pass, the same as any ordinary floor change, with none of <code>pool-down</code>'s teardown-to-zero or daemon-grace-period machinery, since the pool is never actually empty.</p>
+        <p><strong>The witness caveat.</strong> If a recurring schedule like this can ever bring a pool's real node count down to 2, treat it exactly like a pool you've deliberately sized at 2 nodes: without a quorum witness, leader-election fencing can't tell a dead peer from a network partition at that size (Part II, 2.4; Part IV, 4.1). A pool adopted with <code>floor_nodes</code> set to anything other than 2 never gets the automatic witness Terraform provisions for a bare 2-node floor — and a live schedule that later brings the pool down to 2 nodes doesn't change that Terraform-time decision at all. <code>natctl_pool_degraded_no_witness</code> (7.2) and the <strong>Pool at risk, no witness</strong> alert (7.4) exist specifically to catch this: they fire whenever a pool is sitting at 2 or fewer real nodes with no witness configured, independent of whether anything has actually gone wrong yet.</p>
+        <p><strong>Best practice: decide this at fleet creation time, not reactively.</strong> If any schedule you plan to run against a pool — now or later — could ever bring its live minimum down to 2, set <code>witness_enabled = true</code> for that pool when you first adopt it, regardless of what <code>floor_nodes</code> is declared as. It's a small, fixed, worthwhile cost (9.4) for the corroboration it buys, and it's far easier to provision once up front than to notice the gap after a schedule has already been running unwitnessed for weeks.</p>
       </section>
 
       <section class="chapter" id="c10-4">
