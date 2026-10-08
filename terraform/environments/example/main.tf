@@ -522,6 +522,24 @@ locals {
     ? "${cidrhost(local.pools[var.observability_vlan_pool].vlan_cidr_reserved, local.pools[var.observability_vlan_pool].vlan_ip_offset - 1)}/${split("/", local.pools[var.observability_vlan_pool].vlan_cidr)[1]}"
     : ""
   )
+
+  pools_have_any_real_floor_presence = anytrue([
+    for k, p in local.pools : p.floor_nodes > 0
+  ])
+  # The ONLY real guarantee under natctl_on_node_enabled is at least one
+  # pool with real floor nodes (!natctl_on_node_enabled is unaffected --
+  # the dedicated host is ALWAYS created there, and DOES always run
+  # natctl in that branch, since run_natctl above is simply
+  # !natctl_on_node_enabled) -- UNLESS var.acknowledge_cron_only_bootstrap
+  # is deliberately set, in which case an external cron/CI job running
+  # `natctl_cli pool-up` is accepted as this environment's only bootstrap/
+  # recovery mechanism instead of a Terraform-guaranteed host. See that
+  # variable's own comment for the real, accepted trade-off this implies.
+  natctl_has_no_guaranteed_host_presence = (
+    var.natctl_on_node_enabled
+    && !local.pools_have_any_real_floor_presence
+    && !var.acknowledge_cron_only_bootstrap
+  )
 }
 
 check "ipsec_route_gateways_in_pool_vlan" {
@@ -546,6 +564,30 @@ check "pool_floor_nodes_below_3_under_natctl_on_node_enabled" {
   assert {
     condition     = length(local.pools_with_floor_nodes_below_3_under_natctl_on_node) == 0
     error_message = "These pools run natctl_on_node_enabled with fewer than 3 floor nodes: ${join(", ", local.pools_with_floor_nodes_below_3_under_natctl_on_node)}. 1 node has no real failover at all (it's always its own leader). 2 nodes is the genuinely risky shape: a real network partition between exactly two nodes is indistinguishable, from either side, from the other one actually being dead, so the quorum-confirmation gate has no third node to ask and can't help here -- the pool falls back to a single candidate's own unaided judgment. This is not a bug this check can fix by itself, and this is a warning, not a blocked apply -- if you understand and accept this trade-off (e.g. a non-production environment), proceed deliberately. Set witness_enabled = true for this pool (see terraform.tfvars.example) to close this for real with a cheap third voter, or see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html Part II section 2.3 for the full detail before running this in production."
+  }
+}
+
+# See natctl_has_no_guaranteed_host_presence's own comment -- unlike the
+# two check blocks above (address/metrics-visibility concerns, genuinely
+# advisory), this is a real "this environment can never bootstrap or
+# recover itself" deadlock, so it's a blocking output precondition
+# instead, matching this file's own established convention (see
+# pool_addressing.tf's header comment: "do not add a new safety guarantee
+# as a check block").
+output "natctl_bootstrap_safety" {
+  description = "Whether this environment is guaranteed to always have at least one natctl process running somewhere, independent of any pool's own node count. Fails the plan outright if not -- see this output's own precondition for the fix."
+  value = {
+    natctl_on_node_enabled          = var.natctl_on_node_enabled
+    pools_with_real_floor_nodes     = [for k, p in local.pools : k if p.floor_nodes > 0]
+    acknowledge_cron_only_bootstrap = var.acknowledge_cron_only_bootstrap
+    # Deliberately NOT "dedicated_control_plane_host = create_observability_instance"
+    # here -- see natctl_has_no_guaranteed_host_presence's own comment for
+    # why that would be misleading under natctl_on_node_enabled=true.
+  }
+
+  precondition {
+    condition     = !local.natctl_has_no_guaranteed_host_presence
+    error_message = "natctl_on_node_enabled is true and every pool has floor_nodes == 0 -- nothing in this environment is guaranteed to ever run natctl, so it can neither create its own first node on a fresh apply nor recover a pool scheduled to zero via `natctl_cli pool-down` (docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html \"Schedule nightly power-down/up for a pool\"). The observability host (run_monitoring_stack = true) does NOT fix this on its own: its own run_natctl is hardcoded to !natctl_on_node_enabled below, since this module has no identity (NATCTL_SELF_NODE_ID/NATCTL_SELF_LINODE_ID) set up for it to run natctl safely alongside every NAT node's own natctl -- deploying it only adds Prometheus/Grafana/Alertmanager here, not a natctl process. Fix with ONE of: (1) give at least one pool real floor_nodes (its own nodes then always run natctl, keeping every other pool's control plane alive too -- natctl_on_node_enabled already shares one FleetController/LeaderElection per pool across every node in the fleet, not just that pool's own) -- the only option that keeps natctl_on_node_enabled's own HA model intact for a multi-pool environment; (2) set natctl_on_node_enabled = false (single-dedicated-host mode -- see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html's HA mode comparison for that mode's own documented trade-off, and note it only affects NEW control-plane decisions while natctl itself is down -- the data plane (NAT/BGP/ECMP/buddy-sync) keeps running unaffected); or (3) set acknowledge_cron_only_bootstrap = true -- the deliberate, fully-elastic/cron-driven shape for a genuinely single-fleet deployment that wants real nightly scale-to-zero AND natctl_on_node_enabled's own on-node HA for the hours it IS up, accepting that an external cron running `natctl_cli pool-up` is solely responsible for this environment ever having any nodes at all (see that variable's own comment for the full trade-off before choosing it)."
   }
 }
 

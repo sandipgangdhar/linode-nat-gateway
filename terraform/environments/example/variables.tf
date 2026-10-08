@@ -388,6 +388,12 @@ variable "natctl_on_node_enabled" {
   default     = true
 }
 
+variable "acknowledge_cron_only_bootstrap" {
+  description = "Deliberate opt-in that lets `natctl_bootstrap_safety`'s own precondition pass even when natctl_on_node_enabled is true and EVERY pool has floor_nodes == 0 -- the third fix that output's own error message now offers, alongside giving a pool real floor nodes or switching to the single-dedicated-host layout. Only set this true when you mean it: with it set, nothing in this environment is guaranteed to run natctl after a fresh `terraform apply` (it creates zero compute for every pool) -- an external cron/CI job running `natctl_cli pool-up` is solely responsible for ever bringing any pool's first nodes into existence, and for recovering it every single time it's scheduled back up from zero. This is the shape a genuinely single-fleet deployment needs to support a true nightly scale-to-zero with no persistent control-plane presence at all (see docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html 10.3's scheduling patterns) -- it is not a convenience for a deployment that also wants the simplicity of nodes existing immediately after apply. Default false, matching this output's own prior unconditional block."
+  type        = bool
+  default     = false
+}
+
 variable "auto_update_enabled" {
   description = "Let already-running natctl processes pick up a fresh natctl publish without a node rebuild -- an operator-triggered rolling-restart (natctl_cli's rolling-restart command) and a fully automatic, jittered live-reload, both re-verifying against the same SHA-256 manifest boot-time cloud-init already trusts before ever restarting, with automatic rollback if a freshly-restarted process doesn't stay up through its own canary_bake_seconds. Defaults true: an already-running fleet should pick up a published fix without an operator having to remember to rebuild every node. Set this to false explicitly if your deployment needs tighter manual control over when the control plane restarts (e.g. change-control requirements) -- with it off, rolling-restart itself also refuses to run, not just the automatic background check."
   type        = bool
