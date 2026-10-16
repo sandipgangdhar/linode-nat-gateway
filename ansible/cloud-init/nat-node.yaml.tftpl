@@ -473,6 +473,34 @@ write_files:
       WantedBy=multi-user.target
 %{ endif ~}
 
+  # Graceful withdrawal on reboot/power-off. On shutdown systemd stops units
+  # in reverse start order, so this unit (ordered After= the NAT data path,
+  # natctl, FRR and buddy sync) stops FIRST: it raises the flag that makes
+  # this node's /healthz report unhealthy, then holds the shutdown while the
+  # node still forwards, long enough for natctl's health loop to drop it
+  # from the roster and for clients to move their flows. Without it, clients
+  # keep hashing flows to a node whose NAT has already stopped until the
+  # next health probe notices. Must stay identical to
+  # controller/natctl/cloud_init.py's copy.
+  - path: /etc/systemd/system/lng-shutdown-withdraw.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=LNG: withdraw this node from client ECMP before NAT stops at shutdown
+      After=network-online.target nftables.service nat-exporter.service natctl.service frr.service lng-buddy-sync.service
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/rm -f /run/lng-withdrawing
+      ExecStop=/bin/sh -c 'touch /run/lng-withdrawing; sleep 12'
+      TimeoutStopSec=30
+
+      [Install]
+      WantedBy=multi-user.target
+
   # A plain, unauthenticated `curl` with no integrity check beyond HTTPS
   # transport trust is not enough here: the SAME Object Storage write
   # credential used for the leader-election
@@ -825,4 +853,5 @@ runcmd:
   - systemctl daemon-reload
   - systemctl enable --now natctl
 %{ endif ~}
+  - systemctl enable --now lng-shutdown-withdraw.service
   - logger -t lng-cloud-init "LNG NAT node ${node_name} (pool=${pool_name}) bootstrap complete"
