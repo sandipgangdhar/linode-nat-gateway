@@ -158,8 +158,19 @@ natctl-cli --config /etc/natctl/config.yaml status
 ```
 
 ```
-shared: 3 node(s), 3 healthy
-dedicated-acme-corp: 3 node(s), 3 healthy
+shared: 3 node(s), 3 healthy (as seen by natctl at http://localhost:8099)
+dedicated-acme-corp: 3 node(s), 3 healthy (as seen by natctl at http://localhost:8099)
+```
+
+The counts come from a running natctl's own roster when one answers at
+`--natctl-url` (default: the local API address), which is the same view
+clients route by. Health is checked over each node's private network, so
+when no natctl answers and `status` has to probe the nodes itself from a
+host outside those networks, a node it cannot reach is reported as
+`unknown` rather than unhealthy:
+
+```
+shared: 3 node(s), 0 healthy, 3 unknown (health endpoint not reachable from this host -- run this on a fleet node, or pass --natctl-url to see natctl's own view)
 ```
 
 **Why**: the fastest possible answer to "is everything okay right now,"
@@ -178,7 +189,7 @@ natctl-cli --config /etc/natctl/config.yaml status --deep
 ```
 
 ```
-shared: 3 node(s), 3 healthy
+shared: 3 node(s), 3 healthy (as seen by natctl at http://localhost:8099)
 
 --- deep health check (http://localhost:8099) ---
 process: restart_count=2, up 14320s
