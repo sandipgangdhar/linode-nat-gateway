@@ -1160,13 +1160,16 @@ flowchart TB
 
       <section class="chapter" id="c4-2">
         <h2><span class="chno">4.2</span> Buddy Pairing: the 2-Node Pair and the 3-Node Triangle</h2>
-        <p class="lede">Every reconcile pass, the currently healthy node set is sorted deterministically and paired up two at a time. With an even number of nodes, this produces exactly what it sounds like: ordinary mutual pairs, each member backing up the other. An odd number of nodes is where the interesting behavior lives.</p>
+        <p class="lede">Every reconcile pass, the currently healthy node set is put in a fixed order and paired up two at a time. With an even number of nodes, this produces exactly what it sounds like: ordinary mutual pairs, each member backing up the other. An odd number of nodes is where the interesting behavior lives.</p>
+
+        <h3>The pairing order, and why it is not alphabetical</h3>
+        <p>Nodes are paired in this order: every baseline (floor) node first, by name, then every elastic node from oldest to newest by creation time. Each node's partner depends only on its position in that order, so a change at the end of the list re-pairs only the node at the end. Scale-in removes the newest elastic node first, which is always last in the order, and a new elastic node always joins at the end. So adding or removing an elastic node changes the backup of at most one other node, the one it was paired with; every other pair keeps its partner. This matters because a node whose backup changes is uncovered until its new backup is granted, which takes the pairing activation delay plus BGP settling, typically one to a few minutes, and Linode allows only one backup per address, so the old backup cannot be kept while the new one comes up. Every natctl instance derives the same order from the cloud provider's instance list, so all nodes agree without sharing any state. Each roster entry carries its position as <code>pairing_rank</code>.</p>
 
         <h3>The ordinary pair</h3>
         <p>Two nodes, A and B. Each independently: (1) announces its own public IP as primary, (2) stands ready to take over the other's IP as secondary, and (3) mirrors connection-tracking state with the other. This relationship is fully symmetric and fully bidirectional — there is no primary/backup role assigned to either member; both are simultaneously each.</p>
 
         <h3>The 3-node triangle</h3>
-        <p>With three or more nodes and an odd count, the trailing three nodes — call them A, B, and C in sorted order — form a triangle instead of leaving one node with no partner at all:</p>
+        <p>With three or more nodes and an odd count, the trailing three nodes — call them A, B, and C in pairing order — form a triangle instead of leaving one node with no partner at all:</p>
         <ul>
           <li>A and B form a completely ordinary mutual pair, exactly as above.</li>
           <li>B — the "hub" — additionally takes on C as a one-directional backup: B is ready to announce C's public IP and mirrors C's connection state, but the reverse is not true. C does not back up B, and does not back up anyone.</li>
@@ -3299,7 +3302,7 @@ systemctl restart natctl</pre></li>
           <dd>A node's measured network throughput divided by the real, published bandwidth capacity of its specific instance plan, looked up from the provider rather than assumed. An autoscaling signal with a scale-out trigger at 85%. <span class="see">Part V, 5.2</span></dd>
 
           <dt>Triangle</dt>
-          <dd>The buddy arrangement for an odd healthy node count of three or more: the trailing three nodes in sorted order form one ordinary mutual pair plus a one-directional backup from the pair's second member (the hub) to the third node, so no node is left without a backup. For connection-state sync specifically, the third node also syncs back to the hub, since sync needs both ends. <span class="see">Part IV, 4.2</span></dd>
+          <dd>The buddy arrangement for an odd healthy node count of three or more: the trailing three nodes in pairing order form one ordinary mutual pair plus a one-directional backup from the pair's second member (the hub) to the third node, so no node is left without a backup. For connection-state sync specifically, the third node also syncs back to the hub, since sync needs both ends. <span class="see">Part IV, 4.2</span></dd>
 
           <dt>VLAN</dt>
           <dd>A private Layer 2 broadcast segment on Akamai Cloud, joined by label. Any attached instance can forward for any other, which is why the client fleet and each node's client-facing interface live here. Carries no address-assignment mechanism (all addresses are static) and is not filtered by Cloud Firewall. <span class="see">Part 0, 0.2 (c); Part III, 3.4</span></dd>
