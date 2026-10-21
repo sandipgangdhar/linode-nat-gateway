@@ -16,6 +16,13 @@
 # - Reads /etc/natctl/config.yaml and /etc/natctl/env, identically to the
 #   source variant -- only ExecStart (and the now-unneeded
 #   PYTHONPATH/WorkingDirectory) differ.
+# - Watchdog: NATCTL_WATCHDOG_SEC asks natctl to switch systemd's
+#   watchdog on itself and feed it while its reconcile loop is making
+#   progress, so a hung (not crashed) natctl is restarted. NotifyAccess=all
+#   because the compiled binary's launcher, not natctl itself, is the
+#   unit's main process. An older natctl ignores the variable, so this
+#   unit never kills it. TimeoutAbortSec bounds how long a frozen process
+#   is given to die before SIGKILL.
 #
 # -----------------------------------------------------
 # Author:
@@ -34,6 +41,9 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=/etc/natctl/env
 ExecStart=/opt/natctl/natctl --config /etc/natctl/config.yaml
+NotifyAccess=all
+Environment=NATCTL_WATCHDOG_SEC=120
+TimeoutAbortSec=20
 Restart=on-failure
 RestartSec=3
 User=root
