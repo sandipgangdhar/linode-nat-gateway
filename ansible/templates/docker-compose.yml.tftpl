@@ -101,7 +101,27 @@ services:
     ports:
       - "3000:3000"
 
+%{ if log_shipping_enabled ~}
+  # Node log shipping: every NAT node's nat-exporter pushes its journal here
+  # over the VPC (control-plane firewall rule loki-vpc-internal). Chunks and
+  # index live in the logs bucket (loki-config.yaml); loki-data only holds
+  # the local index cache and compactor scratch space.
+  loki:
+    image: grafana/loki:3.7.8
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/config.yaml", "-config.expand-env=true"]
+    env_file:
+      - /opt/lng-observability/loki.env
+    volumes:
+      - /opt/lng-observability/loki-config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+%{ endif ~}
 volumes:
   prometheus-data:
   grafana-data:
   alertmanager-data:
+%{ if log_shipping_enabled ~}
+  loki-data:
+%{ endif ~}

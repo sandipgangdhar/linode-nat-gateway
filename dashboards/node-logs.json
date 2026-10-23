@@ -1,0 +1,291 @@
+{
+  "title": "LNG - Node logs",
+  "uid": "lng-node-logs",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": [
+    "lng",
+    "logs"
+  ],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "description": "Every NAT node's systemd journal (natctl, buddy-sync, FRR, conntrackd, cloud-init, ...) as kept by Loki -- including nodes that no longer exist.",
+  "templating": {
+    "list": [
+      {
+        "name": "pool",
+        "label": "Pool",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "lng-loki"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values({job=\"lng-node\"}, pool)",
+          "refId": "LokiVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values({job=\"lng-node\"}, pool)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "name": "node",
+        "label": "Node",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "lng-loki"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values({job=\"lng-node\", pool=~\"$pool\"}, node)",
+          "refId": "LokiVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values({job=\"lng-node\", pool=~\"$pool\"}, node)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "name": "unit",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "lng-loki"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values({job=\"lng-node\", pool=~\"$pool\", node=~\"$node\"}, unit)",
+          "refId": "LokiVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values({job=\"lng-node\", pool=~\"$pool\", node=~\"$node\"}, unit)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "name": "level",
+        "label": "Level",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "lng-loki"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values({job=\"lng-node\"}, level)",
+          "refId": "LokiVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values({job=\"lng-node\"}, level)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "name": "search",
+        "label": "Search (regex)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Log lines by level",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "lng-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "lng-loki"
+          },
+          "expr": "sum by (level) (count_over_time({job=\"lng-node\", pool=~\"$pool\", node=~\"$node\", unit=~\"$unit\", level=~\"$level\"} |~ \"$search\" [$__auto]))",
+          "legendFormat": "{{level}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Errors and warnings by node",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "lng-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "lng-loki"
+          },
+          "expr": "sum by (node) (count_over_time({job=\"lng-node\", pool=~\"$pool\", node=~\"$node\", unit=~\"$unit\", level=~\"error|critical|warning\"} |~ \"$search\" [$__auto]))",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "logs",
+      "title": "Scaling, fencing and restore decisions",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "lng-loki"
+      },
+      "description": "natctl's own record of why capacity changed or a node was fenced, restored or replaced.",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "lng-loki"
+          },
+          "expr": "{job=\"lng-node\", pool=~\"$pool\", node=~\"$node\", unit=\"natctl\"} |~ \"scale-out triggered|scale-in triggered|provisioned elastic node|deleting drained elastic node|failed health checks for|fencing previous leader|fence complete|restoring fenced node|claiming leadership\" |~ \"$search\""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "id": 4,
+      "type": "logs",
+      "title": "Logs",
+      "gridPos": {
+        "h": 18,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "lng-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "lng-loki"
+          },
+          "expr": "{job=\"lng-node\", pool=~\"$pool\", node=~\"$node\", unit=~\"$unit\", level=~\"$level\"} |~ \"$search\""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      }
+    }
+  ]
+}

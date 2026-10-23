@@ -123,6 +123,19 @@ write_files:
     permissions: '0644'
     content: |
       ${indent(6,nat_alerts_yml)}
+%{ if log_shipping_enabled ~}
+
+  - path: /opt/lng-observability/loki-config.yaml
+    permissions: '0644'
+    content: |
+      ${indent(6,loki_config_yaml)}
+
+  - path: /opt/lng-observability/loki.env
+    owner: root:root
+    permissions: '0600'
+    content: |
+      ${indent(6,loki_env)}
+%{ endif ~}
 %{ endif ~}
 
 %{ if run_natctl ~}
@@ -328,6 +341,9 @@ runcmd:
   # a brief empty-folder window.
   - mkdir -p /opt/lng-observability/dashboards
   - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${nat_overview_json_url}" -o /opt/lng-observability/dashboards/nat-overview.json
+%{ if log_shipping_enabled ~}
+  - curl -fsSL --retry 8 --retry-all-errors --retry-delay 2 "${node_logs_json_url}" -o /opt/lng-observability/dashboards/node-logs.json
+%{ endif ~}
   - cd /opt/lng-observability && docker compose up -d
 %{ endif ~}
 %{ if run_natctl ~}

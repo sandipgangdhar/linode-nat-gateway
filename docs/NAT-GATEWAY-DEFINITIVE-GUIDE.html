@@ -1519,6 +1519,17 @@ flowchart LR
           </tbody>
         </table></div>
 
+        <h3>Log shipping (7.11)</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Metric</th><th>What it tells you</th></tr></thead>
+          <tbody>
+            <tr><td><code>log_shipping_enabled</code></td><td>Whether this node is shipping its journal to Loki — follows the deployment's log-shipping setting within about a minute</td></tr>
+            <tr><td><code>log_shipping_entries_total</code></td><td>Journal lines Loki has accepted from this node since its exporter started</td></tr>
+            <tr><td><code>log_shipping_push_failures_total</code></td><td>Pushes Loki did not accept; each is retried, and the journal cursor only advances after a success</td></tr>
+            <tr><td><code>log_shipping_last_success_timestamp_seconds</code></td><td>When Loki last accepted a push from this node — the basis of the <code>NATLogShippingStalled</code> alert</td></tr>
+          </tbody>
+        </table></div>
+
         <h3>Fleet-wide, from the control plane itself</h3>
         <div class="table-wrap"><table>
           <thead><tr><th>Metric</th><th>What it tells you</th></tr></thead>
@@ -1607,6 +1618,7 @@ flowchart LR
             <tr><td>Linode API circuit breaker open</td><td>The control plane has stopped attempting mutating cloud-provider API calls after a run of consecutive failures, for 1 minute</td><td><span class="badge crit">Critical</span></td></tr>
             <tr><td>Pool cost ceiling exceeded</td><td>A pool's actual hourly cost exceeds its own <code>max_nodes</code>-derived ceiling, for 5 minutes</td><td><span class="badge warn">Warning</span></td></tr>
             <tr><td>Pool cost velocity high</td><td>A pool's hourly cost is rising faster than its own configured threshold, for 5 minutes — only fires for a pool that opted into this check</td><td><span class="badge warn">Warning</span></td></tr>
+            <tr><td>Log shipping stalled</td><td>A node with log shipping on has had no push accepted by Loki for 10 minutes, for 5 minutes (7.11)</td><td><span class="badge warn">Warning</span></td></tr>
             <tr><td>Pool at risk, no witness</td><td>A pool has 2 or fewer real nodes and no quorum witness configured, for 15 minutes</td><td><span class="badge warn">Warning</span></td></tr>
           </tbody>
         </table></div>
@@ -1896,10 +1908,33 @@ curl -s http://localhost:9090/api/v1/query \
 
       <h3>What the gateway does not export</h3>
 
-      <ul><li>There are no per-client or per-destination traffic figures. Metrics are per node, per public address and per protocol.</li><li>There are no per-connection logs. Connection-tracking figures are counts.</li><li>Latency is not measured. The health check verifies that an end-to-end request through the node succeeds, not how long it takes.</li></ul>
+      <ul><li>There are no per-client or per-destination traffic figures. Metrics are per node, per public address and per protocol.</li><li>There are no per-connection logs. Connection-tracking figures are counts. Node service logs are kept separately (7.11).</li><li>Latency is not measured. The health check verifies that an end-to-end request through the node succeeds, not how long it takes.</li></ul>
 
       <p>If you need those, capture them where they exist: on the client instances, on your destinations, or with a packet-capture tool on a node.</p>
 
+      </section>
+
+      <section class="chapter" id="c7-11">
+        <h2><span class="chno">7.11</span> Node Logs</h2>
+        <p>Every NAT node, floor and elastic, streams its systemd journal to Grafana Loki on the observability host. The logs therefore outlive the node that wrote them: an elastic node deleted on scale-in, a node replaced because it never became healthy, or a node that crashed or was fenced. Logs are sent every couple of seconds, so at most the last few seconds before a node disappears are missing.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Item</th><th>Detail</th></tr></thead>
+          <tbody>
+            <tr><td>What is shipped</td><td>The journal of <code>natctl</code>, <code>nat-exporter</code>, <code>lng-buddy-sync</code>, <code>frr</code>, every <code>conntrackd@</code> instance, <code>lng-client-agent</code>, <code>cloud-init</code>/<code>cloud-final</code> (why a new node did or did not come up), and the shutdown and DNS helper units. systemd's own lines about a service (started, exited, watchdog restart) are filed under that service.</td></tr>
+            <tr><td>Who ships</td><td><code>nat-exporter</code> on each node. It learns where to send from natctl's local <code>GET /log-shipping</code>, which natctl re-reads from <code>natctl/log-shipping.json</code> in Object Storage every reconcile pass. It keeps the last good copy on disk, so shipping continues while natctl is restarting.</td></tr>
+            <tr><td>No loss on restart or outage</td><td>Progress is the journal cursor, saved after every push Loki accepts. A restarted exporter resumes from it; while Loki is unreachable the node keeps its journal and catches up afterwards. A brand-new node ships its whole first boot, including cloud-init.</td></tr>
+            <tr><td>Where it is kept</td><td>Loki stores its chunks and index in a dedicated Object Storage bucket (<code>&lt;label&gt;-logs-&lt;suffix&gt;</code>), using an access key scoped to that bucket alone. Recent lines are flushed to the bucket within 30 minutes.</td></tr>
+            <tr><td>Retention</td><td><code>log_retention_days</code> (default 14). Loki's compactor deletes older chunks from the bucket.</td></tr>
+            <tr><td>Labels</td><td><code>pool</code>, <code>node</code>, <code>unit</code> (the service, without <code>.service</code>), and <code>level</code> (natctl's own <code>level=</code>, otherwise the journal priority).</td></tr>
+            <tr><td>Network</td><td>Nodes push to port 3100 on the observability host's VPC address. The control-plane firewall allows 3100 from the VPC subnets only. Loki runs single-tenant without authentication, so anything on the VPC can push to it.</td></tr>
+          </tbody>
+        </table></div>
+        <h3>Viewing them</h3>
+        <p>Grafana's <strong>LNG - Node logs</strong> dashboard has pool, node, service and level selectors plus a free-text (regex) search. It shows log volume by level, errors and warnings by node, a panel of natctl's scaling, fencing and restore decisions, and the raw lines. The node selector still lists nodes that no longer exist, for as long as their logs are retained. For ad-hoc queries use Grafana's <em>Explore</em> with the <code>Loki</code> datasource, for example <code>{job="lng-node", pool="common", unit="natctl"} |= "scale-out triggered"</code>, or natctl's own fields with <code>| logfmt | logger="natctl.fleet"</code>.</p>
+        <h3>Health of the shipping itself</h3>
+        <p>Each node publishes <code>nat_log_shipping_enabled</code>, <code>nat_log_shipping_entries_total</code>, <code>nat_log_shipping_push_failures_total</code> and <code>nat_log_shipping_last_success_timestamp_seconds</code> on its <code>/metrics</code>. The <code>NATLogShippingStalled</code> alert fires when a node with shipping on has had no accepted push for 10 minutes; its lines are not lost unless the node is deleted before Loki recovers.</p>
+        <h3>Turning it on or off</h3>
+        <p><code>log_shipping_enabled</code> (default <code>true</code>) needs the observability host with the monitoring stack (<code>run_monitoring_stack</code>). With it off, or with no observability host, <code>natctl/log-shipping.json</code> is written as disabled and nodes ship nothing. Changing the setting changes the observability host's boot configuration, which replaces that host and loses the Prometheus and Grafana history stored on it; NAT nodes are not replaced, because they pick the setting up at runtime. Witness nodes do not run <code>nat-exporter</code> and do not ship their logs.</p>
       </section>
       <!-- monitoring-reference:end -->
 
@@ -3416,7 +3451,7 @@ systemctl restart natctl</pre></li>
       ["c7-5","7.5 The Health Check"],
       ["c7-6","7.6 The Dashboard, Panel by Panel"],["c7-7","7.7 Labels & Dimensions"],
       ["c7-8","7.8 How to Check Things"],["c7-9","7.9 Responding to an Alert"],
-      ["c7-10","7.10 Questions & Limits"]
+      ["c7-10","7.10 Questions & Limits"],["c7-11","7.11 Node Logs"]
     ]},
     {label:"Part VIII", title:"Security", chapters:[
       ["c8-1","8.1 The Firewall Model"],["c8-2","8.2 Credential Scope"],["c8-3","8.3 Secrets Management (SOPS + age)"]

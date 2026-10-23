@@ -1411,6 +1411,16 @@ module "observability" {
   # embedded -- see terraform/modules/artifacts/main.tf's header comment.
   nat_overview_json_url = module.artifacts.nat_overview_json_url
 
+  # Node log shipping (see log_shipping.tf).
+  log_shipping_enabled = local.log_shipping_active
+  log_retention_days   = var.log_retention_days
+  node_logs_json_url   = module.artifacts.node_logs_json_url
+  loki_bucket          = local.log_shipping_active ? linode_object_storage_bucket.logs[0].label : ""
+  loki_s3_endpoint     = "${local.natctl_object_storage_region}.linodeobjects.com"
+  loki_s3_region       = local.natctl_object_storage_region
+  loki_access_key      = local.log_shipping_active ? linode_object_storage_key.loki[0].access_key : ""
+  loki_secret_key      = local.log_shipping_active ? linode_object_storage_key.loki[0].secret_key : ""
+
   # Once natctl runs on every NAT node instead (natctl_on_node_enabled),
   # this host stops running natctl itself -- it wasn't given its own
   # NATCTL_SELF_NODE_ID/NATCTL_SELF_LINODE_ID identity, and running natctl

@@ -322,3 +322,60 @@ variable "secrets_bundle_age_private_key" {
   sensitive   = true
   default     = ""
 }
+
+# ---- Node log shipping (Grafana Loki) ----
+
+variable "log_shipping_enabled" {
+  description = "Run Grafana Loki on this host and add it as a Grafana datasource, so every NAT node's journal (natctl, buddy-sync, FRR, conntrackd, cloud-init, ...) is kept after the node is gone. Needs run_monitoring_stack and loki_bucket. Changing it changes this instance's user_data, which replaces the instance."
+  type        = bool
+  default     = false
+}
+
+variable "log_retention_days" {
+  description = "How long Loki keeps node logs before its compactor deletes them from the logs bucket."
+  type        = number
+  default     = 14
+
+  validation {
+    condition     = var.log_retention_days >= 1 && var.log_retention_days == floor(var.log_retention_days)
+    error_message = "log_retention_days must be a whole number of days, at least 1."
+  }
+}
+
+variable "loki_bucket" {
+  description = "Object Storage bucket Loki keeps its chunks and index in. Dedicated to logs: Loki writes at the bucket root."
+  type        = string
+  default     = ""
+}
+
+variable "loki_s3_endpoint" {
+  description = "Cluster-generic Object Storage endpoint host for loki_bucket, without the bucket name (for example in-maa-1.linodeobjects.com)."
+  type        = string
+  default     = ""
+}
+
+variable "loki_s3_region" {
+  description = "Object Storage region/cluster slug for loki_bucket (for example in-maa-1)."
+  type        = string
+  default     = ""
+}
+
+variable "loki_access_key" {
+  description = "Object Storage access key Loki uses; scope it to loki_bucket only."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "loki_secret_key" {
+  description = "Secret for loki_access_key."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "node_logs_json_url" {
+  description = "Public URL (terraform/modules/artifacts' node_logs_json_url output) of dashboards/node-logs.json, fetched at boot when log shipping is enabled."
+  type        = string
+  default     = ""
+}

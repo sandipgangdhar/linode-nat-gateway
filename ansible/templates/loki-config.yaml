@@ -1,0 +1,92 @@
+# loki-config.yaml (ansible/templates)
+#
+# Grafana Loki configuration for node log shipping. Every NAT node's
+# nat-exporter streams its systemd journal to this Loki over the VPC
+# (port 3100); Loki keeps the logs in a dedicated Object Storage bucket,
+# so they outlive both the nodes that wrote them and this host.
+#
+# -----------------------------------------------------
+# Usage:
+#
+# - Started by docker-compose.yml.tftpl with -config.expand-env=true. The
+#   LOKI_* environment values come from /opt/lng-observability/loki.env (0600),
+#   written by observability.yaml.tftpl, so no credential is in this file.
+# - LOKI_RETENTION_HOURS is log_retention_days * 24. The compactor deletes
+#   chunks older than that from the bucket.
+#
+# -----------------------------------------------------
+# Best Practices:
+#
+# - Single binary, single tenant: suitable for a fleet's own logs. Port
+#   3100 is reachable only from the VPC subnets (control-plane firewall).
+#
+# -----------------------------------------------------
+# Author:
+# - Sandip Gangdhar
+# - GitHub: https://github.com/sandipgangdhar
+#
+# (c) Linode-NAT-Gateway (LNG) | Developed by Sandip Gangdhar | 2026
+# -----------------------------------------------------
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    s3:
+      endpoint: ${LOKI_S3_ENDPOINT}
+      region: ${LOKI_S3_REGION}
+      bucketnames: ${LOKI_S3_BUCKET}
+      access_key_id: ${LOKI_S3_ACCESS_KEY}
+      secret_access_key: ${LOKI_S3_SECRET_KEY}
+      s3forcepathstyle: false
+
+schema_config:
+  configs:
+    - from: 2026-01-01
+      store: tsdb
+      object_store: s3
+      schema: v13
+      index:
+        prefix: loki_index_
+        period: 24h
+
+# Recent lines live in the ingester (and its write-ahead log on loki-data)
+# until a chunk is flushed to the bucket. Flushing within 30 minutes bounds
+# what losing this host could cost.
+ingester:
+  chunk_idle_period: 10m
+  max_chunk_age: 30m
+
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/tsdb-index
+    cache_location: /loki/tsdb-cache
+
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  delete_request_store: s3
+
+limits_config:
+  retention_period: ${LOKI_RETENTION_HOURS}h
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+  ingestion_rate_mb: 16
+  ingestion_burst_size_mb: 32
+  max_query_lookback: ${LOKI_RETENTION_HOURS}h
+  volume_enabled: true
+
+analytics:
+  reporting_enabled: false

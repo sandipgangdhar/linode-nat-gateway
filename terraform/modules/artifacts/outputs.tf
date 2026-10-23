@@ -107,3 +107,8 @@ output "manifest_url" {
   description = "Public URL for the SHA-256 integrity manifest covering every binary/unit-file object this module uploads (except nat_overview_json, which is data, not executed code)."
   value       = "${local.base_url}/${linode_object_storage_object.manifest.key}"
 }
+
+output "node_logs_json_url" {
+  description = "Public URL for dashboards/node-logs.json (the Grafana Node logs dashboard), fetched at boot by the observability host when log shipping is on."
+  value       = "${local.base_url}/${linode_object_storage_object.node_logs_json.key}"
+}

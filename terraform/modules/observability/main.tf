@@ -85,6 +85,7 @@ locals {
   cloud_init = templatefile("${path.module}/../../../ansible/cloud-init/observability.yaml.tftpl", {
     docker_compose_yml = templatefile("${path.module}/../../../ansible/templates/docker-compose.yml.tftpl", {
       grafana_admin_password = var.grafana_admin_password
+      log_shipping_enabled   = local.log_shipping_enabled
     })
     prometheus_yml = templatefile("${path.module}/../../../ansible/templates/prometheus.yml.tftpl", {
       remote_write_url      = var.prometheus_remote_write_url
@@ -112,7 +113,22 @@ locals {
       smtp_auth_password = var.alertmanager_smtp_auth_password
       alert_email_to     = var.alertmanager_email_to
     })
-    grafana_datasource_yml = file("${path.module}/../../../ansible/templates/grafana-datasource.yml")
+    grafana_datasource_yml = templatefile("${path.module}/../../../ansible/templates/grafana-datasource.yml", {
+      loki_enabled = local.log_shipping_enabled
+    })
+    # Node log shipping (Loki). The config file carries no secret (Loki expands ${LOKI_*} from loki_env at
+    # start); loki_env is written 0600 next to the compose file.
+    log_shipping_enabled = local.log_shipping_enabled
+    loki_config_yaml     = file("${path.module}/../../../ansible/templates/loki-config.yaml")
+    loki_env = join("\n", [
+      "LOKI_S3_ENDPOINT=${var.loki_s3_endpoint}",
+      "LOKI_S3_REGION=${var.loki_s3_region}",
+      "LOKI_S3_BUCKET=${var.loki_bucket}",
+      "LOKI_S3_ACCESS_KEY=${var.loki_access_key}",
+      "LOKI_S3_SECRET_KEY=${var.loki_secret_key}",
+      "LOKI_RETENTION_HOURS=${var.log_retention_days * 24}",
+    ])
+    node_logs_json_url     = var.node_logs_json_url
     grafana_dashboards_yml = file("${path.module}/../../../ansible/templates/grafana-dashboards.yml")
     nat_alerts_yml         = file("${path.module}/../../../alerts/nat-alerts.yml")
 
@@ -158,6 +174,11 @@ locals {
     natctl_bin_url     = var.natctl_bin_url
     natctl_cli_bin_url = var.natctl_cli_bin_url
   })
+}
+
+locals {
+  # Loki only runs alongside the rest of the monitoring stack, and only with somewhere to keep its data.
+  log_shipping_enabled = var.log_shipping_enabled && var.run_monitoring_stack && var.loki_bucket != ""
 }
 
 resource "linode_instance" "observability" {

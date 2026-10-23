@@ -366,6 +366,17 @@ resource "linode_firewall" "control_plane" {
     ipv4     = concat([data.linode_vpc_subnet.public.ipv4], [for s in data.linode_vpc_subnet.private : s.ipv4])
   }
 
+  # Node log shipping: every NAT node's nat-exporter pushes its journal to
+  # Loki on this host over the VPC. Nothing listens on 3100 when log
+  # shipping is off.
+  inbound {
+    label    = "loki-vpc-internal"
+    action   = "ACCEPT"
+    protocol = "TCP"
+    ports    = "3100"
+    ipv4     = concat([data.linode_vpc_subnet.public.ipv4], [for s in data.linode_vpc_subnet.private : s.ipv4])
+  }
+
   inbound {
     label    = "ssh"
     action   = "ACCEPT"

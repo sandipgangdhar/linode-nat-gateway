@@ -74,6 +74,7 @@ locals {
   conntrackd_peer_service_path = "${path.module}/../../../buddy-sync/conntrackd@.service"
 
   nat_overview_json_path = "${path.module}/../../../dashboards/nat-overview.json"
+  node_logs_json_path    = "${path.module}/../../../dashboards/node-logs.json"
 
   # scripts/install-nat-client.sh itself -- a plain shell script, not a
   # compiled binary, so unlike the four Nuitka outputs above this is the
@@ -205,6 +206,19 @@ resource "linode_object_storage_object" "conntrackd_peer_service" {
   etag   = filemd5(local.conntrackd_peer_service_path)
 }
 
+# The Grafana "Node logs" dashboard (Loki), fetched at boot by the observability host when log shipping is on.
+resource "linode_object_storage_object" "node_logs_json" {
+  bucket     = var.bucket
+  region     = var.s3_region
+  access_key = var.access_key
+  secret_key = var.secret_key
+
+  key    = "${local.prefix}/node-logs.json"
+  source = local.node_logs_json_path
+  acl    = "public-read"
+  etag   = filemd5(local.node_logs_json_path)
+}
+
 resource "linode_object_storage_object" "nat_overview_json" {
   bucket     = var.bucket
   region     = var.s3_region
@@ -296,6 +310,7 @@ locals {
     "conntrackd@.service"    = filemd5(local.conntrackd_peer_service_path)
     "install-nat-client.sh"  = filemd5(local.install_nat_client_script_path)
     "nat-overview.json"      = filemd5(local.nat_overview_json_path)
+    "node-logs.json"         = filemd5(local.node_logs_json_path)
     "manifest.sha256.json"   = md5(jsonencode(local.manifest))
   }
 }
@@ -316,6 +331,7 @@ resource "null_resource" "verify_artifact_uploads" {
     linode_object_storage_object.lng_buddy_sync_service,
     linode_object_storage_object.conntrackd_peer_service,
     linode_object_storage_object.nat_overview_json,
+    linode_object_storage_object.node_logs_json,
     linode_object_storage_object.install_nat_client_script,
     linode_object_storage_object.manifest,
   ]

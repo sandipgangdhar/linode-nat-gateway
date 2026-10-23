@@ -518,3 +518,15 @@ variable "customer_prometheus_remote_write_password" {
   sensitive   = true
   default     = ""
 }
+
+variable "log_shipping_enabled" {
+  description = "Stream every NAT node's systemd journal to Grafana Loki on the observability host, kept in a dedicated Object Storage bucket for log_retention_days, and viewable on Grafana's Node logs dashboard. Needs the observability host with run_monitoring_stack. Changing it replaces the observability host (not the NAT nodes). See log_shipping.tf."
+  type        = bool
+  default     = true
+}
+
+variable "log_retention_days" {
+  description = "How many days Loki keeps node logs before deleting them from the logs bucket."
+  type        = number
+  default     = 14
+}

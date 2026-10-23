@@ -9,6 +9,8 @@
 # -----------------------------------------------------
 # Usage:
 #
+# - Rendered with templatefile(): the Loki datasource is only added when
+#   log shipping is enabled (loki_enabled), since Loki only runs then.
 # - url points at the Prometheus container by its Docker Compose service
 #   name ("prometheus"), not localhost or an external IP -- both
 #   containers share the same Compose network.
@@ -30,3 +32,13 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     editable: true
+%{ if loki_enabled ~}
+  - name: Loki
+    uid: lng-loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: true
+    jsonData:
+      maxLines: 5000
+%{ endif ~}

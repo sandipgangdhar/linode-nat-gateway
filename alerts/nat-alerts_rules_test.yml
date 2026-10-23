@@ -249,3 +249,31 @@ tests:
       - eval_time: 16m
         alertname: NATPoolAtRiskNoWitness
         exp_alerts: [] # a witnessed (or >2-node) pool reads 0 -- must never fire
+
+  - interval: 1m
+    input_series:
+      # lng-a-1 stopped shipping at t=0; lng-a-2 ships every minute (its last success tracks the clock).
+      - series: 'nat_log_shipping_enabled{pool="common",node="lng-a-1",node_id="lng-a-1",instance="10.20.0.96:9200"}'
+        values: "1x30"
+      - series: 'nat_log_shipping_last_success_timestamp_seconds{pool="common",node="lng-a-1",node_id="lng-a-1",instance="10.20.0.96:9200"}'
+        values: "0x30"
+      - series: 'nat_log_shipping_enabled{pool="common",node="lng-a-2",node_id="lng-a-2",instance="10.20.0.97:9200"}'
+        values: "1x30"
+      - series: 'nat_log_shipping_last_success_timestamp_seconds{pool="common",node="lng-a-2",node_id="lng-a-2",instance="10.20.0.97:9200"}'
+        values: "0+60x30"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: NATLogShippingStalled
+        exp_alerts: [] # stale for 12m but not yet for the 5m `for`
+      - eval_time: 20m
+        alertname: NATLogShippingStalled
+        exp_alerts:
+          - exp_labels:
+              pool: common
+              node: lng-a-1
+              node_id: lng-a-1
+              instance: 10.20.0.96:9200
+              severity: warning
+            exp_annotations:
+              summary: "Node lng-a-1 in pool common has not shipped logs to Loki for over 10 minutes"
+              description: "The node keeps its journal and resumes from where it stopped once Loki accepts pushes again, but if the node is deleted or replaced before then, its unshipped lines are lost. Check that Loki is running on the observability host (port 3100 reachable over the VPC) and nat_log_shipping_push_failures_total on this node."
