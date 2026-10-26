@@ -396,6 +396,11 @@ write_files:
       ! render_frr_conf() — the two must stay behaviorally identical, so an
       ! elastic node comes up with the exact same FRR base config a floor
       ! node gets.
+      ! "timers connect 5": the route servers drop a node's sessions
+      ! (Cease/Peer Unconfigured) whenever its IP Sharing changes. FRR's
+      ! default 120 s connect-retry would leave the node unannounced for up
+      ! to two minutes, and a shared address of its own is then delivered to
+      ! the buddy that backs it up instead of to this node.
       router bgp 65001
         no bgp ebgp-requires-policy
         coalesce-time 1000
@@ -404,6 +409,7 @@ write_files:
         neighbor RS remote-as external
         neighbor RS remote-as 65000
         neighbor RS ebgp-multihop 10
+        neighbor RS timers connect 5
         neighbor RS capability extended-nexthop
         neighbor 2600:3c0f:${linode_bgp_dcid}:34::1 peer-group RS
         neighbor 2600:3c0f:${linode_bgp_dcid}:34::2 peer-group RS
