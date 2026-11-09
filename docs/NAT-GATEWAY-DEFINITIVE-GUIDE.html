@@ -1213,6 +1213,7 @@ flowchart LR
       <section class="chapter" id="c4-3">
         <h2><span class="chno">4.3</span> Connection-State Sync</h2>
         <p class="lede">A daemon called <strong>buddy-sync</strong> (<code>lng-buddy-sync.service</code>) runs on every node, watching the roster for buddy reassignment and reconciling both the BGP announcer's secondary-route configuration and the connection-tracking sync process's peer configuration whenever a pairing changes.</p>
+        <p>buddy-sync also guards FRR's BGP base configuration (the route-server neighbors every node is built with). It keeps a crash-safe copy of the last complete running configuration, flushes FRR's configuration file to disk after every change it saves, and — if the BGP base is ever missing from FRR's running configuration for three polls in a row, for example after a power loss during a save — restores that copy and restarts FRR. This check runs before the roster fetch, so it works even while the node cannot reach natctl. A node with no saved copy is reported by the <code>BGP not configured</code> alert (7.4).</p>
         <p>While active, it continuously mirrors the node's live kernel connection-tracking table to its current peer or peers — usually one, two for a triangle's hub node running two independent sync processes at once.</p>
 
         <h3>The protocol, concretely</h3>
@@ -1614,6 +1615,7 @@ flowchart LR
             <tr><td>CPU/softirq saturation high</td><td>Any single core's network packet-processing time exceeds 80% for 5 minutes</td><td><span class="badge warn">Warning</span></td></tr>
             <tr><td>Buddy unpaired</td><td>A node has no sync buddy for 10 minutes</td><td><span class="badge info">Info</span></td></tr>
             <tr><td>BGP session not established</td><td>A configured peer session is down for 3 minutes</td><td><span class="badge crit">Critical</span></td></tr>
+            <tr><td>BGP not configured</td><td>A node has no BGP neighbors configured at all while the rest of its pool does, for 10 minutes (its FRR is running without its BGP base, so its buddy carries its public address)</td><td><span class="badge crit">Critical</span></td></tr>
             <tr><td>Self-announce missing</td><td>A healthy node isn't announcing its own address for 5 minutes</td><td><span class="badge crit">Critical</span></td></tr>
             <tr><td>Connection insert failures high</td><td>Kernel insert-failure rate exceeds a threshold for 5 minutes</td><td><span class="badge warn">Warning</span></td></tr>
             <tr><td>Autoscale ceiling reached</td><td>A signal is breaching while the pool is already at its configured maximum, for 5 minutes</td><td><span class="badge warn">Warning</span></td></tr>

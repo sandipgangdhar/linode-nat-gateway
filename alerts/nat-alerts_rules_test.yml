@@ -277,3 +277,39 @@ tests:
             exp_annotations:
               summary: "Node lng-a-1 in pool common has not shipped logs to Loki for over 10 minutes"
               description: "The node keeps its journal and resumes from where it stopped once Loki accepts pushes again, but if the node is deleted or replaced before then, its unshipped lines are lost. Check that Loki is running on the observability host (port 3100 reachable over the VPC) and nat_log_shipping_push_failures_total on this node."
+
+  # ---- NATBGPNotConfigured -------------------------------------------------
+  # A node whose FRR lost its BGP base has zero peers while its pool-mates
+  # have four: must fire for that node only.
+  - interval: 1m
+    input_series:
+      - series: 'nat_bgp_peers_total{pool="common",node="lng-common-1",instance="10.20.0.96:9200"}'
+        values: "4x15"
+      - series: 'nat_bgp_peers_total{pool="common",node="lng-common-2",instance="10.20.0.97:9200"}'
+        values: "0x15"
+      - series: 'nat_bgp_peers_total{pool="common",node="lng-common-3",instance="10.20.0.98:9200"}'
+        values: "4x15"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: NATBGPNotConfigured
+        exp_alerts:
+          - exp_labels:
+              pool: common
+              node: lng-common-2
+              instance: "10.20.0.97:9200"
+              severity: critical
+            exp_annotations:
+              summary: "lng-common-2 (common) has no BGP neighbors configured while the rest of its pool does"
+              description: "FRR on this node is running without its BGP base config, so it announces nothing and its buddy carries its public address; its own egress (DNS included) fails and it stays out of the roster. buddy-sync restores the last known-good FRR config automatically when it has one -- if this persists, the node has none and needs replacing. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.4 'BGP-Based IP Failover'."
+
+  # A pool without IP failover has zero peers everywhere: must not fire.
+  - interval: 1m
+    input_series:
+      - series: 'nat_bgp_peers_total{pool="acme",node="lng-acme-1",instance="10.20.0.32:9200"}'
+        values: "0x15"
+      - series: 'nat_bgp_peers_total{pool="acme",node="lng-acme-2",instance="10.20.0.33:9200"}'
+        values: "0x15"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: NATBGPNotConfigured
+        exp_alerts: []

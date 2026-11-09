@@ -158,6 +158,20 @@ groups:
           summary: "BGP session {{ $labels.node }} -> {{ $labels.peer }} ({{ $labels.pool }}) is not Established"
           description: "This node cannot reliably announce or fail over its shared IP over this session. Check `vtysh -c 'show bgp summary'` on the node and route-reflector reachability. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.4 'BGP-Based IP Failover'."
 
+      # A node whose FRR has no BGP neighbor configured at all exports no
+      # nat_bgp_peer_state series, so NATBGPSessionNotEstablished cannot see
+      # it, and it is unhealthy (its buddy carries its address), so
+      # NATIPFailoverSelfNotAnnounced cannot either. Other nodes of the same
+      # pool having BGP peers is what shows IP failover is meant to be on.
+      - alert: NATBGPNotConfigured
+        expr: (nat_bgp_peers_total == 0) and on(pool) (max by (pool) (nat_bgp_peers_total) > 0)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }} ({{ $labels.pool }}) has no BGP neighbors configured while the rest of its pool does"
+          description: "FRR on this node is running without its BGP base config, so it announces nothing and its buddy carries its public address; its own egress (DNS included) fails and it stays out of the roster. buddy-sync restores the last known-good FRR config automatically when it has one -- if this persists, the node has none and needs replacing. See docs/NAT-GATEWAY-DEFINITIVE-GUIDE.html §4.4 'BGP-Based IP Failover'."
+
       - alert: NATIPFailoverSelfNotAnnounced
         expr: (nat_ip_failover_self_announced == 0) and on(node) (nat_node_healthy == 1)
         for: 5m
