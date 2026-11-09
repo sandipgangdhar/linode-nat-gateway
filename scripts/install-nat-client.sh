@@ -435,19 +435,47 @@ systemctl stop lng-client-agent 2>/dev/null || true
 #    Object Storage bucket directly if LNG_ARTIFACT_BASE_URL was
 #    explicitly passed (a client that already has its own internet path
 #    and would rather not depend on natctl's serving endpoint).
+#
+#    LNG_ROSTER_URL may list several nodes, comma-separated (the
+#    recommended form with natctl on every node). Each node's natctl
+#    serves the binary, so every listed origin is tried in turn with a
+#    bounded timeout: a node that was scaled in or is unreachable from
+#    this client must not hang the install. The download goes to a
+#    temporary file and only replaces the installed binary once it
+#    completed, so a failed fetch never leaves a truncated binary behind.
 if [[ -n "${LNG_ARTIFACT_BASE_URL:-}" ]]; then
-  CLIENT_AGENT_URL="${LNG_ARTIFACT_BASE_URL}/bin/client-agent"
+  CLIENT_AGENT_URLS="${LNG_ARTIFACT_BASE_URL}/bin/client-agent"
 else
-  ROSTER_ORIGIN="$(printf '%s' "${LNG_ROSTER_URL}" | sed -E 's#(https?://[^/]+).*#\1#')"
-  CLIENT_AGENT_URL="${ROSTER_ORIGIN}/agents/client-agent"
+  CLIENT_AGENT_URLS="$(printf '%s' "${LNG_ROSTER_URL}" | tr ',' '\n' \
+    | sed -E 's#^[[:space:]]*(https?://[^/[:space:]]+).*#\1/agents/client-agent#' \
+    | { grep -E '^https?://' || true; } | awk '!seen[$0]++' | paste -sd, -)"
 fi
-echo "Fetching client-agent from: ${CLIENT_AGENT_URL}"
 
 mkdir -p /opt/lng-client-agent
-python3 -c "
+CLIENT_AGENT_URLS="${CLIENT_AGENT_URLS}" python3 - <<'PYEOF'
+import os
+import sys
 import urllib.request
-urllib.request.urlretrieve('${CLIENT_AGENT_URL}', '/opt/lng-client-agent/client-agent')
-"
+
+dest = os.environ.get("LNG_CLIENT_AGENT_DEST", "/opt/lng-client-agent/client-agent")
+tmp = dest + ".download"
+urls = [u for u in os.environ["CLIENT_AGENT_URLS"].split(",") if u]
+for url in urls:
+    print(f"Fetching client-agent from: {url}", flush=True)
+    try:
+        with urllib.request.urlopen(url, timeout=20) as resp, open(tmp, "wb") as out:
+            while chunk := resp.read(1 << 20):
+                out.write(chunk)
+        os.replace(tmp, dest)
+        sys.exit(0)
+    except Exception as exc:  # try the next listed node
+        print(f"  failed: {exc}", file=sys.stderr, flush=True)
+        try:
+            os.remove(tmp)
+        except FileNotFoundError:
+            pass
+sys.exit(f"ERROR: could not fetch client-agent from any of: {', '.join(urls) or '(no URL)'}")
+PYEOF
 chmod +x /opt/lng-client-agent/client-agent
 
 # 3. Config.
